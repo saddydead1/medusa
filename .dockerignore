@@ -1,0 +1,16 @@
+# в build-контекст не едет ничего из этого: локальная база, venv, тулзы для UI-проверок
+.git
+.gitignore
+.venv
+**/__pycache__
+*.pyc
+*.pyo
+data
+tools/node_modules
+tools/package-lock.json
+.env
+*.db
+*.db-journal
+.playwright-mcp
+# изоляция половин держит не этот список, а COPY в каждом Dockerfile:
+# панель копирует src/panel + src/core, нода — src/node + src/core

@@ -1,0 +1,38 @@
+# compose.yaml — пример связки «панель + нода» на одной машине.
+#
+# Нода намеренно на network_mode: host: ей нужно слушать и свой API-порт, и
+# клиентские порты Xray, а панель должна дотягиваться до обоих по адресу ноды.
+# Внутри одной машины это проще и честнее, чем возить трафик через bridge.
+#
+#   docker compose -f deploy/compose.yaml up --build
+services:
+  panel:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.panel
+    environment:
+      MEDUSA_ADMIN_USER: admin
+      MEDUSA_ADMIN_PASSWORD: ${MEDUSA_ADMIN_PASSWORD:?нужен пароль владельца}
+      MEDUSA_AUTH: "1"                                  # по умолчанию и так включено
+      # MEDUSA_PANEL_BASE: https://panel.example.com    # за TLS-прокси: нужно для входа по ключу
+    ports:
+      - "8000:8000"
+    volumes:
+      - medusa-panel-data:/data
+    restart: unless-stopped
+
+  node-home:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.node
+    network_mode: host                   # API 9443 + порты Xray как есть
+    environment:
+      MEDUSA_NODE_PORT: "9443"
+      # MEDUSA_NODE_API_KEY: "sk-api-..."  # без него нода сгенерирует API-ключ сама и напечатает его в лог
+    volumes:
+      - medusa-node-home:/var/lib/medusa-node
+    restart: unless-stopped
+
+volumes:
+  medusa-panel-data:
+  medusa-node-home:

@@ -221,3 +221,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Medusa: локальная база панели и node-ные тулзы для UI-проверок
+data/
+tools/node_modules

@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Medusa</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside>
+  <span id="ind"></span>
+  <h1><svg class="logo" width="24" height="22" viewBox="0 0 24 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path pathLength="1" d="M5 3c4 3-4 6 0 9s-4 6 0 7"/><path pathLength="1" d="M12 2c4 3-4 6 0 9s-4 6 0 9"/><path pathLength="1" d="M19 3c4 3-4 6 0 9s-4 6 0 7"/></svg><span id="pname">Medusa</span></h1>
+  <nav id="nav">
+  <a data-p="overview" data-i="grid" class="on"><span data-i18n="nav.overview">Обзор</span></a>
+  <a data-p="users" data-i="users"><span data-i18n="nav.users">Пользователи</span></a>
+  <a data-p="hosts" data-i="globe"><span data-i18n="nav.hosts">Хосты</span></a>
+  <a data-p="chains" data-i="link"><span data-i18n="nav.chains">Цепочки</span></a>
+  <a data-p="nodes" data-i="server"><span data-i18n="nav.nodes">Ноды</span></a>
+  <div class="sep"></div>
+  <a data-p="admins" data-i="shield"><span data-i18n="nav.admins">Администраторы</span></a>
+  <a data-p="settings" data-i="gear"><span data-i18n="nav.settings">Настройки</span></a>
+  </nav>
+    <div class="asidefoot">
+    <span class="badge b-warn" id="draftFlag" hidden data-i18n="footer.unsaved" data-i18n-title="footer.unsaved.title">не сохранено</span>
+    <div class="foottop">
+      <a class="repolink" href="https://git.sonoma.su/saddydead1/medusa" target="_blank" rel="noopener noreferrer" data-i18n-title="footer.repo.title">
+        <svg class="ico ghmark" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M10.226 17.284c-2.965-.36-5.054-2.493-5.054-5.256c0-1.123.404-2.336 1.078-3.144c-.292-.741-.247-2.314.09-2.965c.898-.112 2.111.36 2.83 1.01c.853-.269 1.752-.404 2.853-.404c1.1 0 1.999.135 2.807.382c.696-.629 1.932-1.1 2.83-.988c.315.606.36 2.179.067 2.942c.72.854 1.101 2 1.101 3.167c0 2.763-2.089 4.852-5.098 5.234c.763.494 1.28 1.572 1.28 2.807v2.336c0 .674.561 1.056 1.235.786c4.066-1.55 7.255-5.615 7.255-10.646C23.5 6.188 18.334 1 11.978 1C5.62 1 .5 6.188.5 12.545c0 4.986 3.167 9.12 7.435 10.669c.606.225 1.19-.18 1.19-.786V20.63a2.9 2.9 0 0 1-1.078.224c-1.483 0-2.359-.808-2.987-2.313c-.247-.607-.517-.966-1.034-1.033c-.27-.023-.359-.135-.359-.27c0-.27.45-.471.898-.471c.652 0 1.213.404 1.797 1.235c.45.651.921.943 1.483.943c.561 0 .92-.202 1.437-.719c.382-.381.674-.718.944-.943"/></svg>
+        <span>GitHub</span>
+      </a>
+      <button type="button" class="langbtn" id="langBtn" data-i18n-title="lang.switch">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.4 2.5 3.6 5.4 3.6 8.5s-1.2 6-3.6 8.5c-2.4-2.5-3.6-5.4-3.6-8.5S9.6 6 12 3.5z"/></svg>
+        <span id="langCode">RU</span>
+      </button>
+    </div>
+    <div class="acct" id="acct" hidden>
+      <span class="ava" id="acctava">?</span>
+      <span class="accttext"><b id="acctname">—</b><span id="acctrole"></span></span>
+      <button type="button" class="btn sm" id="logout" data-i18n="auth.logout" data-i18n-title="auth.logoutTip">Выйти</button>
+    </div>
+    <div class="foot">
+      <span id="mode">—</span>
+    </div>
+  </div>
+</aside>
+<main id="view"></main>
+
+<dialog id="logdlg">
+  <form method="dialog" id="lform">
+    <h3 data-i18n="auth.login">Вход в панель</h3>
+    <label><span data-i18n="auth.user">Логин</span><input name="username" required autocomplete="username" spellcheck="false"></label>
+    <label><span data-i18n="auth.password">Пароль</span><input name="password" type="password" required autocomplete="current-password"></label>
+    <p class="badline" id="logerr" hidden></p>
+    <div class="row split">
+      <button type="button" class="btn" id="logkey" data-i18n="auth.key">Войти ключом</button>
+      <span class="grow"></span>
+      <button class="btn pri" value="ok" data-i18n="auth.btn">Войти</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="amdlg">
+  <form method="dialog" id="amform">
+    <h3 id="amtitle">Аккаунт</h3>
+    <label><span data-i18n="dlg.adminEdit.login">Логин</span><input id="amlogin" readonly spellcheck="false"></label>
+    <div class="srvgrid">
+      <label><span data-i18n="dlg.adminEdit.role">Роль</span><select id="amrole"><option value="admin"></option><option value="viewer"></option></select></label>
+      <label><span data-i18n="dlg.adminEdit.status">Состояние</span><select id="amstatus"><option value="active"></option><option value="disabled"></option></select></label>
+    </div>
+    <p class="hint" id="amrolehint"></p>
+    <label><span data-i18n="dlg.adminEdit.password">Новый пароль (минимум 8 символов)</span><input id="ampw" type="password" minlength="8" autocomplete="new-password"></label>
+    <p class="hint" id="ampwhint"></p>
+    <div class="keys">
+      <h4 data-i18n="dlg.adminEdit.keys">Ключи</h4>
+      <div id="amkeys"></div>
+      <div class="row"><input id="amkeynick" maxlength="32" data-i18n-placeholder="keys.nick" placeholder="YubiKey 5"><button type="button" class="btn sm" id="amkeyadd" data-i18n="keys.add">Записать ключ</button></div>
+    </div>
+    <p class="hint" id="amhint"></p>
+    <div class="row split">
+      <button class="btn del" type="button" id="amdel" data-i18n="dlg.adminEdit.delete">Удалить аккаунт</button>
+      <span class="grow"></span>
+      <button class="btn" value="cancel" formnovalidate data-i18n="btn.cancel">Отмена</button>
+      <button class="btn pri" value="ok" data-i18n="dlg.adminEdit.save">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="dlg">
+  <form method="dialog" id="uform">
+    <h3 data-i18n="dlg.user.title">Новый пользователь</h3>
+    <label><span data-i18n="dlg.user.name">Имя (email в Xray)</span><input name="name" required pattern="[A-Za-z0-9_.\-]+" placeholder="vasya"></label>
+    <div class="row">
+      <button class="btn" value="cancel" formnovalidate data-i18n="btn.cancel">Отмена</button>
+      <button class="btn pri" value="ok" data-i18n="btn.create">Создать</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="adlg">
+  <form method="dialog" id="aform">
+    <h3 data-i18n="dlg.admin.title">Новый администратор</h3>
+    <label><span data-i18n="dlg.admin.login">Логин</span><input name="username" required pattern="[A-Za-z0-9_.\-]{3,32}" placeholder="mila" autocomplete="off"></label>
+    <label><span data-i18n="dlg.admin.password">Пароль (минимум 8 символов)</span><input name="password" type="password" required minlength="8" autocomplete="new-password"></label>
+    <label><span data-i18n="dlg.admin.role">Роль</span><select name="role"><option value="admin" data-i18n="role.admin">Администратор</option><option value="viewer" data-i18n="role.viewer">Наблюдатель</option></select></label>
+    <p class="hint" data-i18n="dlg.admin.hint">Администратор управляет пользователями, хостами, цепочками и нодами. Наблюдатель только смотрит. Настройки и других администраторов меняет владелец.</p>
+    <div class="row">
+      <button class="btn" value="cancel" formnovalidate data-i18n="btn.cancel">Отмена</button>
+      <button class="btn pri" value="ok" data-i18n="btn.create">Создать</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="pwdlg">
+  <form method="dialog" id="pwform">
+    <h3 id="pwtitle" data-i18n="dlg.pw.title">Новый пароль</h3>
+    <label><span data-i18n="dlg.pw.new">Новый пароль (минимум 8 символов)</span><input name="p1" type="password" required minlength="8" autocomplete="new-password"></label>
+    <label><span data-i18n="dlg.pw.repeat">Повторите пароль</span><input name="p2" type="password" required minlength="8" autocomplete="new-password"></label>
+    <div class="row">
+      <button class="btn" value="cancel" formnovalidate data-i18n="btn.cancel">Отмена</button>
+      <button class="btn pri" value="ok" data-i18n="btn.save">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="hdlg">
+  <form method="dialog" id="hform">
+    <h3 data-i18n="dlg.host.title">Новый хост</h3>
+    <label><span data-i18n="dlg.host.name">Название (его увидит пользователь)</span><input name="name" required placeholder="FI Reality"></label>
+    <label><span data-i18n="dlg.host.node">Нода</span><select id="hnode"></select></label>
+    <div id="hcfg"></div>
+    <div class="row">
+      <button class="btn" value="cancel" formnovalidate data-i18n="btn.cancel">Отмена</button>
+      <button class="btn pri" value="ok" data-i18n="btn.create">Создать</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="cdlg">
+  <form method="dialog" id="cform">
+    <h3 data-i18n="dlg.chain.title">Новая цепочка</h3>
+    <label><span data-i18n="dlg.chain.name">Название хоста (его увидит пользователь)</span><input name="name" required placeholder="FI-DE"></label>
+    <p class="hint" data-i18n="dlg.chain.hint">Пользователь увидит цепочку как один хост и подключится к первой ноде. Инбаунд на каждой ноде создастся автоматически.</p>
+    <div id="hops"></div>
+    <button type="button" class="btn sm" id="addhop" data-i18n="btn.addhop">Добавить хоп</button>
+    <div class="row">
+      <button class="btn" value="cancel" formnovalidate data-i18n="btn.cancel">Отмена</button>
+      <button class="btn pri" value="ok" data-i18n="btn.create">Создать</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="ndlg">
+  <form method="dialog" id="nform">
+    <h3 data-i18n="dlg.node.title">Новая нода</h3>
+    <label><span data-i18n="dlg.node.name">Название</span><input data-f="name" required minlength="2" maxlength="32" placeholder="vps-de"></label>
+    <div class="srvgrid">
+      <label><span data-i18n="dlg.node.address">Адрес (IP или домен)</span><input data-f="address" required maxlength="63" placeholder="195.232.115.27"></label>
+      <label><span data-i18n="dlg.node.apiPort">Порт API ноды</span><input data-f="apiPort" type="number" min="1" max="65535" placeholder="9443"></label>
+    </div>
+    <label><span data-i18n="dlg.node.key">API-ключ ноды</span><input data-f="apiKey" required maxlength="128" spellcheck="false" placeholder="sk-api-"></label>
+    <p class="hint" data-i18n="dlg.node.keyHint"></p>
+    <div class="row">
+      <button class="btn" value="cancel" formnovalidate data-i18n="btn.cancel">Отмена</button>
+      <button class="btn pri" value="ok" data-i18n="btn.save">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="nedlg">
+  <form method="dialog" id="neform">
+    <h3><span id="ne_name"></span><span class="badge" id="ne_badge"></span></h3>
+    <label><span data-i18n="dlg.node.name">Название</span><input data-f="name" required minlength="2" maxlength="32"></label>
+    <div class="srvgrid">
+      <label><span data-i18n="dlg.node.address">Адрес (IP или домен)</span><input data-f="address" required maxlength="63"></label>
+      <label><span data-i18n="dlg.node.apiPort">Порт API ноды</span><input data-f="apiPort" type="number" min="1" max="65535"></label>
+    </div>
+    <label><span data-i18n="dlg.nodeEdit.apiKey">API-ключ</span><input data-f="apiKey" maxlength="128" spellcheck="false" placeholder="sk-api-"></label>
+    <p class="hint" id="ne_key"></p>
+    <dl class="ninfo">
+      <dt data-i18n="node.version">Версия ноды</dt><dd id="ne_agent"></dd>
+      <dt data-i18n="node.xray">Версия Xray</dt><dd id="ne_xray"></dd>
+      <dt data-i18n="dlg.nodeEdit.check">Связь с панелью</dt><dd id="ne_seen"></dd>
+    </dl>
+    <p id="ne_status" class="nstatus" hidden></p>
+    <div class="row split">
+      <button class="btn del" type="button" data-a="ndelete" data-i18n="btn.delete">Удалить</button>
+      <span class="grow"></span>
+      <button class="btn" type="button" data-a="ncheck" data-i18n="btn.checkNode">Проверить связь</button>
+      <button class="btn" value="cancel" formnovalidate data-i18n="btn.cancel">Отмена</button>
+      <button class="btn pri" value="ok" data-i18n="btn.save">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+<div id="toast"></div>
+
+<script src="script.js"></script>
+</body>
+</html>

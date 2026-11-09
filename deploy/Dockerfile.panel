@@ -1,0 +1,23 @@
+# Панель Medusa. Образ собирается из того же репозитория, но в него едет только
+# код панели и общее ядро: агент ноды сюда не попадает никогда.
+#
+#   docker build -f deploy/Dockerfile.panel -t medusa-panel .
+FROM python:3.14-slim
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# зависимости отдельно от кода: этот слой не придётся пересобирать на каждой правке
+COPY pyproject.toml uv.lock ./
+RUN pip install --no-cache-dir uv \
+    && uv sync --frozen --no-dev --no-install-project
+
+COPY src/panel ./src/panel
+COPY src/core  ./src/core
+
+VOLUME /data
+ENV MEDUSA_DB=/data/medusa.db
+
+EXPOSE 8000
+CMD ["/app/.venv/bin/python", "-m", "src.panel.cli", "--host", "0.0.0.0", "--port", "8000", "--no-reload"]

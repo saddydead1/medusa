@@ -1,0 +1,28 @@
+# Агент ноды Medusa + Xray. В образ едут только src/node и src/core: ни базы панели,
+# ни её роутеров, ни статики здесь нет — следит за этим ещё и tools/arch_test.py.
+#
+#   docker build -f deploy/Dockerfile.node -t medusa-node .
+FROM ghcr.io/xtls/xray-core:latest AS xray
+
+FROM python:3.14-slim
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+COPY pyproject.toml uv.lock ./
+RUN pip install --no-cache-dir uv \
+    && uv sync --frozen --no-dev --no-install-project
+
+COPY src/node ./src/node
+COPY src/core ./src/core
+COPY --from=xray /usr/local/bin/xray /usr/local/bin/xray
+
+VOLUME /var/lib/medusa-node
+ENV MEDUSA_NODE_STATE=/var/lib/medusa-node/state.json \
+    MEDUSA_NODE_HOST=0.0.0.0 \
+    MEDUSA_NODE_PORT=9443 \
+    MEDUSA_XRAY_BIN=/usr/local/bin/xray
+
+EXPOSE 9443
+CMD ["/app/.venv/bin/python", "-m", "src.node.cli"]
