@@ -91,7 +91,8 @@ def main() -> int:
         ok(state_key(other_state) == fixed, "API-ключ извне сохранён в состоянии ноды")
 
     # версия Xray берётся с бинарника; если его нет — нода говорит null, а не выдумывает
-    fake = tmp / "xray"
+    # имя не должно сталкиваться с рабочим каталогом раннера (`<каталог состояния>/xray`)
+    fake = tmp / "fake-xray"
     fake.write_text('#!/bin/sh\nif [ "$1" = version ]; then echo "Xray 25.8.3 (Xray, Penetrates Everything.) abc"; exit 0; fi\nexit 1\n')
     fake.chmod(0o755)
     xray_state = tmp / "xray-state.json"

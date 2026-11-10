@@ -36,6 +36,10 @@ echo
 echo "=== нода: ключ и отдельный порт"
 .venv/bin/python tools/node_test.py
 
+echo
+echo "=== конфиг Xray: панель -> нода -> xray (заглушка)"
+.venv/bin/python tools/xray_test.py
+
 .venv/bin/python -m uvicorn src.node.main:app --host 127.0.0.1 --port "$NODE_PORT" >"$WORK/node.log" 2>&1 &
 NODE_SRV=$!
 trap 'kill $NODE_SRV ${SRV:-} 2>/dev/null || true; wait 2>/dev/null || true; rm -rf "$WORK"' EXIT

@@ -1,12 +1,14 @@
 """API ноды. Витрина `/node/health` открыта и без ключа, всё остальное — по API-ключу."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from src.core.contract import (
     API_VERSION,
     NODE_API_PREFIX,
     NODE_ROLE,
+    NodeApplyReport,
+    NodeConfigApply,
     NodeHealth,
     NodeIdentity as IdentityPayload,
     NodeStatus,
@@ -49,10 +51,14 @@ def identity(request: Request, node: NodeIdentity = Depends(require_node_key)) -
 
 @router.get("/status", response_model=NodeStatus)
 def status(request: Request, node: NodeIdentity = Depends(require_node_key)) -> NodeStatus:
-    """Что нода помнит о себе. Рендера конфига ещё нет, поэтому ревизии нулевые —
-    но нули настоящие, а не придуманные панелью.
+    """Что нода помнит о себе. Ревизии настоящие: их двигает применение конфига.
+    Перед ответом раннер проверяет, жив ли процесс Xray: мёртвый процесс не должен
+    прятаться за «применено».
     """
     config = request.app.state.node_config
+    runner = getattr(request.app.state, "xray_runner", None)
+    if runner is not None:
+        runner.note_process_state()
     return NodeStatus(
         fingerprint=node.fingerprint,
         agentVersion=project_version(),
@@ -66,6 +72,17 @@ def status(request: Request, node: NodeIdentity = Depends(require_node_key)) -> 
     )
 
 
+@router.put("/config", response_model=NodeApplyReport)
+def apply_config(body: NodeConfigApply, request: Request,
+                 node: NodeIdentity = Depends(require_node_key)) -> NodeApplyReport:
+    """Применить конфиг Xray, собранный панелью. Отказ — тоже ответ: `ok: false`
+    и человеческая ошибка, а не HTTP-исключение: панель записывает его в строку ноды."""
+    runner = getattr(request.app.state, "xray_runner", None)
+    if runner is None:
+        raise HTTPException(status_code=503, detail="нода ещё не подняла раннер xray")
+    return runner.apply(body.revision, body.config, body.certs)
+
+
 @router.get("", include_in_schema=False)
 def index(request: Request) -> dict:
     """Ответ на «а что тут вообще живёт» в браузере."""
@@ -75,6 +92,6 @@ def index(request: Request) -> dict:
         "apiVersion": API_VERSION,
         "agentVersion": project_version(),
         "fingerprint": identity.fingerprint,
-        "endpoints": ["/node/health", "/node/identity", "/node/status"],
+        "endpoints": ["/node/health", "/node/identity", "/node/status", "/node/config"],
         "checkedAt": now_ms(),
     }

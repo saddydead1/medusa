@@ -7,7 +7,9 @@ from pydantic import BaseModel, Field
 
 NAME = Annotated[str, Field(min_length=2, max_length=32, pattern=r"^[A-Za-z0-9_.\-]+$")]
 PORT = Annotated[int, Field(ge=1, le=65535)]
-ADDRESS = Annotated[str, Field(min_length=4, max_length=63, pattern=r"^[A-Za-z0-9._:\-\[\]]+$")]
+# IPv4/IPv6/домен — один и тот же алфавит и у адреса ноды, и у адреса хоста
+ADDRESS_PATTERN = r"^[A-Za-z0-9._:\-\[\]]+$"
+ADDRESS = Annotated[str, Field(min_length=4, max_length=63, pattern=ADDRESS_PATTERN)]
 NODE_NAME = Annotated[str, Field(min_length=2, max_length=32)]
 STATUS = Literal["active", "disabled"]
 PROTOCOLS = Literal["vless", "vmess", "trojan", "ss", "hy2"]
@@ -59,6 +61,9 @@ class HostCreate(BaseModel):
     port: PORT
     network: NETWORKS = "tcp"
     security: SECURITY = "none"
+    # адрес, к которому подключается подписчик (домен или IP ноды наружу);
+    # пусто — значит подключаться к адресу ноды, он же у панели для своей связи
+    address: Annotated[str | None, Field(min_length=4, max_length=63, pattern=ADDRESS_PATTERN)] = None
 
 
 class Hop(BaseModel):
@@ -90,12 +95,10 @@ class SettingsPatch(BaseModel):
 class AdminCreate(BaseModel):
     username: str = Field(min_length=3, max_length=32, pattern=r"^[A-Za-z0-9_.\-]+$")
     password: str = Field(min_length=8, max_length=128)
-    role: Literal["admin", "viewer"] = "admin"
 
 
 class AdminPatch(BaseModel):
     status: STATUS | None = None
-    role: Literal["admin", "viewer"] | None = None
     password: Annotated[str | None, Field(min_length=8, max_length=128)] = None
 
 

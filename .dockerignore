@@ -6,6 +6,8 @@
 *.pyc
 *.pyo
 data
+# локальный бинарник Xray: в образы он не нужен
+bin/
 tools/node_modules
 tools/package-lock.json
 .env

@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS admins (
     id            INTEGER PRIMARY KEY,
     username      TEXT    NOT NULL UNIQUE,
     password_hash TEXT    NOT NULL,
-    role          TEXT    NOT NULL CHECK (role IN ('owner','admin','viewer')) DEFAULT 'admin',
+    role          TEXT    NOT NULL CHECK (role IN ('owner','admin')) DEFAULT 'admin',
     status        TEXT    NOT NULL CHECK (status IN ('active','disabled'))    DEFAULT 'active',
     last_login    INTEGER NOT NULL DEFAULT 0,
     created_at    INTEGER NOT NULL
@@ -179,6 +179,23 @@ COLUMNS = {
         "api_key": "TEXT NOT NULL DEFAULT ''",
         "agent_version": "TEXT",
         "seen_at": "INTEGER NOT NULL DEFAULT 0",
+        # применение конфига Xray: чего хочет панель (config_rev), что нода подтвердила
+        # (applied_rev/applied_at), осталась ли несвежей после правок (config_dirty)
+        "config_rev": "INTEGER NOT NULL DEFAULT 0",
+        "config_dirty": "INTEGER NOT NULL DEFAULT 0",
+        "applied_rev": "INTEGER NOT NULL DEFAULT 0",
+        "applied_at": "INTEGER NOT NULL DEFAULT 0",
+        "apply_error": "TEXT",
+        # отпечаток последнего отправленного конфига: совпал — ноду не дёргаем
+        "config_hash": "TEXT NOT NULL DEFAULT ''",
+    },
+    "hosts": {
+        # адрес, к которому подключается подписчик; адрес ноды — только для панели
+        "address": "TEXT NOT NULL DEFAULT ''",
+        # ключи reality: пару создаёт панель (x25519), приватный уезжает в конфиг,
+        # публичный — в ссылку подписки
+        "private_key": "TEXT NOT NULL DEFAULT ''",
+        "public_key": "TEXT NOT NULL DEFAULT ''",
     },
 }
 
@@ -205,6 +222,8 @@ def init_db(path: Path | None = None) -> None:
     try:
         conn.executescript(SCHEMA)
         ensure_columns(conn)
+        # роли наблюдателя больше нет: прежние наблюдатели становятся администраторами
+        conn.execute("UPDATE admins SET role = 'admin' WHERE role = 'viewer'")
         ensure_settings(conn)
         password = ensure_owner(conn)
         if os.getenv("MEDUSA_DEMO") == "1":
@@ -281,8 +300,6 @@ def seed_demo(conn: sqlite3.Connection) -> None:
 
     conn.execute("INSERT INTO admins (username, password_hash, role, status, last_login, created_at) VALUES (?,?,?,?,?,?)",
                  ("mila", hash_password(temporary_password()), "admin", "active", now - 3 * DAY, now))
-    conn.execute("INSERT INTO admins (username, password_hash, role, status, last_login, created_at) VALUES (?,?,?,?,?,?)",
-                 ("guest", hash_password(temporary_password()), "viewer", "disabled", 0, now))
 
     hosts = [
         ("FI Reality", "vps-fi", "vless", 443, "tcp", "reality"),

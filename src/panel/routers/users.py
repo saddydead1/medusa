@@ -5,6 +5,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from src.panel import config_push
 from src.panel.db import get_conn, now_ms
 from src.panel.deps import bad_request, conflict, fetch_one, writer
 from src.panel.schemas import UserCreate, UserPatch
@@ -44,6 +45,8 @@ def create_user(
     except sqlite3.IntegrityError:
         raise conflict(f"пользователь «{body.name}» уже есть")
     conn.commit()
+    config_push.mark_dirty(conn)      # список клиентов есть в конфиге каждой ноды
+    config_push.schedule_push()
     return as_dict(fetch_one(conn, "SELECT * FROM users WHERE name = ?", (body.name,)))
 
 
@@ -62,6 +65,8 @@ def patch_user(
     sets = ", ".join(f"{fields[k]} = ?" for k in changes)
     conn.execute(f"UPDATE users SET {sets} WHERE id = ?", (*changes.values(), user_id))
     conn.commit()
+    config_push.mark_dirty(conn)      # пользователь появился/исчез/отключился — конфиги устарели
+    config_push.schedule_push()
     return as_dict(fetch_one(conn, "SELECT * FROM users WHERE id = ?", (user_id,)))
 
 
@@ -74,3 +79,5 @@ def delete_user(
     fetch_one(conn, "SELECT id FROM users WHERE id = ?", (user_id,))
     conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
+    config_push.mark_dirty(conn)
+    config_push.schedule_push()

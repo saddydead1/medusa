@@ -224,3 +224,7 @@ __marimo__/
 # Medusa: локальная база панели и node-ные тулзы для UI-проверок
 data/
 tools/node_modules
+
+# локальный бинарник Xray для живых проверок
+bin/
+.playwright-mcp/

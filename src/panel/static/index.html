@@ -23,7 +23,7 @@
     <div class="asidefoot">
     <span class="badge b-warn" id="draftFlag" hidden data-i18n="footer.unsaved" data-i18n-title="footer.unsaved.title">не сохранено</span>
     <div class="foottop">
-      <a class="repolink" href="https://git.sonoma.su/saddydead1/medusa" target="_blank" rel="noopener noreferrer" data-i18n-title="footer.repo.title">
+      <a class="repolink" href="https://github.com/saddydead1/medusa" target="_blank" rel="noopener noreferrer" data-i18n-title="footer.repo.title">
         <svg class="ico ghmark" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M10.226 17.284c-2.965-.36-5.054-2.493-5.054-5.256c0-1.123.404-2.336 1.078-3.144c-.292-.741-.247-2.314.09-2.965c.898-.112 2.111.36 2.83 1.01c.853-.269 1.752-.404 2.853-.404c1.1 0 1.999.135 2.807.382c.696-.629 1.932-1.1 2.83-.988c.315.606.36 2.179.067 2.942c.72.854 1.101 2 1.101 3.167c0 2.763-2.089 4.852-5.098 5.234c.763.494 1.28 1.572 1.28 2.807v2.336c0 .674.561 1.056 1.235.786c4.066-1.55 7.255-5.615 7.255-10.646C23.5 6.188 18.334 1 11.978 1C5.62 1 .5 6.188.5 12.545c0 4.986 3.167 9.12 7.435 10.669c.606.225 1.19-.18 1.19-.786V20.63a2.9 2.9 0 0 1-1.078.224c-1.483 0-2.359-.808-2.987-2.313c-.247-.607-.517-.966-1.034-1.033c-.27-.023-.359-.135-.359-.27c0-.27.45-.471.898-.471c.652 0 1.213.404 1.797 1.235c.45.651.921.943 1.483.943c.561 0 .92-.202 1.437-.719c.382-.381.674-.718.944-.943"/></svg>
         <span>GitHub</span>
       </a>
@@ -62,10 +62,8 @@
     <h3 id="amtitle">Аккаунт</h3>
     <label><span data-i18n="dlg.adminEdit.login">Логин</span><input id="amlogin" readonly spellcheck="false"></label>
     <div class="srvgrid">
-      <label><span data-i18n="dlg.adminEdit.role">Роль</span><select id="amrole"><option value="admin"></option><option value="viewer"></option></select></label>
       <label><span data-i18n="dlg.adminEdit.status">Состояние</span><select id="amstatus"><option value="active"></option><option value="disabled"></option></select></label>
     </div>
-    <p class="hint" id="amrolehint"></p>
     <label><span data-i18n="dlg.adminEdit.password">Новый пароль (минимум 8 символов)</span><input id="ampw" type="password" minlength="8" autocomplete="new-password"></label>
     <p class="hint" id="ampwhint"></p>
     <div class="keys">
@@ -73,7 +71,6 @@
       <div id="amkeys"></div>
       <div class="row"><input id="amkeynick" maxlength="32" data-i18n-placeholder="keys.nick" placeholder="YubiKey 5"><button type="button" class="btn sm" id="amkeyadd" data-i18n="keys.add">Записать ключ</button></div>
     </div>
-    <p class="hint" id="amhint"></p>
     <div class="row split">
       <button class="btn del" type="button" id="amdel" data-i18n="dlg.adminEdit.delete">Удалить аккаунт</button>
       <span class="grow"></span>
@@ -97,22 +94,10 @@
     <h3 data-i18n="dlg.admin.title">Новый администратор</h3>
     <label><span data-i18n="dlg.admin.login">Логин</span><input name="username" required pattern="[A-Za-z0-9_.\-]{3,32}" placeholder="mila" autocomplete="off"></label>
     <label><span data-i18n="dlg.admin.password">Пароль (минимум 8 символов)</span><input name="password" type="password" required minlength="8" autocomplete="new-password"></label>
-    <label><span data-i18n="dlg.admin.role">Роль</span><select name="role"><option value="admin" data-i18n="role.admin">Администратор</option><option value="viewer" data-i18n="role.viewer">Наблюдатель</option></select></label>
-    <p class="hint" data-i18n="dlg.admin.hint">Администратор управляет пользователями, хостами, цепочками и нодами. Наблюдатель только смотрит. Настройки и других администраторов меняет владелец.</p>
+    <p class="hint" data-i18n="dlg.admin.hint">Администратор управляет пользователями, хостами, цепочками и нодами. Настройки и других администраторов меняет владелец.</p>
     <div class="row">
       <button class="btn" value="cancel" formnovalidate data-i18n="btn.cancel">Отмена</button>
       <button class="btn pri" value="ok" data-i18n="btn.create">Создать</button>
-    </div>
-  </form>
-</dialog>
-<dialog id="pwdlg">
-  <form method="dialog" id="pwform">
-    <h3 id="pwtitle" data-i18n="dlg.pw.title">Новый пароль</h3>
-    <label><span data-i18n="dlg.pw.new">Новый пароль (минимум 8 символов)</span><input name="p1" type="password" required minlength="8" autocomplete="new-password"></label>
-    <label><span data-i18n="dlg.pw.repeat">Повторите пароль</span><input name="p2" type="password" required minlength="8" autocomplete="new-password"></label>
-    <div class="row">
-      <button class="btn" value="cancel" formnovalidate data-i18n="btn.cancel">Отмена</button>
-      <button class="btn pri" value="ok" data-i18n="btn.save">Сохранить</button>
     </div>
   </form>
 </dialog>
@@ -121,6 +106,7 @@
     <h3 data-i18n="dlg.host.title">Новый хост</h3>
     <label><span data-i18n="dlg.host.name">Название (его увидит пользователь)</span><input name="name" required placeholder="FI Reality"></label>
     <label><span data-i18n="dlg.host.node">Нода</span><select id="hnode"></select></label>
+    <label><span data-i18n="dlg.host.address">Адрес для подключения (IP или домен)</span><input name="address" maxlength="63" placeholder="vpn.example.com"></label>
     <div id="hcfg"></div>
     <div class="row">
       <button class="btn" value="cancel" formnovalidate data-i18n="btn.cancel">Отмена</button>
@@ -172,6 +158,10 @@
       <dt data-i18n="node.xray">Версия Xray</dt><dd id="ne_xray"></dd>
       <dt data-i18n="dlg.nodeEdit.check">Связь с панелью</dt><dd id="ne_seen"></dd>
     </dl>
+    <details class="cfgview" id="ne_cfg">
+      <summary data-i18n="node.config">Конфиг Xray</summary>
+      <pre id="ne_cfgjson"></pre>
+    </details>
     <p id="ne_status" class="nstatus" hidden></p>
     <div class="row split">
       <button class="btn del" type="button" data-a="ndelete" data-i18n="btn.delete">Удалить</button>

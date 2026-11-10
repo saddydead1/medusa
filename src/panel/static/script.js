@@ -6,7 +6,7 @@
 
    Эндпоинты бэкенда. Кроме /api/login, /api/fido/* и /api/meta всё требует сессии
    (`Authorization: Bearer <token>`, токен лежит в localStorage['token']); без неё панель
-   показывает окно входа. Права: наблюдатель — только чтение, администратор — правка панели,
+   показывает окно входа. Права: администратор — правка панели,
    но не чужих учёток, владелец — всё и защита своей учётки.
      GET    /api/meta               версия панели из pyproject.toml
      GET    /api/system             метрики сервера: ЦП, память, диски, uptime
@@ -26,8 +26,8 @@
      GET    /api/chains             POST /api/chains {name, hops:[{node,protocol,network,security,port}]}
      PATCH  /api/chains/{id}        {name,...}  DELETE /api/chains/{id}
      GET    /api/settings           PATCH /api/settings
-     GET    /api/admins             POST /api/admins {username,password,role}   (роль: admin|viewer)
-     PATCH  /api/admins/{id}        {status|role|password}    DELETE /api/admins/{id}
+     GET    /api/admins             POST /api/admins {username,password}   (новая учётка всегда администратор)
+     PATCH  /api/admins/{id}        {status|password}    DELETE /api/admins/{id}
      GET    /api/admins/{id}/keys   аппаратные ключи учётки
      POST   /api/admins/{id}/keys/begin   {nickname?} -> {options}: вызов записи ключа
      POST   /api/admins/{id}/keys         {response,nickname?}    DELETE .../keys/{keyId}
@@ -42,7 +42,7 @@ let PANEL_VERSION = 'dev';
    KEY_DRAFT — несохранённые правки формы: выбранная тема и остальные значения не теряются
    ни при переходе на другую страницу, ни при перезагрузке.
    localStorage переживает и перезагрузку, и закрытие вкладки. */
-const SETTINGS_DEFAULTS = {panelName:'Medusa',theme:'auto',subUrl:'https://sub.example.com',subTitle:'Medusa',subInterval:12,pollInterval:30,nodeTimeout:10,sessionHours:24,passkeyEnabled:false};
+const SETTINGS_DEFAULTS = {panelName:'Medusa',theme:'auto',subUrl:location.origin + '/sub',subTitle:'Medusa',subInterval:12,pollInterval:30,nodeTimeout:10,sessionHours:24,passkeyEnabled:false};
 const KEY_SAVED = 'medusa:settings', KEY_DRAFT = 'medusa:settings:draft';
 const lsGet = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch { return null; } };
 const lsSet = (k,v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
@@ -65,11 +65,12 @@ const I18N = {
     'dlg.node.keyHint':'API-ключ нода печатает в консоль при первом запуске.',
     'node.openTip':'Изменить ноду','node.version':'Версия ноды','node.notReported':'неизвестно',
     'dlg.nodeEdit.apiKey':'API-ключ','dlg.nodeEdit.check':'Связь с панелью',
-    'dlg.nodeEdit.fp':'отпечаток API-ключа: {fp}','dlg.nodeEdit.keyMissing':'API-ключа пока нет: впишите тот, что напечатала нода','dlg.nodeEdit.keyHidden':'API-ключ скрыт: наблюдателю ключ управления нодой не показывают',
+    'dlg.nodeEdit.fp':'отпечаток API-ключа: {fp}','dlg.nodeEdit.keyMissing':'API-ключа пока нет: впишите тот, что напечатала нода',
     'toast.nodeSaved':'нода обновлена','toast.stale':'этой ноды уже нет: список обновлён',
     'btn.checkNode':'Проверить связь',
     'node.neverChecked':'ещё не проверялась',
     'node.checkOk':'Нода отвечает, API-ключ подходит: {fp}','node.checkBad':'Связь не сложилась: {msg}',
+    'node.config':'Конфиг Xray','node.configLoading':'собираем конфиг…',
     'confirm.delNode':'Удалить ноду? Её хосты удалятся вместе с ней.',
     'toast.nodeCreated':'Нода добавлена',
     'footer.repo.title':'Репозиторий панели','footer.unsaved':'не сохранено',
@@ -77,24 +78,22 @@ const I18N = {
     'lang.switch':'Переключить язык интерфейса',
     'btn.cancel':'Отмена','btn.save':'Сохранить','btn.create':'Создать','btn.add':'Добавить',
     'btn.delete':'Удалить','btn.enable':'Включить','btn.disable':'Отключить','btn.subscription':'Подписка',
-    'btn.changePassword':'Сменить пароль','btn.newHost':'Добавить хост',
+    'btn.newHost':'Добавить хост',
     'btn.newChain':'Создать цепочку','btn.chain':'Цепочка','btn.discard':'Отменить','btn.addhop':'Добавить хоп',
     'dlg.user.title':'Новый пользователь','dlg.user.name':'Имя (email в Xray)',
     'dlg.admin.title':'Новый администратор','dlg.admin.login':'Логин',
-    'dlg.admin.password':'Пароль (минимум 8 символов)','dlg.admin.role':'Роль',
-    'dlg.admin.hint':'Администратор управляет пользователями, хостами, цепочками и нодами. Наблюдатель только смотрит. Настройки и других администраторов меняет владелец.',
-    'dlg.pw.title':'Новый пароль','dlg.pw.for':'Новый пароль для {name}','dlg.pw.new':'Новый пароль (минимум 8 символов)','dlg.pw.repeat':'Повторите пароль',
-    'dlg.host.title':'Новый хост','dlg.host.name':'Название (его увидит пользователь)','dlg.host.node':'Нода',
+    'dlg.admin.password':'Пароль (минимум 8 символов)',
+    'dlg.admin.hint':'Администратор управляет пользователями, хостами, цепочками и нодами. Настройки и других администраторов меняет владелец.',
+    'dlg.host.title':'Новый хост','dlg.host.name':'Название (его увидит пользователь)','dlg.host.node':'Нода','dlg.host.address':'Адрес для подключения (IP или домен)',
     'dlg.chain.title':'Новая цепочка','dlg.chain.name':'Название хоста (его увидит пользователь)',
     'dlg.chain.hint':'Пользователь увидит цепочку как один хост и подключится к первой ноде. Инбаунд на каждой ноде создастся автоматически.',
     'cfg.protocol':'Протокол','cfg.transport':'Транспорт','cfg.security':'Защита','cfg.port':'Порт',
     'cfg.protocol.short':'Протокол','cfg.port.short':'Порт',
-    'th.node':'Нода','th.users':'Пользователей','th.traffic':'Трафик',
+    'th.address':'Адрес','th.node':'Нода','th.users':'Пользователей','th.traffic':'Трафик',
     'th.name':'Имя','th.title':'Название','th.status':'Статус','th.login':'Логин','th.role':'Роль',
     'th.lastLogin':'Последний вход','th.route':'Маршрут',
     'status.active':'Активен','status.disabled':'Отключён',
-    'role.owner':'Владелец','role.admin':'Администратор','role.viewer':'Наблюдатель','role.self':'вы',
-    'admins.lockTip':'Владельца и свою учётную запись менять нельзя',
+    'role.owner':'Владелец','role.admin':'Администратор','role.self':'вы',
     'overview.title':'Обзор','stat.activeUsers':'Активных пользователей','stat.nodesOnline':'Нод онлайн',
     'stat.traffic':'Трафик за месяц','stat.chains':'Цепочек',
     'overview.nodesTraffic':'Трафик по нодам','overview.share':'{p}% от общего',
@@ -118,13 +117,12 @@ const I18N = {
     'settings.panelName':'Название панели','settings.panelName.hint':'Показывается в меню и во вкладке браузера',
     'settings.theme':'Тема','settings.theme.hint':'Авто повторяет тему системы',
     'theme.auto':'Как в системе','theme.light':'Светлая','theme.dark':'Тёмная',
-    'settings.subUrl':'Адрес подписок','settings.subUrl.hint':'По нему пользователи получают ссылку вида …/sub/токен',
+    'settings.subUrl':'Адрес подписок','settings.subUrl.hint':'Целиком, до /sub включительно: панель дописывает к нему только токен пользователя',
     'settings.subTitle':'Название профиля','settings.subTitle.hint':'Так подписка называется в приложении клиента',
     'settings.subInterval':'Обновление в клиенте, часов','settings.subInterval.hint':'Как часто приложение само перезагружает подписку',
     'settings.pollInterval':'Опрос нод, секунд','settings.pollInterval.hint':'Как часто панель сама ходит к нодам и перечитывает открытую страницу',
     'settings.nodeTimeout':'Таймаут ответа, секунд','settings.nodeTimeout.hint':'Через сколько нода считается недоступной',
     'settings.sessionHours':'Сессия, часов','settings.sessionHours.hint':'Через сколько нужно входить заново',
-    'settings.myPassword':'Мой пароль','settings.myPassword.hint':'Пароль вашей учётной записи',
     'settings.unsaved':'Есть несохранённые изменения',
     'ago.never':'Никогда','ago.now':'Только что','ago.min':'{n} мин назад','ago.hour':'{n} ч назад','ago.day':'{n} дн. назад',
     'toast.saved':'Настройки сохранены','toast.discarded':'Изменения отменены','toast.passwordChanged':'Пароль изменён',
@@ -133,7 +131,7 @@ const I18N = {
     'toast.error':'Ошибка: {msg}','toast.loadSettings':'Не удалось получить настройки: {msg}',
     'auth.login':'Вход в панель','auth.user':'Логин','auth.password':'Пароль','auth.btn':'Войти','auth.key':'Войти ключом',
     'auth.bad':'Вход не прошёл: {msg}','auth.logout':'Выйти','auth.logoutTip':'Выйти из панели: сессия перестанет работать',
-    'auth.required':'Чтобы менять панель, нужно войти','auth.in':'Вы вошли под учёткой {name}','btn.edit':'Изменить','settings.sessionUntil':'ваша сессия истекает {time}','settings.readonly':'Наблюдатель: настройки только для чтения','auth.viewonly':'Наблюдатель: только смотреть',
+    'auth.required':'Необходимо войти','auth.in':'Вы вошли под учёткой {name}','btn.edit':'Изменить','settings.sessionUntil':'ваша сессия истекает {time}',
     'auth.insecure':'Браузер не даёт работать с аппаратными ключами: нужен HTTPS (или localhost)',
     'settings.passkey':'Вход по аппаратному ключу','settings.passkey.hint':'Разрешить входить ключом (FIDO2/WebAuthn) вместо пароля',
     'keys.none':'Ключей нет',
@@ -141,14 +139,12 @@ const I18N = {
     'keys.bad':'Ключ не записался: {msg}','keys.nick':'Как назвать ключ','keys.unnamed':'ключ без названия',
     'dlg.adminEdit':'Аккаунт {name}','dlg.adminEdit.login':'Логин','dlg.adminEdit.password':'Новый пароль (минимум 8 символов)',
     'dlg.adminEdit.passwordOwnOnly':'Пароль этого аккаунта меняет только {name}: чужой пароль панель не меняет','dlg.adminEdit.passwordHint':'Пароль меняет только владелец аккаунта — при смене пароля все сессии этого аккаунта перестают работать.',
-    'dlg.adminEdit.role':'Роль','dlg.adminEdit.roleHint':'Роли и статусы меняет только владелец панели. Роль владельца меняется вместе с панелью.',
     'dlg.adminEdit.status':'Состояние','dlg.adminEdit.keys':'Ключи','dlg.adminEdit.delete':'Удалить аккаунт',
     'dlg.adminEdit.save':'Сохранить','dlg.adminEdit.disabled':'Отключён','dlg.adminEdit.active':'Активен',
-    'dlg.adminEdit.self':'Свою учётку отключить и удалить нельзя','dlg.adminEdit.owner':'Владельца нельзя ни изменить, ни отключить, ни удалить',
     'toast.adminSaved':'Аккаунт обновлён','toast.adminDisabled':'Аккаунт отключён','toast.adminEnabled':'Аккаунт включён',
     'toast.loggedOut':'Вы вышли из панели',
     'toast.themeLocal':'Тема сохранена в браузере, сервер ответил ошибкой: {msg}',
-    'toast.passwords':'Пароли не совпадают','toast.noNodes':'Сначала добавьте ноду',
+    'toast.noNodes':'Сначала добавьте ноду',
     'toast.portTaken':'Порт {port} на ноде {node} уже занят','toast.portDup':'Порт {port} на ноде {node} повторяется в цепочке',
     'confirm.delAdmin':'Удалить администратора? Он больше не сможет войти в панель.',
     'confirm.delHost':'Удалить хост?','confirm.delChain':'Удалить цепочку? Её хост и инбаунды на нодах тоже удалятся.',
@@ -167,11 +163,12 @@ const I18N = {
     'dlg.node.keyHint':'The node prints its API key to the console on first start.',
     'node.openTip':'Edit this node','node.version':'Node version','node.notReported':'unknown',
     'dlg.nodeEdit.apiKey':'API key','dlg.nodeEdit.check':'Panel link',
-    'dlg.nodeEdit.fp':'API key fingerprint: {fp}','dlg.nodeEdit.keyMissing':'no API key yet: type the one the node printed','dlg.nodeEdit.keyHidden':'API key hidden: a viewer is not shown the node control key',
+    'dlg.nodeEdit.fp':'API key fingerprint: {fp}','dlg.nodeEdit.keyMissing':'no API key yet: type the one the node printed',
     'toast.nodeSaved':'node updated','toast.stale':'this node is gone: the list was refreshed',
     'btn.checkNode':'Check link',
     'node.neverChecked':'not checked yet',
     'node.checkOk':'The node answers and the API key matches: {fp}','node.checkBad':'No working link: {msg}',
+    'node.config':'Xray config','node.configLoading':'building the config…',
     'confirm.delNode':'Delete this node? Its hosts go with it.',
     'toast.nodeCreated':'Node added',
     'footer.repo.title':'Panel repository','footer.unsaved':'unsaved',
@@ -179,24 +176,22 @@ const I18N = {
     'lang.switch':'Switch interface language',
     'btn.cancel':'Cancel','btn.save':'Save','btn.create':'Create','btn.add':'Add',
     'btn.delete':'Delete','btn.enable':'Enable','btn.disable':'Disable','btn.subscription':'Subscription',
-    'btn.changePassword':'Change password','btn.newHost':'Add host',
+    'btn.newHost':'Add host',
     'btn.newChain':'Create chain','btn.chain':'Chain','btn.discard':'Discard','btn.addhop':'Add hop',
     'dlg.user.title':'New user','dlg.user.name':'Name (email in Xray)',
     'dlg.admin.title':'New administrator','dlg.admin.login':'Username',
-    'dlg.admin.password':'Password (at least 8 characters)','dlg.admin.role':'Role',
-    'dlg.admin.hint':'An administrator manages users, hosts, chains and nodes. A viewer only reads. Only the owner can change settings and other administrators.',
-    'dlg.pw.title':'New password','dlg.pw.for':'New password for {name}','dlg.pw.new':'New password (at least 8 characters)','dlg.pw.repeat':'Repeat password',
-    'dlg.host.title':'New host','dlg.host.name':'Name (the user will see it)','dlg.host.node':'Node',
+    'dlg.admin.password':'Password (at least 8 characters)',
+    'dlg.admin.hint':'An administrator manages users, hosts, chains and nodes. Only the owner can change settings and other administrators.',
+    'dlg.host.title':'New host','dlg.host.name':'Name (the user will see it)','dlg.host.node':'Node','dlg.host.address':'Client-facing address (IP or domain)',
     'dlg.chain.title':'New chain','dlg.chain.name':'Host name (the user will see it)',
     'dlg.chain.hint':'The user sees a chain as a single host and connects to the first node. An inbound on every node is created automatically.',
     'cfg.protocol':'Protocol','cfg.transport':'Transport','cfg.security':'Security','cfg.port':'Port',
     'cfg.protocol.short':'Protocol','cfg.port.short':'Port',
-    'th.node':'Node','th.users':'Users','th.traffic':'Traffic',
+    'th.address':'Address','th.node':'Node','th.users':'Users','th.traffic':'Traffic',
     'th.name':'Name','th.title':'Name','th.status':'Status','th.login':'Username','th.role':'Role',
     'th.lastLogin':'Last sign-in','th.route':'Route',
     'status.active':'Active','status.disabled':'Disabled',
-    'role.owner':'Owner','role.admin':'Administrator','role.viewer':'Viewer','role.self':'you',
-    'admins.lockTip':'The owner and your own account cannot be changed',
+    'role.owner':'Owner','role.admin':'Administrator','role.self':'you',
     'overview.title':'Overview','stat.activeUsers':'Active users','stat.nodesOnline':'Nodes online',
     'stat.traffic':'Traffic this month','stat.chains':'Chains',
     'overview.nodesTraffic':'Traffic per node','overview.share':'{p}% of total',
@@ -220,13 +215,12 @@ const I18N = {
     'settings.panelName':'Panel name','settings.panelName.hint':'Shown in the menu and in the browser tab',
     'settings.theme':'Theme','settings.theme.hint':'Auto follows the system theme',
     'theme.auto':'Follow system','theme.light':'Light','theme.dark':'Dark',
-    'settings.subUrl':'Subscription base URL','settings.subUrl.hint':'Users get a link like …/sub/token from it',
+    'settings.subUrl':'Subscription base URL','settings.subUrl.hint':'Full URL up to /sub: the panel appends only the user token to it',
     'settings.subTitle':'Profile name','settings.subTitle.hint':'This is how the subscription is named in the client app',
     'settings.subInterval':'Client refresh, hours','settings.subInterval.hint':'How often the client app reloads the subscription',
     'settings.pollInterval':'Node polling, seconds','settings.pollInterval.hint':'How often the panel visits nodes on its own and re-reads the page you have open',
     'settings.nodeTimeout':'Response timeout, seconds','settings.nodeTimeout.hint':'After how long a node counts as unavailable',
     'settings.sessionHours':'Session, hours','settings.sessionHours.hint':'After how long you have to sign in again',
-    'settings.myPassword':'My password','settings.myPassword.hint':'Password of your own account',
     'settings.unsaved':'There are unsaved changes',
     'ago.never':'Never','ago.now':'Just now','ago.min':'{n} min ago','ago.hour':'{n} h ago','ago.day':'{n} d ago',
     'toast.saved':'Settings saved','toast.discarded':'Changes discarded','toast.passwordChanged':'Password changed',
@@ -235,7 +229,7 @@ const I18N = {
     'toast.error':'Error: {msg}','toast.loadSettings':'Could not load settings: {msg}',
     'auth.login':'Sign in to the panel','auth.user':'Login','auth.password':'Password','auth.btn':'Sign in','auth.key':'Sign in with a key',
     'auth.bad':'Sign-in failed: {msg}','auth.logout':'Sign out','auth.logoutTip':'Sign out: this session stops working',
-    'auth.required':'Sign in to change the panel','auth.in':'Signed in as {name}','btn.edit':'Edit','settings.sessionUntil':'your session ends at {time}','settings.readonly':'Viewer: settings are read only','auth.viewonly':'Viewer: read only',
+    'auth.required':'Sign-in required','auth.in':'Signed in as {name}','btn.edit':'Edit','settings.sessionUntil':'your session ends at {time}',
     'auth.insecure':'The browser will not use hardware keys here: HTTPS (or localhost) is required',
     'settings.passkey':'Hardware key sign-in','settings.passkey.hint':'Allow signing in with a FIDO2/WebAuthn key instead of a password',
     'keys.none':'No keys',
@@ -243,14 +237,12 @@ const I18N = {
     'keys.bad':'Key was not registered: {msg}','keys.nick':'Name this key','keys.unnamed':'key without a name',
     'dlg.adminEdit':'Account {name}','dlg.adminEdit.login':'Login','dlg.adminEdit.password':'New password (at least 8 characters)',
     'dlg.adminEdit.passwordOwnOnly':'Only {name} can change this account password: the panel never changes another account password','dlg.adminEdit.passwordHint':'Only the account owner can change its password; changing it stops every session of that account.',
-    'dlg.adminEdit.role':'Role','dlg.adminEdit.roleHint':'Only the panel owner changes roles and statuses. The owner role comes with the panel.',
     'dlg.adminEdit.status':'Status','dlg.adminEdit.keys':'Keys','dlg.adminEdit.delete':'Delete account',
     'dlg.adminEdit.save':'Save','dlg.adminEdit.disabled':'Disabled','dlg.adminEdit.active':'Active',
-    'dlg.adminEdit.self':'You cannot disable or delete your own account','dlg.adminEdit.owner':'The owner cannot be changed, disabled or deleted',
     'toast.adminSaved':'Account updated','toast.adminDisabled':'Account disabled','toast.adminEnabled':'Account enabled',
     'toast.loggedOut':'Signed out',
     'toast.themeLocal':'Theme saved in the browser, the server answered with an error: {msg}',
-    'toast.passwords':'Passwords do not match','toast.noNodes':'Add a node first',
+    'toast.noNodes':'Add a node first',
     'toast.portTaken':'Port {port} on node {node} is already taken','toast.portDup':'Port {port} on node {node} repeats inside the chain',
     'confirm.delAdmin':'Delete this administrator? They will no longer be able to sign in.',
     'confirm.delHost':'Delete this host?','confirm.delChain':'Delete this chain? Its host and the inbounds on the nodes will be removed too.',
@@ -278,11 +270,11 @@ const timeStr = d => d.toLocaleTimeString(LOCALE[lang], {hour:'2-digit', minute:
 /* ---------- Сессия, учётка и роль ----------
    Панель без учётки не работает: бэкенд требует сессию на всех /api (кроме /api/login,
    /api/fido/* и /api/meta). Токен живёт в localStorage, поэтому вход переживает перезагрузку.
-   Роль решает, что видно в интерфейсе: наблюдателю скрыты все органы записи — панель для него
-   только читается (бэкенд всё равно не пропустит, но человек не должен спотыкаться о кнопки). */
+   Роли в панели две: владелец и администратор. Пишет всякий вошедший; разница только
+   в разборе чужих аккаунтов — это умеет лишь владелец. */
 const KEY_TOKEN = 'token', KEY_ME = 'medusa:me';
 let me = null;
-const canWrite = () => !!me && me.role !== 'viewer';
+const canWrite = () => !!me;
 const canManage = () => !!me && me.role === 'owner';
 const store = (k, v) => { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 const tokenGet = () => { try { return localStorage.getItem(KEY_TOKEN) || ''; } catch { return ''; } };
@@ -301,7 +293,6 @@ function renderAccount(){
   $('#acctname').textContent = me.username;
   const role = $('#acctrole');
   role.textContent = roleLabel(me.role);
-  role.title = me.role === 'viewer' ? t('auth.viewonly') : '';   // наблюдателю поясняем, что «роль» это только чтение
   $('#acctava').textContent = (String(me.username||'?')[0]||'?').toUpperCase();
 }
 
@@ -373,7 +364,7 @@ async function fidoCreate(options){
 }
 
 async function fidoGet(options){
-  const pub = {...options, rpId:options.rp.id, challenge:unb64u(options.challenge), userVerification:'preferred'};
+  const pub = {...options, challenge:unb64u(options.challenge), userVerification:'preferred'};
   if(options.allowCredentials) pub.allowCredentials = options.allowCredentials.map(c=>({id:unb64u(c.id), type:'public-key'}));
   const answer = await navigator.credentials.get({publicKey:pub});
   return { id: b64u(answer.rawId), response:{ clientDataJSON:b64u(answer.response.clientDataJSON),
@@ -406,20 +397,19 @@ const mock = {
     {id:5,name:'tv',token:'q9r8s7t6u5',status:'disabled',used:0,client:'v2rayng'},
   ],
   nodes: [
-    {id:1,name:'home',address:'10.8.0.1',online:true,users:4,traffic:88*GB,xray:'25.8.3',apiPort:9443,apiPath:'/node/health',keySet:true,keyMasked:'sk-api…3f9c2-81b7a',fingerprint:'3f9c2-81b7a',agent:'0.1.0',seenAt:Date.now()-4*60*1000},
-    {id:2,name:'vps-fi',address:'10.8.0.2',online:true,users:5,traffic:107*GB,xray:'25.8.3',apiPort:9443,apiPath:'/node/health',keySet:true,keyMasked:'sk-api…c40b9-1de75',fingerprint:'c40b9-1de75',agent:'0.1.0',seenAt:Date.now()-90*1000},
-    {id:3,name:'vps-de',address:'10.8.0.3',online:false,users:3,traffic:14*GB,xray:null,apiPort:9443,apiPath:'/node/health',keySet:true,keyMasked:'sk-api…7d301-90cb2',fingerprint:'7d301-90cb2',agent:null,seenAt:0},
+    {id:1,name:'home',address:'10.8.0.1',online:true,users:4,traffic:88*GB,xray:'25.8.3',apiPort:9443,apiPath:'/node/health',keySet:true,keyMasked:'sk-api…3f9c2-81b7a',fingerprint:'3f9c2-81b7a',agent:'0.1.0',seenAt:Date.now()-4*60*1000,configRev:4,configDirty:false,appliedRev:4,appliedAt:Date.now()-4*60*1000,applyError:null},
+    {id:2,name:'vps-fi',address:'10.8.0.2',online:true,users:5,traffic:107*GB,xray:'25.8.3',apiPort:9443,apiPath:'/node/health',keySet:true,keyMasked:'sk-api…c40b9-1de75',fingerprint:'c40b9-1de75',agent:'0.1.0',seenAt:Date.now()-90*1000,configRev:2,configDirty:true,appliedRev:1,appliedAt:Date.now()-30*60e3,applyError:null},
+    {id:3,name:'vps-de',address:'10.8.0.3',online:false,users:3,traffic:14*GB,xray:null,apiPort:9443,apiPath:'/node/health',keySet:true,keyMasked:'sk-api…7d301-90cb2',fingerprint:'7d301-90cb2',agent:null,seenAt:0,configRev:1,configDirty:false,appliedRev:0,appliedAt:null,applyError:'нода не ответила: ConnectError'},
   ],
   hosts: [
-    {id:1,name:'FI Reality',node:'vps-fi',protocol:'vless',port:443,network:'tcp',security:'reality',chain:null},
-    {id:2,name:'FI TLS WS',node:'vps-fi',protocol:'vless',port:8443,network:'ws',security:'tls',chain:null},
-    {id:3,name:'DE Reality',node:'vps-de',protocol:'vless',port:443,network:'tcp',security:'reality',chain:null},
-    {id:4,name:'Home VMess',node:'home',protocol:'vmess',port:2083,network:'ws',security:'tls',chain:null},
+    {id:1,name:'FI Reality',node:'vps-fi',address:'fi.example.com',protocol:'vless',port:443,network:'tcp',security:'reality',chain:null},
+    {id:2,name:'FI TLS WS',node:'vps-fi',address:'fi.example.com',protocol:'vless',port:8443,network:'ws',security:'tls',chain:null},
+    {id:3,name:'DE Reality',node:'vps-de',address:'de.example.com',protocol:'vless',port:443,network:'tcp',security:'reality',chain:null},
+    {id:4,name:'Home VMess',node:'home',address:'',protocol:'vmess',port:2083,network:'ws',security:'tls',chain:null},
   ],
   admins: [
     {id:1,username:'admin',role:'owner',status:'active',last:Date.now()-5*60e3,self:true},
     {id:2,username:'mila',role:'admin',status:'active',last:Date.now()-3*DAY},
-    {id:3,username:'guest',role:'viewer',status:'disabled',last:0},
   ],
   settings: {...SETTINGS_DEFAULTS, ...(lsGet(KEY_SAVED) || {})},
   chains: [
@@ -489,6 +479,21 @@ function mockCall(method, path, body){
     return Promise.resolve(mock.settings);
   }
   if(kind==='nodes' && sub==='check') return Promise.resolve(mockNodeCheck(id));
+  if(kind==='nodes' && sub==='config'){
+    const node = mock.nodes.find(x=>x.id===id) || {};
+    const hosts = mock.hosts.filter(h=>!h.chain && h.node===node.name);
+    const active = mock.users.filter(u=>u.status==='active');
+    const inbounds = hosts.map(h=>{
+      const clients = active.map(u=>h.security==='reality'
+        ? {password:'••••••••', shortIds:['••••']}
+        : {id:'••••••••-••••'});
+      const stream = {network:h.network, security:h.security};
+      if(h.security==='reality')
+        stream.realitySettings = {serverNames:[h.address||'•••'], privateKey:'скрыто панелью'};
+      return {tag:'medusa-host-'+h.id, port:h.port, protocol:h.protocol, settings:{clients:clients}, streamSettings:stream};
+    });
+    return Promise.resolve({config:{log:{loglevel:'warning'}, inbounds:inbounds, outbounds:[{protocol:'freedom',tag:'direct'}]}});
+  }
   if(kind==='nodes' && sub==='key'){
     const n = mock.nodes.find(x=>x.id===id);
     return Promise.resolve({key:'sk-api-в-тестовом-режиме-ключ-вымышленный', fingerprint:n?n.fingerprint:null});
@@ -813,7 +818,7 @@ const pages = {
       <td><span class="badge ${sec[h.security]}">${esc(h.security)}</span></td>`;
     const route = h=>{ const c = cmap[h.chain]; return c ? `<span class="route">${c.hops.map(x=>esc(x.node)).join(ic('chev'))}</span>` : esc(h.node); };
     const group = (icon,title,n,btn,inner)=>`<section class="grp"><div class="sect"><h3>${ic(icon)}${title}<span class="count">${n}</span></h3>${btn}</div>${inner}</section>`;
-    const dRows = direct.map(h=>`<tr><td>${esc(h.name)}</td><td>${esc(h.node)}</td>${cfg(h)}
+    const dRows = direct.map(h=>`<tr><td>${esc(h.name)}</td><td>${h.address?esc(h.address):`<span class="mono">${esc(h.node)}</span>`}</td><td>${esc(h.node)}</td>${cfg(h)}
       <td><div class="acts">${w?`<button class="btn sm del" data-a="hdel" data-id="${h.id}">${ic('trash')}${t('btn.delete')}</button>`:''}</div></td></tr>`).join('');
     const cRows = viaChain.map(h=>`<tr><td>${esc(h.name)}</td><td>${route(h)}</td>${cfg(h)}
       <td><div class="acts"><button class="btn sm" data-a="gochain">${ic('link')}${t('btn.chain')}</button></div></td></tr>`).join('');
@@ -821,14 +826,14 @@ const pages = {
     const cols = [t('cfg.protocol'),t('cfg.port'),t('cfg.transport'),t('cfg.security'),''];
     return `<div class="head"><h2>${t('nav.hosts')}</h2></div>`+
       group('globe',t('hosts.direct'),direct.length,w?`<button class="btn pri" data-a="newhost">${ic('plus')}${t('btn.newHost')}</button>`:'',
-        tbl([t('th.title'),t('th.node'),...cols],dRows,t('empty.direct')))+
+        tbl([t('th.title'),t('th.address'),t('th.node'),...cols],dRows,t('empty.direct')))+
       group('link',t('hosts.viaChains'),viaChain.length,w?`<button class="btn pri" data-a="newchain">${ic('plus')}${t('btn.newChain')}</button>`:'',
         tbl([t('th.title'),t('th.route'),...cols],cRows,t('empty.viaChain')));
   },
   async admins(){
     const list = await call('GET','/api/admins');
     /* кому доступна строка: владельца не трогает никто, свои пределы у администратора —
-       только своя учётка, наблюдателю остаётся только смотреть на список */
+       только своя учётка */
     const reachable = a => a.self || (canManage() && a.role !== 'owner');
     const rows = list.map(a=>`<tr>
         <td><div class="who"><span class="ava">${esc(a.username[0].toUpperCase())}</span><div>${esc(a.username)}${a.self?` <span class="badge b-off">${t('role.self')}</span>`:''}</div></div></td>
@@ -842,25 +847,24 @@ const pages = {
   async settings(){
     try{ savedSettings = {...savedSettings, ...(await call('GET','/api/settings'))}; }catch(e){ toast(t('toast.loadSettings',{msg:e.message})) }
     setDraft(diffSettings(settingsNow()));      // отбрасываем то, что уже совпадает с сохранённым
-    const s = settingsNow(), w = canWrite();
-    const ro = w ? '' : 'disabled';
+    const s = settingsNow();
     const field = (title,hint,input)=>`<div class="field"><div><div class="ft">${title}</div><div class="sub">${hint}</div></div>${input}</div>`;
-    const inp = (name,val,extra='')=>`<input name="${name}" value="${esc(val)}" ${extra} ${ro}>`;
+    const inp = (name,val,extra='')=>`<input name="${name}" value="${esc(val)}" ${extra}>`;
     const num = (name,val,min,max)=>inp(name,val,`type="number" min="${min}" max="${max}" required`);
     const themes = {auto:t('theme.auto'),light:t('theme.light'),dark:t('theme.dark')};
-    const theme = `<select name="theme" ${ro}>${Object.entries(themes).map(([k,v])=>`<option value="${k}" ${k===s.theme?'selected':''}>${v}</option>`).join('')}</select>`;
+    const theme = `<select name="theme" >${Object.entries(themes).map(([k,v])=>`<option value="${k}" ${k===s.theme?'selected':''}>${v}</option>`).join('')}</select>`;
     /* галочка настройки рисуется сама (см. style.css): квадрат в языке панели,
        галочка — штрихом, а не системной галочкой браузера */
-    const passkey = `<input name="passkeyEnabled" type="checkbox" ${s.passkeyEnabled?'checked':''} ${ro}>`;
+    const passkey = `<input name="passkeyEnabled" type="checkbox" ${s.passkeyEnabled?'checked':''}>`;
     const session = me && me.expiresAt ? ` · ${t('settings.sessionUntil',{time:timeStr(new Date(me.expiresAt))})}` : '';
-    return `<div class="head"><h2>${t('settings.title')}</h2>${w?'':`<span class="sub">${t('settings.readonly')}</span>`}</div>
+    return `<div class="head"><h2>${t('settings.title')}</h2></div>
       <form id="sform" class="sform" autocomplete="off">
         <div class="panel pad"><h3 class="sh">${ic('gear')}${t('settings.general')}</h3>
           ${field(t('settings.panelName'),t('settings.panelName.hint'),inp('panelName',s.panelName,'required maxlength="32"'))}
           ${field(t('settings.theme'),t('settings.theme.hint'),theme)}
         </div>
         <div class="panel pad"><h3 class="sh">${ic('link')}${t('settings.subs')}</h3>
-          ${field(t('settings.subUrl'),t('settings.subUrl.hint'),inp('subUrl',s.subUrl,'type="url" required placeholder="https://sub.example.com"'))}
+          ${field(t('settings.subUrl'),t('settings.subUrl.hint'),inp('subUrl',s.subUrl,'type="url" required placeholder="http://127.0.0.1:8000/sub"'))}
           ${field(t('settings.subTitle'),t('settings.subTitle.hint'),inp('subTitle',s.subTitle,'required maxlength="48"'))}
           ${field(t('settings.subInterval'),t('settings.subInterval.hint'),num('subInterval',s.subInterval,1,168))}
         </div>
@@ -871,9 +875,8 @@ const pages = {
         <div class="panel pad"><h3 class="sh">${ic('shield')}${t('settings.security')}</h3>
           ${field(t('settings.sessionHours'),t('settings.sessionHours.hint')+session,num('sessionHours',s.sessionHours,1,720))}
           ${field(t('settings.passkey'),t('settings.passkey.hint'),passkey)}
-          ${w?field(t('settings.myPassword'),t('settings.myPassword.hint'),`<button type="button" class="btn" data-a="mypw">${ic('key')}${t('btn.changePassword')}</button>`):''}
         </div>
-        <div class="savebar" ${w?'':'hidden'}>
+        <div class="savebar">
           <span class="note" id="snote" ${draft?'':'hidden'}>${t('settings.unsaved')}</span>
           <button type="button" class="btn" id="scancel" data-a="sdiscard" ${draft?'':'hidden'}>${t('btn.discard')}</button>
           <button class="btn pri" id="ssave" ${draft?'':'disabled'}>${ic('check')}${t('btn.save')}</button>
@@ -960,9 +963,9 @@ document.addEventListener('keydown', e=>{
 $('#view').addEventListener('click', async e=>{
   const b = e.target.closest('[data-a]'); if(!b) return;
   const a = b.dataset.a, id = +b.dataset.id;
-  /* диалог своей учётки наблюдателю нужен (пароль, свои ключи): там лишнее выключено,
+  /* диалог своей учётки нужен всякому вошедшему: пароль, свои ключи;
      а бэкенд и так не пропустит правку чужого */
-  const WRITE_ACTIONS = ['new','newnode','newhost','newchain','anew','del','toggle','hdel','cdel','atoggle','adel','mypw','ncheck','ndelete'];
+  const WRITE_ACTIONS = ['new','newnode','newhost','newchain','anew','del','toggle','hdel','cdel','atoggle','adel','ncheck','ndelete'];
   if(WRITE_ACTIONS.includes(a) && !canWrite()) return toast(t('auth.required'));
   try{
     if(a==='new'){ $('#dlg').returnValue=''; return $('#dlg').showModal(); }
@@ -974,7 +977,6 @@ $('#view').addEventListener('click', async e=>{
     if(a==='nedit') return void await openNodeEdit(id);
     if(a==='anew') return void await openAdmin();
     if(a==='aedit') return openAdminEdit(id);
-    if(a==='mypw'){ const own = me || (await call('GET','/api/admins')).find(x=>x.self); return openPw(own.id, own.username); }
     if(a==='sdiscard') return discardDraft();
     if(a==='hdel'){ if(!confirm(t('confirm.delHost'))) return; await call('DELETE','/api/hosts/'+id); toast(t('toast.deleted')); return show(); }
     if(a==='cdel'){ if(!confirm(t('confirm.delChain'))) return; await call('DELETE','/api/chains/'+id); toast(t('toast.chainDeleted')); return show(); }
@@ -1062,27 +1064,31 @@ async function openNodeEdit(id){
   nodeBadge(n.online);
   nfill('name', n.name); nfill('address', n.address); nfill('apiPort', n.apiPort);
   // API-ключ здесь вписан целиком — как адрес и порт: его правят, а не гадают по маске
-  /* API-ключ — это ключ управления нодой: наблюдателю его не показывают,
-     ему хватает маски и отпечатка, чтобы понять, та ли это нода */
-  if(n.keySet && canWrite()){
+  /* API-ключ здесь вписан целиком — как адрес и порт: его правят, а не гадают по маске */
+  if(n.keySet){
     const r = await call('GET',`/api/nodes/${n.id}/key`);
     keyKnown = r.key; nfill('apiKey', keyKnown);
-    $('#ne_key').textContent = n.fingerprint ? t('dlg.nodeEdit.fp', {fp: n.fingerprint}) : t('dlg.nodeEdit.keyMissing');
   } else {
-    keyKnown = ''; nfill('apiKey', canWrite() ? '' : (n.keyMasked || ''));
-    $('#ne_key').textContent = canWrite()
-      ? (n.fingerprint ? t('dlg.nodeEdit.fp', {fp: n.fingerprint}) : t('dlg.nodeEdit.keyMissing'))
-      : (n.fingerprint ? `${t('dlg.nodeEdit.keyHidden')} · ${t('dlg.nodeEdit.fp', {fp: n.fingerprint})}` : t('dlg.nodeEdit.keyHidden'));
+    keyKnown = ''; nfill('apiKey', '');
   }
+  $('#ne_key').textContent = n.fingerprint ? t('dlg.nodeEdit.fp', {fp: n.fingerprint}) : t('dlg.nodeEdit.keyMissing');
   $('#ne_agent').innerHTML = missing(n.agent);
   $('#ne_xray').innerHTML = missing(n.xray);
   $('#ne_seen').textContent = n.seenAt ? ago(n.seenAt) : t('node.neverChecked');
+  /* конфиг — свёрнутый просмотр: разворачиваешь, панель показывает то, что сама
+     собрала и уже отправила (или собирается отправить). Правок здесь нет: конфиг
+     рождается из хостов и пользователей, а не из текстового поля */
+  const cfgBox = $('#ne_cfg');
+  cfgBox.open = false;
+  $('#ne_cfgjson').textContent = t('node.configLoading');
+  cfgBox.ontoggle = async () => {
+    if(!cfgBox.open) return;
+    try{
+      const r = await call('GET',`/api/nodes/${n.id}/config`);
+      $('#ne_cfgjson').textContent = JSON.stringify(r.config, null, 2);
+    }catch(err){ $('#ne_cfgjson').textContent = String(err && err.message || err); }
+  };
   const box = $('#ne_status'); box.hidden = true; box.textContent = ''; box.classList.remove('bad');
-  const w = canWrite();                       // наблюдателю остаётся только рассматривать карточку
-  $('#nedlg').querySelectorAll('[data-f]').forEach(i=>i.readOnly = !w);
-  $('#nedlg').querySelector('[data-a="ndelete"]').hidden = !w;
-  $('#nedlg').querySelector('[data-a="ncheck"]').hidden = !w;
-  $('#nedlg').querySelector('button[value="ok"]').hidden = !w;
   $('#nedlg').returnValue = ''; $('#nedlg').showModal();
 }
 $('#nedlg').addEventListener('click', async e=>{
@@ -1111,7 +1117,6 @@ $('#nedlg').addEventListener('click', async e=>{
 });
 $('#nedlg').addEventListener('close', async ()=>{
   if($('#nedlg').returnValue!=='ok') return edited ? show() : undefined;
-  if(!canWrite()) return show();              // Enter в поле наблюдения не должен ничего менять
   const form = NEF();
   const body = {name:FV(form,'name'), address:FV(form,'address'), apiPort:+FV(form,'apiPort')};
   // API-ключ отправляем только если его правда поменяли: иначе панель сочтёт, что
@@ -1161,7 +1166,7 @@ $('#hform').addEventListener('submit', e=>{
 $('#hdlg').addEventListener('close', async ()=>{
   if($('#hdlg').returnValue!=='ok') return;
   try{
-    await call('POST','/api/hosts',{name:$('#hform [name=name]').value, node:$('#hnode').value, ...readCfg($('#hcfg'))});
+    await call('POST','/api/hosts',{name:$('#hform [name=name]').value, node:$('#hnode').value, address:($('#hform [name=address]').value||'').trim()||null, ...readCfg($('#hcfg'))});
     toast(t('toast.hostCreated')); show();
   }catch(err){ toast(t('toast.error',{msg:err.message})) }
 });
@@ -1223,22 +1228,7 @@ function openAdmin(){ $('#aform').reset(); $('#adlg').returnValue = ''; $('#adlg
 $('#adlg').addEventListener('close', async ()=>{
   if($('#adlg').returnValue!=='ok') return;
   const f = new FormData($('#aform'));
-  try{ await call('POST','/api/admins',{username:f.get('username'),password:f.get('password'),role:f.get('role')}); toast(t('toast.adminCreated')); show(); }
-  catch(err){ toast(t('toast.error',{msg:err.message})) }
-});
-let pwTarget = null;
-function openPw(id, name){
-  pwTarget = id; $('#pwtitle').textContent = t('dlg.pw.for',{name});
-  $('#pwform').reset(); $('#pwdlg').returnValue = ''; $('#pwdlg').showModal();
-}
-$('#pwform').addEventListener('submit', e=>{
-  if(e.submitter && e.submitter.value!=='ok') return;
-  const f = new FormData($('#pwform'));
-  if(f.get('p1')!==f.get('p2')){ e.preventDefault(); toast(t('toast.passwords')); }
-});
-$('#pwdlg').addEventListener('close', async ()=>{
-  if($('#pwdlg').returnValue!=='ok') return;
-  try{ await call('PATCH','/api/admins/'+pwTarget,{password:new FormData($('#pwform')).get('p1')}); toast(t('toast.passwordChanged')); }
+  try{ await call('POST','/api/admins',{username:f.get('username'),password:f.get('password')}); toast(t('toast.adminCreated')); show(); }
   catch(err){ toast(t('toast.error',{msg:err.message})) }
 });
 
@@ -1292,7 +1282,7 @@ function applySettings(s){
   $('#pname').textContent = name;
   document.title = name;
   applyTheme(s.theme || 'auto');
-  if(s.subUrl) SUB_BASE = s.subUrl.replace(/\/+$/,'') + '/sub/';
+  if(s.subUrl) SUB_BASE = s.subUrl.replace(/\/+$/,'') + '/';
 }
 
 /* предпросмотр: название и тема меняются сразу, как только их выбрали */
@@ -1402,19 +1392,12 @@ async function openAdminEdit(id){
   const manage = canManage() && !owner;
   $('#amtitle').textContent = t('dlg.adminEdit',{name:a.username});
   $('#amlogin').value = a.username;
-  /* у владельца своя роль в списке — иначе select показал бы «администратор» на чужих глазах */
-  $('#amrole').innerHTML = (owner ? `<option value="owner">${esc(roleLabel('owner'))}</option>` : '')
-    + `<option value="admin">${esc(roleLabel('admin'))}</option><option value="viewer">${esc(roleLabel('viewer'))}</option>`;
-  $('#amrole').value = a.role;
-  $('#amrole').disabled = !manage;
   $('#amstatus').innerHTML = `<option value="active">${t('dlg.adminEdit.active')}</option><option value="disabled">${t('dlg.adminEdit.disabled')}</option>`;
   $('#amstatus').value = a.status;
   $('#amstatus').disabled = !manage || mine;
-  $('#amrolehint').textContent = manage ? t('dlg.adminEdit.roleHint') : t('admins.lockTip');
   $('#ampw').value = '';
   $('#ampw').disabled = !mine;
   $('#ampwhint').textContent = mine ? t('dlg.adminEdit.passwordHint') : t('dlg.adminEdit.passwordOwnOnly',{name:a.username});
-  $('#amhint').textContent = owner ? t('dlg.adminEdit.owner') : (mine ? t('dlg.adminEdit.self') : '');
   $('#amdel').hidden = !manage || mine;
   $('#amkeynick').disabled = !(mine || manage);
   $('#amkeyadd').disabled = !(mine || manage);
@@ -1431,7 +1414,6 @@ $('#amdlg').addEventListener('submit', async e=>{
   const body = {};
   const pw = $('#ampw').value;
   if(mine && pw) body.password = pw;
-  if(manage && $('#amrole').value !== a.role) body.role = $('#amrole').value;
   if(manage && !mine && $('#amstatus').value !== a.status) body.status = $('#amstatus').value;
   if(!Object.keys(body).length) return $('#amdlg').close();
   try{

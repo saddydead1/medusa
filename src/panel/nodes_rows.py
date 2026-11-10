@@ -10,7 +10,8 @@ import sqlite3
 from src.core.api_keys import api_key_fingerprint, mask_api_key
 
 NODE_COLUMNS = ("id, name, address, online, xray_version, users_count, traffic_bytes, "
-                "api_port, api_key, agent_version, seen_at")
+                "api_port, api_key, agent_version, seen_at, "
+                "config_rev, config_dirty, applied_rev, applied_at, apply_error")
 
 
 def as_dict(row: sqlite3.Row) -> dict:
@@ -30,6 +31,12 @@ def as_dict(row: sqlite3.Row) -> dict:
         "fingerprint": api_key_fingerprint(api_key) if api_key else None,
         "agent": row["agent_version"],
         "seenAt": row["seen_at"] or None,
+        # конфиг Xray: чего хочет панель и что нода подтвердила
+        "configRev": row["config_rev"],
+        "configDirty": bool(row["config_dirty"]),
+        "appliedRev": row["applied_rev"],
+        "appliedAt": row["applied_at"] or None,
+        "applyError": row["apply_error"],
     }
 
 

@@ -10,6 +10,7 @@
    8. Диалоги, тосты
    9. Анимации
    10. Адаптив
+   11. Страница подписки (/sub/<токен>, вне панели)
    ========================================================================== */
 
 /* ---------- 1. Токены ---------- */
@@ -204,6 +205,7 @@ aside .acct .btn{margin-left:auto;flex:none}
 
 /* ---------- диалог аккаунта и список аппаратных ключей ---------- */
 #amdlg{width:min(540px,92vw)}
+#amdlg .row.split{margin-top:26px}
 .keys{margin:14px 0 2px;display:flex;flex-direction:column;gap:8px}
 .keys h4{margin:0 0 2px;font-size:13.5px}
 .keys .row{align-items:center}
@@ -217,7 +219,10 @@ aside .acct .btn{margin-left:auto;flex:none}
    скругление), а при включении — акцентная заливка и штрих-галочка фоном (Chrome не
    рисует ::after у input, поэтому галочка лежит картинкой). */
 .sform .field input[type=checkbox]{
+  /* общее правило input,select даёт padding:9px 11px — без обнуления полей
+     квадрат 20x20 превращался в прямоугольник 24x20 (box-sizing:border-box) */
   appearance:none;-webkit-appearance:none;justify-self:end;flex:none;width:20px;height:20px;
+  box-sizing:border-box;padding:0;
   border:1px solid var(--line);border-radius:7px;background:var(--panel);cursor:pointer;
   transition:border-color var(--t),background-color var(--t),box-shadow var(--t);
 }
@@ -532,6 +537,16 @@ label input,label select{display:block;width:100%;margin-top:6px}
 .ninfo{margin:2px 0 16px;display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px}
 .ninfo dt{color:var(--muted)}
 .ninfo dd{margin:0;text-align:right;font-weight:600;color:var(--ink);overflow-wrap:anywhere}
+/* просмотр конфига ноды: свёрнуто по умолчанию, разворот — только чтобы посмотреть.
+   Правок здесь нет намеренно: конфиг рождается из хостов и пользователей целиком */
+#nedlg details.cfgview{margin:2px 0 14px;border:1px solid var(--line);border-radius:var(--r-md);
+  background:var(--surface-2);overflow:hidden}
+.cfgview summary{padding:11px 14px;font-size:13px;font-weight:600;color:var(--ink-2);cursor:pointer;list-style:none}
+.cfgview summary::-webkit-details-marker{display:none}
+.cfgview summary::before{content:"›";display:inline-block;margin-right:9px;color:var(--muted);transition:transform var(--t)}
+.cfgview[open] summary::before{transform:rotate(90deg)}
+.cfgview pre{margin:0;padding:12px 14px;border-top:1px solid var(--line);font-family:var(--mono);
+  font-size:11.5px;line-height:1.55;color:var(--ink-2);max-height:320px;overflow:auto;white-space:pre-wrap}
 .nstatus{margin:0 0 14px;padding:10px 12px;border-radius:var(--r-md);font-size:13px;font-weight:600;
   background:rgba(46,196,124,.13);border:1px solid rgba(46,196,124,.38)}
 .nstatus.bad{background:rgba(226,88,88,.13);border-color:rgba(226,88,88,.38)}
@@ -627,3 +642,11 @@ dialog[open]::backdrop{animation:fadein .26s}
   #toast{left:16px;right:16px;bottom:16px;max-width:none;transform:translateY(12px)}
   #toast.show{transform:none}
 }
+
+/* ---------- 11. Страница подписки ----------
+   Её отдаёт бэкенд отдельной HTML-страницей (src/panel/routers/subs.py):
+   тот же язык стиля, но без сайдбара — только карточки статистики, хосты и цепочки. */
+.subpg main{display:block;max-width:1080px;margin:0 auto}
+.subpg .stat b{font-size:20px}
+.subpg .head h2{display:flex;align-items:center;gap:12px}
+.subpg .empty b{display:block;font-size:15px;font-weight:650;color:var(--ink);margin-bottom:6px}

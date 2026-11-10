@@ -14,7 +14,7 @@ await p.waitForTimeout(900);
 
 const link = p.locator('.repolink');
 ok(await link.count()===1, 'кнопка GitHub в подвале сайдбара');
-ok((await link.getAttribute('href'))==='https://git.sonoma.su/saddydead1/medusa', 'ссылка ведёт куда надо: ' + await link.getAttribute('href'));
+ok((await link.getAttribute('href'))==='https://github.com/saddydead1/medusa', 'ссылка ведёт куда надо: ' + await link.getAttribute('href'));
 ok((await link.getAttribute('target'))==='_blank', 'открывается в новой вкладке');
 const [linkBox, modeBox] = await Promise.all([p.locator('.repolink').boundingBox(), p.locator('#mode').boundingBox()]);
 ok(linkBox.y + linkBox.height <= modeBox.y + 2, `GitHub выше версии (y=${Math.round(linkBox.y)} против y=${Math.round(modeBox.y)})`);

@@ -149,7 +149,7 @@ def registration_options(conn: sqlite3.Connection, admin: sqlite3.Row, request: 
         "challenge": challenge,
         "pubKeyCredParams": [{"type": "public-key", "alg": alg} for alg in ALGORITHMS],
         "timeout": 120_000,
-        "attestation": {"none", "packed"},
+        "attestation": "none",
         "authenticatorSelection": {"residentKey": "required", "userVerification": "preferred"},
     }
 

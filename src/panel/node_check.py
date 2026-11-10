@@ -14,6 +14,7 @@ import sqlite3
 from typing import Any
 
 from src.core.api_keys import api_key_fingerprint
+from src.panel import config_push
 from src.panel.db import now_ms
 from src.panel.nodes_client import NodeError, NodeTarget, node_health, node_identity
 from src.panel.nodes_rows import NODE_COLUMNS, as_dict
@@ -82,6 +83,10 @@ def check_node(conn: sqlite3.Connection, node_id: int) -> dict[str, Any]:
                                        f"а у панели {report['panelFingerprint']}: API-ключ разный")
 
     store_report(conn, node_id, report)
+    # связь есть и конфиг помечен несвежим — доставим его сразу, этот поход уже удался
+    # и второй раз стучаться незачем
+    if report["ok"] and row["config_dirty"]:
+        report["apply"] = config_push.push_node(conn, node_id)
     report["node_row"] = as_dict(fetch_node(conn, node_id))
     return report
 

@@ -6,9 +6,9 @@
   отключить, удалить или сменить ему роль; пароль меняет только он сам.
 * `admin` — администратор: может всё в панели (ноды, хосты, цепочки, пользователи,
   настройки), но не трогает чужие аккаунты. Своей учёткой — да: свой пароль, свои ключи.
-* `viewer` — наблюдатель: смотрит всё и не меняет ничего.
 
-Заводит, удаляет, отключает людей и меняет роли только владелец.
+Заводит, удаляет, отключает людей только владелец. Новая учётка всегда администратор:
+роли в панели больше никто не выбирает.
 """
 from __future__ import annotations
 
@@ -145,7 +145,7 @@ def list_admins(
                                   (SELECT COUNT(*) FROM sessions s WHERE s.admin_id = a.id) sessions,
                                   (SELECT COUNT(*) FROM admin_keys k WHERE k.admin_id = a.id) keys
                            FROM admins a
-                           ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, username""").fetchall()
+                           ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, username""").fetchall()
     return [as_dict(r, current, r["keys"], r["sessions"]) for r in rows]
 
 
@@ -156,13 +156,13 @@ def create_admin(
     current: sqlite3.Row | None = Depends(writer),
 ) -> dict:
     """Новых людей в панель заводит только владелец: администратор не вправе сам плодить
-    себе равных, а наблюдателя — превращать в администратора."""
+    себе равных. Новая учётка всегда администратор — роль не выбирается."""
     if not can_manage(current):
         raise HTTPException(status_code=403, detail="новых администраторов создаёт только владелец панели")
     try:
         conn.execute(
-            "INSERT INTO admins (username, password_hash, role, status, last_login, created_at) VALUES (?,?,?,?,0,?)",
-            (body.username, hash_password(body.password), body.role, "active", now_ms()),
+            "INSERT INTO admins (username, password_hash, role, status, last_login, created_at) VALUES (?,?,'admin','active',0,?)",
+            (body.username, hash_password(body.password), now_ms()),
         )
     except sqlite3.IntegrityError:
         raise conflict(f"администратор «{body.username}» уже есть")
@@ -181,11 +181,6 @@ def patch_admin(
     row = fetch_one(conn, "SELECT * FROM admins WHERE id = ?", (admin_id,))
     account_guard(current, row, "этот аккаунт")
 
-    if body.role is not None:
-        if not can_manage(current):
-            raise HTTPException(status_code=403, detail="роль меняет только владелец панели")
-        if row["role"] == "owner":
-            raise conflict("роль владельца менять нельзя: он создаётся вместе с панелью")
     if body.status is not None:
         if not can_manage(current):
             raise HTTPException(status_code=403, detail="отключает и включает администраторов только владелец")

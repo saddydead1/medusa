@@ -56,7 +56,6 @@ async function spawnNode(port, apiKey, stateFile){
 const stopNode = proc => new Promise(resolve => { proc.once('exit', resolve); proc.kill('SIGTERM'); });
 /* учётка владельца: панель теперь без сессии не работает, поэтому тест входит сам */
 const OWNER = {username: process.env.MEDUSA_ADMIN_USER || 'admin', password: process.env.MEDUSA_ADMIN_PASSWORD || 'testpass12345'};
-const VIEWER = {username: 'gler', password: 'glerpassword1'};
 const api = async (path, method = 'GET', body = undefined, token = ownerToken) => {
   const r = await fetch(BASE + path, {method, headers: {'content-type': 'application/json', ...(token ? {authorization: `Bearer ${token}`} : {})},
     body: body === undefined ? undefined : JSON.stringify(body)});
@@ -306,6 +305,7 @@ await openDlg('#hdlg');
 await page.evaluate(() => {
   const set = (k, v) => { const el = document.querySelector(`#hcfg [data-k="${k}"]`); if(el){ el.value = v; el.dispatchEvent(new Event('change', {bubbles: true})); } };
   document.querySelector('#hform [name=name]').value = 'FI Reality';
+  document.querySelector('#hform [name=address]').value = 'fi.example.net';
   document.querySelector('#hnode').value = 'vps-fi';
   document.querySelector('#hnode').dispatchEvent(new Event('change'));
   set('protocol', 'vless'); set('security', 'reality'); set('network', 'tcp'); set('port', 443);
@@ -337,10 +337,10 @@ ok(await page.locator('#view [data-a=hdel]').count() === 1, 'хост цепоч
 await go('admins');
 await page.click('[data-a="anew"]');
 await openDlg('#adlg');
-await fill('#adlg', {username: 'mila', password: 'viewerpass1', role: 'viewer'});
+await fill('#adlg', {username: 'mila', password: 'viewerpass1'});
 await submit('#aform');
 await wait(() => document.querySelector('#view').textContent.includes('mila'));
-ok((await text()).includes('mila') && (await text()).includes('Наблюдатель'), 'администратор-наблюдатель создан');
+ok((await text()).includes('mila') && (await text()).includes('Администратор'), 'новая учётка создана и она администратор: роль не выбирается');
 
 /* ---------- настройки: сохранились в базе и переживают перезагрузку ---------- */
 await go('settings');
@@ -363,53 +363,50 @@ await wait(() => document.querySelector('#toast').classList.contains('show'));
 const apiSettings = await page.evaluate(async () => (await fetch('/api/settings', {headers:{authorization: 'Bearer ' + localStorage.getItem('token')}})).json());
 ok(apiSettings.pollInterval === 45, 'настройки легли в SQLite (pollInterval = 45)');
 
-/* ---------- наблюдатель: панель для него только читается ---------- */
-const madeViewer = await api('/api/admins', 'POST', {username: 'gler', password: 'glerpassword1', role: 'viewer'});
-ok(madeViewer.status === 201, 'тест завёл наблюдателя');
-const viewerToken = (await (await api('/api/login', 'POST', {username: 'gler', password: 'glerpassword1'}, null)).json()).token;
+/* ---------- администратор: панель меняет, чужие учётки — нет ---------- */
+const madeAdmin = await api('/api/admins', 'POST', {username: 'gler', password: 'glerpassword1'});
+const madeAdminBody = await madeAdmin.json();
+ok(madeAdmin.status === 201 && madeAdminBody.role === 'admin', `тест завёл администратора: новая учётка всегда администратор (${madeAdmin.status} ${JSON.stringify(madeAdminBody)})`);
+const adminToken = (await (await api('/api/login', 'POST', {username: 'gler', password: 'glerpassword1'}, null)).json()).token;
 const vctx = await b.newContext({viewport: {width: 1200, height: 800}});
-await vctx.addInitScript(t => localStorage.setItem('token', t), viewerToken);
+await vctx.addInitScript(t => localStorage.setItem('token', t), adminToken);
 const vpage = await vctx.newPage();
 await vpage.goto(BASE);
 await vpage.waitForSelector('#view .syscard');
-ok((await vpage.textContent('#acctrole')).includes('Наблюдатель'), 'сайдбар честно говорит: наблюдатель');
+ok((await vpage.textContent('#acctrole')).includes('Администратор'), 'сайдбар честно говорит: администратор');
 await vpage.click('#nav a[data-p="nodes"]');
 await vpage.waitForFunction(() => document.querySelector('#view').dataset.page === 'nodes');
-ok(await vpage.locator('[data-a="newnode"]').count() === 0, 'наблюдателю не показана кнопка «Добавить ноду»');
-ok(await vpage.locator('#view .node').count() > 0, 'ноды наблюдатель видит');
+ok(await vpage.locator('[data-a="newnode"]').count() === 1, 'администратору доступна кнопка «Добавить ноду»');
+ok(await vpage.locator('#view .node').count() > 0, 'ноды администратор видит');
 await vpage.click('#view .node[data-a="nedit"]');
 await vpage.waitForSelector('#nedlg[open]');
-ok(await vpage.evaluate(() => document.querySelector('#nedlg button[value="ok"]').hidden
-   && document.querySelector('#nedlg [data-a="ndelete"]').hidden
-   && document.querySelector('#nedlg [data-a="ncheck"]').hidden), 'в диалоге ноды наблюдателю нечего менять');
-ok(await vpage.evaluate(() => document.querySelector('#nedlg [data-f="address"]').readOnly), 'поля диалога только для чтения');
+ok(await vpage.evaluate(() => !document.querySelector('#nedlg button[value="ok"]').hidden
+   && !document.querySelector('#nedlg [data-a="ndelete"]').hidden
+   && !document.querySelector('#nedlg [data-a="ncheck"]').hidden), 'в диалоге ноды администратору доступно всё');
+ok(await vpage.evaluate(() => !document.querySelector('#nedlg [data-f="address"]').readOnly), 'поля диалога редактируются');
 await vpage.click('#nedlg button[value="cancel"]');
 await vpage.waitForFunction(() => !document.querySelector('#nedlg').open);
 await vpage.click('#nav a[data-p="users"]');
 await vpage.waitForFunction(() => document.querySelector('#view').dataset.page === 'users');
-ok(await vpage.locator('[data-a="new"],[data-a="del"],[data-a="toggle"]').count() === 0, 'наблюдателю не чем создавать и удалять пользователей');
-await vpage.click('#nav a[data-p="chains"]');
-await vpage.waitForFunction(() => document.querySelector('#view').dataset.page === 'chains');
-ok(await vpage.locator('[data-a="newchain"],[data-a="cdel"]').count() === 0, 'цепочки наблюдателю доступны только для чтения');
+ok(await vpage.locator('[data-a="new"],[data-a="del"],[data-a="toggle"]').count() > 0, 'администратор правит пользователей');
 await vpage.click('#nav a[data-p="admins"]');
 await vpage.waitForFunction(() => document.querySelector('#view').dataset.page === 'admins');
-ok(await vpage.locator('[data-a="anew"]').count() === 0, 'новых администраторов наблюдатель не заводит');
-ok(await vpage.locator('[data-a="aedit"]').count() === 1, 'наблюдателю доступен только его собственный аккаунт');
+ok(await vpage.locator('[data-a="anew"]').count() === 0, 'новых администраторов администратор не заводит');
+ok(await vpage.locator('[data-a="aedit"]').count() === 1, 'администратору доступен только его собственный аккаунт');
 await vpage.click('#nav a[data-p="settings"]');
 await vpage.waitForFunction(() => document.querySelector('#view').dataset.page === 'settings');
-ok(await vpage.evaluate(() => document.querySelector('#sform .savebar').hidden), 'настроек наблюдатель не сохраняет');
-ok(await vpage.evaluate(() => [...document.querySelectorAll('#sform .field input, #sform .field select')].every(el => el.disabled)),
-   'все поля настроек для наблюдателя выключены');
+ok(await vpage.evaluate(() => !document.querySelector('#sform .savebar').hidden), 'администратор сохраняет настройки панели');
 ok(await vpage.locator('#view .keys').count() === 0, 'карточки ключей на странице настроек больше нет');
 await vpage.click('#nav a[data-p="admins"]');
 await vpage.waitForFunction(() => document.querySelector('#view').dataset.page === 'admins');
 await vpage.click('#view [data-a="aedit"]');
 await vpage.waitForFunction(() => document.querySelector('#amdlg').open);
 ok(await vpage.locator('#amkeys').count() === 1 && await vpage.locator('#amkeyadd').isEnabled(),
-   'свои аппаратные ключи наблюдатель ведёт в диалоге аккаунта');
+   'свои аппаратные ключи администратор ведёт в диалоге аккаунта');
+ok(await vpage.evaluate(() => document.querySelector('#amstatus').disabled), 'отключить себя администратору нельзя');
 await vpage.click('#amdlg button[value="cancel"]');
 await vpage.waitForFunction(() => !document.querySelector('#amdlg').open);
-await vpage.screenshot({path: '/tmp/shot/02-viewer.png', fullPage: true});
+await vpage.screenshot({path: '/tmp/shot/02-admin.png', fullPage: true});
 await vctx.close();
 
 /* ---------- владелец правит чужой аккаунт: роль, состояние, удаление ---------- */
@@ -420,8 +417,8 @@ ok(await page.locator(`#view tr:has-text("${OWNER.username}") [data-a="aedit"]`)
    'свою учётку владелец всё же видит: сменить свой пароль и свои ключи');
 await page.click(`#view tr:has-text("${OWNER.username}") [data-a="aedit"]`);
 await openDlg('#amdlg');
-ok(await page.evaluate(() => document.querySelector('#amrole').disabled && document.querySelector('#amstatus').disabled),
-   'но роль и состояние владелец себе не меняет: он создаётся вместе с панелью');
+ok(await page.evaluate(() => document.querySelector('#amstatus').disabled),
+   'но состояние владелец себе не меняет: он создаётся вместе с панелью');
 ok(await page.evaluate(() => document.querySelector('#amdel').hidden), 'и удалить себя нельзя');
 ok(await page.evaluate(() => !document.querySelector('#ampw').disabled), 'а свой пароль — можно');
 await page.click('#amdlg button[value="cancel"]');
@@ -429,16 +426,10 @@ await closed('#amdlg');
 await page.click(`${milaRow} [data-a="aedit"]`);
 await openDlg('#amdlg');
 ok((await page.textContent('#amtitle')).includes('mila'), `диалог аккаунта: ${(await page.textContent('#amtitle')).trim()}`);
-ok(await page.evaluate(() => !document.querySelector('#amrole').disabled && !document.querySelector('#amstatus').disabled),
-   'владелец может менять роль и состояние чужой учётки');
+ok(await page.evaluate(() => !document.querySelector('#amstatus').disabled),
+   'владелец может менять состояние чужой учётки');
 ok(await page.evaluate(() => document.querySelector('#ampw').disabled), 'а пароль чужой учётки — нет');
 ok((await page.textContent('#ampwhint')).includes('меняет только'), 'и панель объясняет почему');
-await page.selectOption('#amrole', 'admin');
-await submit('#amdlg');
-await wait(() => document.querySelector('#view').textContent.includes('Администратор'));
-ok((await text()).includes('mila') && (await page.locator(milaRow).textContent()).includes('Администратор'), 'mila стала администратором');
-await page.click(`${milaRow} [data-a="aedit"]`);
-await openDlg('#amdlg');
 await page.selectOption('#amstatus', 'disabled');
 await submit('#amdlg');
 await wait(() => [...document.querySelectorAll('#view tbody tr')].some(r => r.textContent.includes('mila') && r.textContent.includes('Отключён')));

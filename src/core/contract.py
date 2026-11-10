@@ -24,6 +24,7 @@ BEARER_PREFIX = "Bearer "
 PATH_HEALTH = f"{NODE_API_PREFIX}/health"       # без ключа
 PATH_IDENTITY = f"{NODE_API_PREFIX}/identity"   # по ключу
 PATH_STATUS = f"{NODE_API_PREFIX}/status"       # по ключу
+PATH_CONFIG = f"{NODE_API_PREFIX}/config"       # по ключу: применить конфиг
 
 STATUS_OK = "ok"
 
@@ -54,6 +55,34 @@ class NodeIdentity(BaseModel):
     xrayVersion: str | None = None
     startedAt: int
     uptimeMs: int
+
+
+class NodeConfigApply(BaseModel):
+    """Конфиг Xray для этой ноды, собранный панелью.
+
+    `revision` — счётчик панели: нода помнит, какой ревизией она отвечает, и повтор
+    того же ревизии не переподнимает инбаунды. `config` для панели непрозрачен:
+    его собирает `src/core/xray_config`, нода проверяет его самим Xray.
+    `certs` — подсказка ноде, какие tls-сертификаты нужны этому конфигу
+    (path -> адрес, для которого сертификат выпустить, если его ещё нет).
+    """
+
+    revision: int = Field(ge=1)
+    config: dict
+    certs: list[dict] = Field(default_factory=list, description="[{file, key, host}] tls-сертификаты до применения")
+
+
+class NodeApplyReport(BaseModel):
+    """Что нода сделала с конфигом: применён ли, каким ревизией и что сломалось."""
+
+    role: Literal["medusa-node"] = NODE_ROLE
+    fingerprint: str
+    ok: bool
+    desiredRev: int
+    appliedRev: int
+    lastApplyAt: int
+    xrayVersion: str | None = None
+    error: str | None = None
 
 
 class NodeStatus(BaseModel):

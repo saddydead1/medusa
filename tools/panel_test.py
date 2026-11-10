@@ -59,7 +59,7 @@ def main() -> int:
         ok(client.post("/api/users", json={"name": "vasya"}).status_code == 409, "повтор имени пользователя -> 409")
         ok(client.post("/api/users", json={"name": "bad name!"}).status_code == 422, "имя с пробелами отклонено")
         masha = client.post("/api/users", json={"name": "masha", "client": "clash-verge"}).json()
-        client.post("/api/users", json={"name": "brother", "client": "clash-meta"})
+        brother = client.post("/api/users", json={"name": "brother", "client": "clash-meta"}).json()
         ok(masha["client"] == "clash-verge", "поле client сохранилось")
         ok(client.patch(f"/api/users/{masha['id']}", json={"status": "disabled"}).json()["status"] == "disabled", "отключить пользователя")
         ok(client.delete(f"/api/users/{created['id']}").status_code == 204, "удалить пользователя")
@@ -112,10 +112,25 @@ def main() -> int:
            f"недоступная нода: {report['error']}")
         ok(report["node_row"]["online"] is False, "недоступная нода осталась не в сети")
 
+        # применение конфига к недоступной ноде — человеческий отчёт, а не HTTP-грохот
+        failed = client.post(f"/api/nodes/{dead['id']}/apply", json={}).json()
+        ok(failed["ok"] is False and failed["error"], f"apply на недоступную ноду: {failed['error']}")
+        row = next(n for n in client.get("/api/nodes").json() if n["id"] == dead["id"])
+        ok(row["applyError"] and row["configDirty"] is True, "ошибка применения осела в строке ноды")
+
         # --- хосты ---
         host = client.post("/api/hosts", json={"name": "FI Reality", "node": "vps-fi", "protocol": "vless",
-                                               "port": 443, "network": "tcp", "security": "reality"}).json()
+                                               "port": 443, "network": "tcp", "security": "reality",
+                                               "address": "fi.example.net"}).json()
         ok(host["node"] == "vps-fi" and host["chain"] is None, f"хост создан: {host['name']} на {host['node']}")
+        ok(host["address"] == "fi.example.net" and host["publicKey"] and
+           all(k not in host for k in ("private_key", "privateKey")),
+           "reality-хост: адрес-домен сохранён, публичный ключ есть, приватного нет")
+        ip_reality = client.post("/api/hosts", json={"name": "по IP", "node": "vps-fi", "protocol": "vless",
+                                                     "port": 444, "network": "tcp", "security": "reality"})
+        ok(ip_reality.status_code == 400, f"reality на IP-адресе отвергается: {ip_reality.json()['detail']}")
+        dirty = next(n for n in client.get("/api/nodes").json() if n["name"] == "vps-fi")
+        ok(dirty["configDirty"] is True, "новый хост сделал конфиг ноды несвежим")
         busy = client.post("/api/hosts", json={"name": "Другой", "node": "vps-fi", "protocol": "vmess",
                                                "port": 443, "network": "ws", "security": "tls"})
         ok(busy.status_code == 409, f"занятый порт -> 409: {busy.json()['detail']}")
@@ -150,10 +165,33 @@ def main() -> int:
         ok(client.delete(f"/api/chains/{chain['id']}").status_code == 204, "удалить цепочку")
         ok(all(h["chain"] != chain["id"] for h in client.get("/api/hosts").json()), "хост цепочки удалён вместе с ней")
 
+        # --- подписка: страница /sub/<токен> ---
+        sub_chain = client.post("/api/chains", json={"name": "SUB-ROUTE", "hops": [
+            {"node": "vps-fi", "protocol": "vless", "network": "tcp", "security": "reality", "port": 3011},
+            {"node": "home", "protocol": "vless", "network": "tcp", "security": "reality", "port": 3012}]}).json()
+        page = client.get(f"/sub/{brother['token']}")
+        ok(page.status_code == 200 and "text/html" in page.headers.get("content-type", ""),
+           "GET /sub/<токен>: HTML-страница без входа администратора")
+        ok("brother" in page.text and "активен" in page.text, "на странице подписки есть никнейм и живой статус")
+        ok("langbtn" in page.text, "переключатель языка на месте")
+        ok("FI Reality" in page.text and "SUB-ROUTE" in page.text, "хосты и цепочки доступны подписчику")
+        ok(client.get("/sub/nesushchestvuet").status_code == 404, "чужого токена подписки нет -> 404")
+        off_page = client.get(f"/sub/{masha['token']}")
+        ok(off_page.status_code == 200 and "FI Reality" not in off_page.text,
+           "отключённому пользователю подписка не раздаётся")
+        en_page = client.get(f"/sub/{brother['token']}?lang=en")
+        ok("Hosts" in en_page.text and "Chains" in en_page.text, "страница подписки на английском по ?lang=en")
+        forced = client.get(f"/sub/{brother['token']}", headers={"Accept-Language": "en-US,en;q=0.9"})
+        ok("Хосты" in forced.text, "английский браузер видит русский: язык переключается только кнопкой")
+        ok("vless://" in page.text and page.text.count('data-copy="') == 2,
+           "кнопка копирования ссылки есть у vless-хоста и у входа цепочки")
+        client.delete(f"/api/chains/{sub_chain['id']}")
+
         # --- имя ноды можно менять: хосты и цепочки держатся за id, а не за имя ---
         probe = client.post("/api/hosts", json={"name": "проверка имени", "node": "home",
                                                 "protocol": "vless", "network": "tcp",
-                                                "security": "reality", "port": 9411}).json()
+                                                "security": "reality", "port": 9411,
+                                                "address": "probe.example.net"}).json()
         renamed = client.patch(f"/api/nodes/{home['id']}", json={"name": "home-renamed"}).json()
         ok(renamed["name"] == "home-renamed", "ноду можно переименовать")
         after = client.get("/api/hosts").json()
@@ -256,13 +294,16 @@ def main() -> int:
         admins = client.get("/api/admins", headers=auth).json()
         ok(any(a["username"] == "admin" and a["self"] for a in admins), "свой аккаунт помечен в списке админов")
         ok(client.patch("/api/admins", json={}).status_code in (404, 405), "у списка админов нет случайного PATCH")
-        new_admin = client.post("/api/admins", json={"username": "mila", "password": "viewerpass1", "role": "viewer"}, headers=auth).json()
-        ok(new_admin["role"] == "viewer" and new_admin["self"] is False, f"создан администратор {new_admin['username']}")
+        new_admin = client.post("/api/admins", json={"username": "mila", "password": "viewerpass1"}, headers=auth).json()
+        ok(new_admin["role"] == "admin" and new_admin["self"] is False, f"создан администратор {new_admin['username']} (роль не выбирается)")
         mila = client.post("/api/login", json={"username": "mila", "password": "viewerpass1"}).json()
         ok(client.get("/api/me", headers={"Authorization": f"Bearer {mila['token']}"}).json()["username"] == "mila",
-           "наблюдатель тоже может войти")
-        viewer_write = client.post("/api/users", json={"name": "viewer-write"}, headers={"Authorization": f"Bearer {mila['token']}"}).json()
-        ok(viewer_write["detail"].startswith("наблюдателю"), f"наблюдатель не может писать: {viewer_write['detail']}")
+           "администратор тоже может войти")
+        admin_write = client.post("/api/users", json={"name": "admin-write"}, headers={"Authorization": f"Bearer {mila['token']}"})
+        ok(admin_write.status_code == 201, "администратор может писать в панель")
+        owner_try = client.patch(f"/api/admins/{next(a['id'] for a in client.get('/api/admins', headers=auth).json() if a['role'] == 'owner')}",
+                                 json={"status": "disabled"}, headers={"Authorization": f"Bearer {mila['token']}"})
+        ok(owner_try.status_code == 403, f"администратор не трогает владельца: {owner_try.json()['detail']}")
         ok(client.patch(f"/api/admins/{new_admin['id']}", json={"status": "disabled"}, headers=auth).json()["status"] == "disabled",
            "администратора отключили")
         ok(client.get("/api/me", headers={"Authorization": f"Bearer {mila['token']}"}).status_code == 401,

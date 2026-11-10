@@ -5,7 +5,8 @@
 * `writer` — владелец или администратор (можно менять);
 * `owner_only` — только владелец (разбирается с чужими аккаунтами).
 
-Наблюдатель смотрит всё и не меняет ничего: ни ноды, ни хосты, ни настройки, ни людей.
+Роли в панели две: владелец и администратор. Администратор меняет панель,
+но не трогает чужие аккаунты — только свою (пароль и ключи).
 """
 from __future__ import annotations
 
@@ -59,11 +60,11 @@ def current_admin(current: sqlite3.Row | None = Depends(actor)) -> sqlite3.Row |
 
 
 def writer(current: sqlite3.Row | None = Depends(current_admin)) -> sqlite3.Row | None:
-    """Менять панель могут владелец и администратор. Наблюдатель — нет."""
+    """Менять панель могут владелец и администратор."""
     if current is None:
         return None                       # MEDUSA_AUTH=0: правка без учётки, разработка
     if current["role"] not in WRITE_ROLES:
-        raise HTTPException(status_code=403, detail="наблюдателю правка запрещена: только смотреть")
+        raise HTTPException(status_code=403, detail="правка доступна только владельцу и администратору")
     return current
 
 

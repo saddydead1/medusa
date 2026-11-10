@@ -120,71 +120,44 @@ def main() -> int:
         ok(abs(expires_at - expected) < 60_000,
            f"новая сессия живёт ровно {hours} ч (настройка действует с нового входа)")
 
-        # --- наблюдатель: видит всё, не меняет ничего ---
-        viewer = client.post("/api/admins", json={"username": "gler", "password": "glerpassword1", "role": "viewer"}).json()
-        ok(viewer["role"] == "viewer", "владелец завёл наблюдателя")
-        vtoken = client.post("/api/login", json={"username": "gler", "password": "glerpassword1"}).json()["token"]
-        client.headers["Authorization"] = f"Bearer {vtoken}"
-        ok(client.get("/api/nodes").status_code == 200, "наблюдатель читает ноды")
-        ok(client.get("/api/admins").status_code == 200, "наблюдатель читает список администраторов")
-        blocked = client.post("/api/nodes", json={"name": "viewertry", "address": "10.9.9.8", "apiKey": "sk-api-viewertry01234567"})
-        ok(blocked.status_code == 403, f"наблюдатель не может создать ноду: {blocked.json()['detail']}")
-        ok(client.patch(f"/api/nodes/{node.json()['id']}", json={"address": "10.9.9.7"}).status_code == 403,
-           "наблюдатель не может изменить ноду")
-        key_leak = client.get(f"/api/nodes/{node.json()['id']}/key")
-        ok(key_leak.status_code == 403, f"API-ключ ноды наблюдателю не отдают: {key_leak.json()['detail']}")
-        ok(client.delete(f"/api/nodes/{node.json()['id']}").status_code == 403, "наблюдатель не может удалить ноду")
-        ok(client.patch("/api/settings", json={"panelName": "GlerPanel"}).status_code == 403,
-           "наблюдатель не может менять настройки панели")
-        ok(client.post("/api/admins", json={"username": "gler2", "password": "glerpassword2", "role": "admin"}).status_code == 403,
-           "наблюдатель не заводит людей")
-        ok(client.patch(f"/api/admins/{viewer['id']}", json={"status": "disabled"}).status_code == 403,
-           "наблюдатель не отключает даже себя")
-
         # --- администратор: может всё в панели, но не чужие аккаунты ---
         client.headers["Authorization"] = f"Bearer {owner_token}"
-        admin = client.post("/api/admins", json={"username": "mira", "password": "mirapassword1", "role": "admin"}).json()
-        ok(admin["role"] == "admin", "владелец завёл администратора")
+        admin = client.post("/api/admins", json={"username": "mira", "password": "mirapassword1"}).json()
+        ok(admin["role"] == "admin", "владелец завёл администратора: новая учётка всегда администратор")
         atoken = client.post("/api/login", json={"username": "mira", "password": "mirapassword1"}).json()["token"]
         client.headers["Authorization"] = f"Bearer {atoken}"
         ok(client.post("/api/hosts", json={"name": "mirahost", "node": "authnode", "protocol": "vless",
-                                           "network": "tcp", "security": "reality", "port": 443}).status_code == 201,
+                                           "network": "tcp", "security": "reality", "port": 443,
+                                           "address": "mira.example.net"}).status_code == 201,
            "администратор правит панель: хост создан")
         ok(client.patch("/api/settings", json={"pollInterval": 42}).status_code == 200, "администратор меняет настройки панели")
-        other = client.patch(f"/api/admins/{viewer['id']}", json={"role": "admin"})
-        ok(other.status_code == 403, f"администратор не меняет роль другого: {other.json()['detail']}")
-        ok(client.patch(f"/api/admins/{viewer['id']}", json={"status": "disabled"}).status_code == 403,
-           "администратор не отключает другого")
-        ok(client.delete(f"/api/admins/{viewer['id']}").status_code == 403, "администратор не удаляет другого")
+        other = client.patch(f"/api/admins/{owner['id']}", json={"status": "disabled"})
+        ok(other.status_code == 403, f"администратор не трогает чужой аккаунт: {other.json()['detail']}")
+        ok(client.delete(f"/api/admins/{owner['id']}").status_code == 409, "администратор не удаляет другого")
         owner_edit = client.patch(f"/api/admins/{owner['id']}", json={"password": "newownerpassword1"})
         ok(owner_edit.status_code == 403, "администратор не может сменить пароль владельца")
         own = client.patch(f"/api/admins/{admin['id']}", json={"password": "mirapassword2"})
         ok(own.status_code == 200, "администратор меняет свой пароль")
         ok(client.post("/api/login", json={"username": "mira", "password": "mirapassword2"}).status_code == 200,
            "новый пароль администратора работает")
-        ok(client.post("/api/admins", json={"username": "mira2", "password": "mira2password1", "role": "admin"}).status_code == 403,
+        ok(client.post("/api/admins", json={"username": "mira2", "password": "mira2password1"}).status_code == 403,
            "администратор не заводит новых администраторов")
-        ok(client.patch(f"/api/admins/{admin['id']}", json={"role": "viewer"}).status_code == 403,
-           "администратор не меняет себе роль")
 
         # --- владелец защищён от изменений даже самим владельцем ---
         client.headers["Authorization"] = f"Bearer {owner_token}"
-        owner_role = client.patch(f"/api/admins/{owner['id']}", json={"role": "viewer"})
-        ok(owner_role.status_code == 409, f"роль владельца не меняется: {owner_role.json()['detail']}")
         disabled = client.patch(f"/api/admins/{owner['id']}", json={"status": "disabled"})
         ok(disabled.status_code == 409, f"владельца нельзя отключить: {disabled.json()['detail']}")
         ok(client.delete(f"/api/admins/{owner['id']}").status_code == 409, "владельца нельзя удалить")
-        ok(client.post("/api/admins", json={"username": "second", "password": "secondpassword1", "role": "owner"}).status_code == 422,
-           "второго владельца создать нельзя (role принимает только admin/viewer)")
+        second = client.post("/api/admins", json={"username": "second", "password": "secondpassword1"}).json()
+        ok(second["role"] == "admin", "новая учётка не становится владельцем: он в панели единственный")
         ok(client.patch(f"/api/admins/{owner['id']}", json={"password": "vladpassword2"}).status_code == 200,
            "владелец меняет свой пароль")
         ok(client.post("/api/login", json={"username": "vlad", "password": "vladpassword2"}).status_code == 200,
            "новый пароль владельца работает")
         mira_session = client.post("/api/login", json={"username": "mira", "password": "mirapassword2"}).json()["token"]
         client.headers["Authorization"] = f"Bearer {mira_session}"
-        gler_id = next(a["id"] for a in client.get("/api/admins").json() if a["username"] == "gler")
-        off_other = client.patch(f"/api/admins/{gler_id}", json={"status": "disabled"})
-        ok(off_other.status_code == 403, f"администратор не отключает другого: {off_other.json()['detail']}")
+        off_self = client.patch(f"/api/admins/{admin['id']}", json={"status": "disabled"})
+        ok(off_self.status_code == 403, f"администратор не отключает самого себя: {off_self.json()['detail']}")
 
         # --- сессии: выход выбивает токен, отключение выбивает чужие сессии ---
         client.headers["Authorization"] = f"Bearer {owner_token}"
@@ -272,18 +245,18 @@ def main() -> int:
         bad = client.post("/api/fido/login", json={"response": stranger.assert_for(options, origin)})
         ok(bad.status_code == 401, f"незаписанный ключ отвергнут: {bad.json()['detail']}")
 
-        # --- свою ключевую учётку ведёт всякий вошедший: наблюдателя это не делает админом ---
-        vtoken = client.post("/api/login", json={"username": "gler", "password": "glerpassword1"}).json()["token"]
-        client.headers["Authorization"] = f"Bearer {vtoken}"
-        viewer_id_now = next(a["id"] for a in client.get("/api/admins").json() if a["username"] == "gler")
-        own_begin = client.post(f"/api/admins/{viewer_id_now}/keys/begin", json={})
-        ok(own_begin.status_code == 200, "наблюдатель получает вызов на запись своего ключа")
-        viewer_key = FakeKey("testserver")
-        own_add = client.post(f"/api/admins/{viewer_id_now}/keys",
-                              json={"response": viewer_key.register(own_begin.json()["options"], origin), "nickname": "ключ глера"})
+        # --- свою ключевую учётку ведёт всякий вошедший: администратор остаётся администратором ---
+        second_token = client.post("/api/login", json={"username": "second", "password": "secondpassword1"}).json()["token"]
+        client.headers["Authorization"] = f"Bearer {second_token}"
+        second_id_now = next(a["id"] for a in client.get("/api/admins").json() if a["username"] == "second")
+        own_begin = client.post(f"/api/admins/{second_id_now}/keys/begin", json={})
+        ok(own_begin.status_code == 200, "администратор получает вызов на запись своего ключа")
+        second_key = FakeKey("testserver")
+        own_add = client.post(f"/api/admins/{second_id_now}/keys",
+                              json={"response": second_key.register(own_begin.json()["options"], origin), "nickname": "ключ второго"})
         ok(own_add.status_code == 201, f"и записывает его сам: {own_add.json()['nickname']}")
         other = next(a["id"] for a in client.get("/api/admins").json() if a["username"] == "mira")
-        ok(client.post(f"/api/admins/{other}/keys/begin", json={}).status_code == 403, "чужие ключи наблюдателю не доступны")
+        ok(client.post(f"/api/admins/{other}/keys/begin", json={}).status_code == 403, "чужие ключи не доступны")
         client.post("/api/logout")
 
         # --- ключи: кто их пишет и снимает (владелец заходит заново: выход выше его выбил) ---
@@ -291,21 +264,21 @@ def main() -> int:
         owner_token = client.post("/api/login", json={"username": "vlad", "password": "vladpassword2"}).json()["token"]
         client.headers["Authorization"] = f"Bearer {owner_token}"
         admin_row = client.get("/api/admins").json()
-        viewer_id = next(a["id"] for a in admin_row if a["username"] == "gler")
+        second_id = next(a["id"] for a in admin_row if a["username"] == "second")
         other_key = FakeKey("testserver")
-        options = client.post(f"/api/admins/{viewer_id}/keys/begin", json={}).json()["options"]
-        added = client.post(f"/api/admins/{viewer_id}/keys",
-                            json={"response": other_key.register(options, origin), "nickname": "ключ глера"})
-        ok(added.status_code == 201, "владелец записывает ключ наблюдателю")
+        options = client.post(f"/api/admins/{second_id}/keys/begin", json={}).json()["options"]
+        added = client.post(f"/api/admins/{second_id}/keys",
+                            json={"response": other_key.register(options, origin), "nickname": "ключ второго"})
+        ok(added.status_code == 201, "владелец записывает ключ чужой учётке")
         atoken = client.post("/api/login", json={"username": "mira", "password": "mirapassword2"}).json()["token"]
         client.headers["Authorization"] = f"Bearer {atoken}"
-        sneaky = client.post(f"/api/admins/{viewer_id}/keys/begin", json={})
+        sneaky = client.post(f"/api/admins/{second_id}/keys/begin", json={})
         ok(sneaky.status_code == 403, "администратор не записывает ключ чужому аккаунту")
-        key_id = next(k["id"] for k in client.get(f"/api/admins/{viewer_id}/keys").json())
-        ok(client.delete(f"/api/admins/{viewer_id}/keys/{key_id}").status_code == 403,
+        key_id = next(k["id"] for k in client.get(f"/api/admins/{second_id}/keys").json())
+        ok(client.delete(f"/api/admins/{second_id}/keys/{key_id}").status_code == 403,
            "администратор не снимает чужой ключ")
         client.headers["Authorization"] = f"Bearer {owner_token}"
-        ok(client.delete(f"/api/admins/{viewer_id}/keys/{key_id}").status_code == 204, "владелец снимает ключ")
+        ok(client.delete(f"/api/admins/{second_id}/keys/{key_id}").status_code == 204, "владелец снимает ключ")
 
         # --- отключённый администратор теряет возможность войти и ключом ---
         client.headers["Authorization"] = f"Bearer {atoken}"

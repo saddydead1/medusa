@@ -7,8 +7,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from src.core.api_keys import api_key_fingerprint
+from src.panel import config_push
 from src.panel.db import get_conn, now_ms
-from src.panel.deps import bad_request, conflict, fetch_one, writer
+from src.panel.deps import bad_request, conflict, current_admin, fetch_one, writer
 from src.panel.node_check import check_node as run_check
 from src.panel.nodes_rows import NODE_COLUMNS, as_dict
 from src.panel.schemas import NodeCreate, NodePatch
@@ -37,7 +38,10 @@ def create_node(
     except sqlite3.IntegrityError:
         raise conflict(f"нода «{body.name}» уже есть")
     conn.commit()
-    return as_dict(fetch_one(conn, f"SELECT {NODE_COLUMNS} FROM nodes WHERE name = ?", (body.name,)))
+    created = fetch_one(conn, f"SELECT {NODE_COLUMNS} FROM nodes WHERE name = ?", (body.name,))
+    if created["api_key"]:
+        config_push.mark_dirty(conn, [created["id"]])   # свежую ноду стоит познакомить с конфигом
+    return as_dict(fetch_one(conn, f"SELECT {NODE_COLUMNS} FROM nodes WHERE id = ?", (created["id"],)))
 
 
 @router.patch("/{node_id}")
@@ -70,6 +74,7 @@ def patch_node(
     except sqlite3.IntegrityError:
         raise conflict(f"нода «{changes.get('name')}» уже есть")
     conn.commit()
+    config_push.mark_dirty(conn, [node_id])
     return as_dict(fetch_one(conn, f"SELECT {NODE_COLUMNS} FROM nodes WHERE id = ?", (node_id,)))
 
 
@@ -112,5 +117,35 @@ def check_node(
     """
     try:
         return run_check(conn, node_id)
+    except LookupError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+
+
+@router.post("/{node_id}/apply")
+def apply_node_config(
+    node_id: int,
+    conn: sqlite3.Connection = Depends(get_conn),
+    _: sqlite3.Row | None = Depends(writer),
+) -> dict:
+    """Применить конфиг сейчас же, не дожидаясь опроса. Нужен редко: правки хостов
+    и пользователей панель доставляет сама. Отказ ноды — не ошибка HTTP: в отчёте
+    `ok: false` и человеческое `error`."""
+    try:
+        return config_push.push_node(conn, node_id)
+    except LookupError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+
+
+@router.get("/{node_id}/config")
+def node_config(
+    node_id: int,
+    conn: sqlite3.Connection = Depends(get_conn),
+    _: sqlite3.Row | None = Depends(current_admin),
+) -> dict:
+    """Посмотреть конфиг Xray этой ноды таким, каким панель собралась его отправить.
+    Только чтение: правки хостов и пользователей пересобирают конфиг целиком,
+    а приватные ключы в этом показе скрыты."""
+    try:
+        return config_push.node_config_view(conn, node_id)
     except LookupError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err

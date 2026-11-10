@@ -9,7 +9,7 @@ from src.panel.db import DB_PATH, init_db
 from src.panel.deps import current_admin
 from src.panel.meta import STATIC_DIR, project_meta
 from src.panel import poller
-from src.panel.routers import admins, chains, hosts, nodes, settings, users
+from src.panel.routers import admins, chains, hosts, nodes, settings, subs, users
 from src.panel.system import system_info
 
 
@@ -34,7 +34,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Medusa", lifespan=lifespan)
 
 # Вход и выход — единственные эндпоинты, доступные без сессии. Всё остальное требует
-# вошедшего администратора: наблюдатель смотрит, но упирается в 403 на попытке менять.
+# вошедшего администратора: без учётки панель упирается в 401, правка — в writer-проверку.
 auth_needed = [Depends(current_admin)]
 
 app.include_router(admins.auth_router)
@@ -44,6 +44,10 @@ app.include_router(nodes.router, dependencies=auth_needed)
 app.include_router(hosts.router, dependencies=auth_needed)
 app.include_router(chains.router, dependencies=auth_needed)
 app.include_router(settings.router, dependencies=auth_needed)
+
+# Страница подписки: входа администратора не требует — пропуск это сам токен
+# пользователя в адресе. Отдаётся до статики, иначе catch-all съест /sub/...
+app.include_router(subs.router)
 
 
 @app.get("/api/meta")

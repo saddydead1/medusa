@@ -15,9 +15,11 @@ import httpx
 
 from src.core.contract import (
     BEARER_PREFIX,
+    PATH_CONFIG,
     PATH_HEALTH,
     PATH_IDENTITY,
     PATH_STATUS,
+    NodeApplyReport,
     NodeHealth,
     NodeIdentity,
     NodeStatus,
@@ -80,6 +82,27 @@ def detail_of(response: httpx.Response) -> str:
 
 def node_health(target: NodeTarget, timeout: float = 5.0) -> NodeHealth:
     return NodeHealth.model_validate(_get(target, PATH_HEALTH, timeout, auth=False))
+
+
+def node_apply(target: NodeTarget, revision: int, config: dict, certs: list[dict],
+               timeout: float = 15.0) -> NodeApplyReport:
+    """Применить конфиг Xray. Отказ ноды (`ok: false` с человеческой ошибкой) —
+    это тоже успешный HTTP-ответ: панель узнаёт о проблеме из отчёта, а не из кода.
+    """
+    headers = {"Authorization": f"{BEARER_PREFIX}{target.api_key}"}
+    payload = {"revision": revision, "config": config, "certs": certs}
+    try:
+        response = httpx.put(target.base_url + PATH_CONFIG, json=payload, headers=headers, timeout=timeout)
+    except httpx.HTTPError as err:
+        raise NodeUnreachable(f"нода {target.address}:{target.port} не приняла конфиг: {err.__class__.__name__}") from err
+    if response.status_code == 401:
+        raise NodeUnauthorized(detail_of(response) or "нода отвергла API-ключ")
+    if response.status_code >= 400:
+        raise NodeUnreachable(f"нода ответила {response.status_code}: {detail_of(response)}")
+    try:
+        return NodeApplyReport.model_validate(response.json())
+    except ValueError as err:
+        raise NodeUnreachable("нода ответила по applied не JSON") from err
 
 
 def node_identity(target: NodeTarget, timeout: float = 5.0) -> NodeIdentity:

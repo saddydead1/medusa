@@ -16,6 +16,7 @@ from src.core.contract import NODE_ROLE
 from src.node.api import router
 from src.node.config import NodeConfig
 from src.node.identity import load_identity
+from src.node.runner import XrayRunner
 from src.node.xray import resolve_xray_bin
 
 
@@ -26,6 +27,8 @@ def create_app(config: NodeConfig | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         identity = load_identity(settings)
         app.state.node_identity = identity
+        runner = XrayRunner(settings, identity)
+        app.state.xray_runner = runner
         xray_bin = resolve_xray_bin(settings)
         print(
             f"[medusa-node] API http://{settings.host}:{settings.port}{router.prefix}/health, "
@@ -36,7 +39,10 @@ def create_app(config: NodeConfig | None = None) -> FastAPI:
             f"[medusa-node] xray: {xray_bin or 'не найден — MEDUSA_XRAY_BIN или PATH'}",
             flush=True,
         )
+        runner.autostart()
         yield
+        runner.shutdown()
+        app.state.xray_runner = None
         app.state.node_identity = None
 
     app = FastAPI(
