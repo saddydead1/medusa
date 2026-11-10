@@ -105,10 +105,14 @@ const I18N = {
     'dlg.chain.title':'Новая цепочка','dlg.chain.name':'Название хоста (его увидит пользователь)',
     'dlg.chain.hint':'Пользователь увидит цепочку как один хост и подключится к первой ноде. Инбаунд на каждой ноде создастся автоматически.',
     'cfg.protocol':'Протокол','cfg.transport':'Транспорт','cfg.security':'Защита','cfg.port':'Порт',
-    'cfg.sec.reality.dest':'Маскированный адрес (dest)','cfg.sec.reality.fp':'Отпечаток браузера клиента',
+    'cfg.sec.reality.dest':'Маскированный адрес (dest)','cfg.sec.fp':'Отпечаток клиента (utls)',
+    'cfg.sec.auto':'как обычно (по умолчанию)',
+    'cfg.sec.reality.serverNames':'Какие SNI принимать (через запятую)','cfg.sec.reality.minClient':'Минимальная версия клиента','cfg.sec.reality.maxClient':'Максимальная версия клиента',
     'cfg.sec.reality.hint':'Ключи панель сгенерирует сама. Адрес хоста для reality — только доменом.',
-    'cfg.sec.tls.alpn':'ALPN','cfg.sec.tls.alpn.default':'как обычно (Xray сам)','cfg.sec.tls.rejectSni':'Отвергать чужой SNI',
-    'cfg.sec.tls.hint':'Сертификат нода выпустит сама (self-signed): строгому клиенту нужно назвать его отпечаток pinnedPeerCertSha256.',
+    'cfg.sec.tls.sni':'SNI — какое имя называет клиент','cfg.sec.tls.minVer':'Минимальная версия TLS','cfg.sec.tls.maxVer':'Максимальная версия TLS',
+    'cfg.sec.tls.cipher':'Наборы шифров (только TLS 1.2)','cfg.sec.tls.cert':'Файл сертификата (путь на ноде)','cfg.sec.tls.key':'Файл закрытого ключа (путь на ноде)',
+    'cfg.sec.tls.rejectSni':'Отвергать чужой SNI',
+    'cfg.sec.tls.hint':'Оставьте сертификаты пустыми — нода сама выпустит self-signed на sni. Есть настоящий сертификат (например, от certbot) — впишите пути к обоим файлам. Строгому клиенту нужно назвать отпечаток сертификата pinnedPeerCertSha256.',
     'cfg.protocol.short':'Протокол','cfg.port.short':'Порт',
     'th.address':'Адрес','th.node':'Нода','th.users':'Пользователей','th.traffic':'Трафик',
     'th.name':'Имя','th.title':'Название','th.status':'Статус','th.login':'Логин','th.role':'Роль',
@@ -174,6 +178,7 @@ const I18N = {
     'toast.hostCreated':'Хост создан','toast.hostEdited':'Хост обновлён',
     'dlg.host.editTitle':'Хост: изменение',
     'cfg.adv':'Дополнительные настройки','cfg.adv.path':'Путь (path)','cfg.adv.hostHeader':'Host-заголовок','cfg.adv.serviceName':'Имя сервиса (gRPC)',
+    'cfg.adv.grpc.authority':'Authority (к кому «обращается» gRPC)','cfg.adv.grpc.multi':'Двунаправленный поток (multiMode)',
     'chain.maxHops':'Максимум {n} хопов','btn.remove':'Убрать',
     'chain.minNodes':'Для цепочки нужны минимум две ноды',
     'chain.hopSameNode':'Соседние хопы должны быть на разных нодах',
@@ -210,10 +215,14 @@ const I18N = {
     'dlg.chain.title':'New chain','dlg.chain.name':'Host name (the user will see it)',
     'dlg.chain.hint':'The user sees a chain as a single host and connects to the first node. An inbound on every node is created automatically.',
     'cfg.protocol':'Protocol','cfg.transport':'Transport','cfg.security':'Security','cfg.port':'Port',
-    'cfg.sec.reality.dest':'Camouflage address (dest)','cfg.sec.reality.fp':'Client browser fingerprint',
+    'cfg.sec.reality.dest':'Camouflage address (dest)','cfg.sec.fp':'Client fingerprint (utls)',
+    'cfg.sec.auto':'as usual (default)',
+    'cfg.sec.reality.serverNames':'Accepted SNIs (comma-separated)','cfg.sec.reality.minClient':'Minimum client version','cfg.sec.reality.maxClient':'Maximum client version',
     'cfg.sec.reality.hint':'The panel generates the keypair itself. A reality host address must be a domain.',
-    'cfg.sec.tls.alpn':'ALPN','cfg.sec.tls.alpn.default':'as usual (Xray default)','cfg.sec.tls.rejectSni':'Reject unknown SNI',
-    'cfg.sec.tls.hint':'The node issues a self-signed certificate: strict clients must pin it via pinnedPeerCertSha256.',
+    'cfg.sec.tls.sni':'SNI — the name the client requests','cfg.sec.tls.minVer':'Minimum TLS version','cfg.sec.tls.maxVer':'Maximum TLS version',
+    'cfg.sec.tls.cipher':'Cipher suites (TLS 1.2 only)','cfg.sec.tls.cert':'Certificate file (path on the node)','cfg.sec.tls.key':'Private key file (path on the node)',
+    'cfg.sec.tls.rejectSni':'Reject unknown SNI',
+    'cfg.sec.tls.hint':'Leave the certificate fields empty and the node issues a self-signed cert for the sni. Have a real certificate (e.g. from certbot) — give both file paths. Strict clients must pin it via pinnedPeerCertSha256.',
     'cfg.protocol.short':'Protocol','cfg.port.short':'Port',
     'th.address':'Address','th.node':'Node','th.users':'Users','th.traffic':'Traffic',
     'th.name':'Name','th.title':'Name','th.status':'Status','th.login':'Username','th.role':'Role',
@@ -279,6 +288,7 @@ const I18N = {
     'toast.hostCreated':'Host created','toast.hostEdited':'Host updated',
     'dlg.host.editTitle':'Host: edit',
     'cfg.adv':'Additional settings','cfg.adv.path':'Path','cfg.adv.hostHeader':'Host header','cfg.adv.serviceName':'Service name (gRPC)',
+    'cfg.adv.grpc.authority':'Authority (gRPC target host)','cfg.adv.grpc.multi':'Bidirectional stream (multiMode)',
     'chain.maxHops':'At most {n} hops','btn.remove':'Remove',
     'chain.minNodes':'A chain needs at least two nodes',
     'chain.hopSameNode':'Neighbouring hops must be on different nodes',
@@ -1064,20 +1074,32 @@ function initCfg(root, onChange){
 const readCfg = root => ({protocol:K(root,'protocol').value, network:K(root,'network').value, security:K(root,'security').value, port:+K(root,'port').value});
 
 /* ----- поля защиты: они появляются только тогда, когда защита выбрана -----
-   reality: маскированный dest (куда нода «притворяется» сайтом) и отпечаток,
-   который имитирует клиент; tls: alpn и поведение при чужом SNI. У «none» —
-   показывать нечего, и это правильно: там настраивать нечего */
+   reality: маскированный dest (куда нода «притворяется» сайтом), список sni и
+   допуски по версии клиента; tls: sni, границы версий, шифры tls 1.2, свои
+   сертификаты и отношение к чужому SNI. Отпечаток клиента (utls) работает при
+   любой шифрующей защите — и у reality, и у tls. У «none» показывать нечего */
+const FPS = ['chrome','edge','safari','firefox','android','ios'];
+const VERS = ['','1.0','1.1','1.2','1.3'];
 const SEC_FIELDS = {
   reality(h){
     return `<div class="secbox">
       <label><span>${t('cfg.sec.reality.dest')}</span><input data-k="dest" maxlength="63" placeholder="www.microsoft.com:443" value="${esc(h.dest||'')}"></label>
-      <label><span>${t('cfg.sec.reality.fp')}</span><select data-k="fp">${opts(['chrome','edge','safari','firefox','android'])}</select></label>
+      <label><span>${t('cfg.sec.fp')}</span><select data-k="fp">${opts(FPS)}</select></label>
+      <label><span>${t('cfg.sec.reality.serverNames')}</span><input data-k="serverNames" maxlength="255" placeholder="vpn.example.net, backup.example.net" value="${esc(h.serverNames||'')}"></label>
+      <label><span>${t('cfg.sec.reality.minClient')}</span><input data-k="realityMinClient" maxlength="15" placeholder="24.0.0" value="${esc(h.realityMinClient||'')}"></label>
+      <label><span>${t('cfg.sec.reality.maxClient')}</span><input data-k="realityMaxClient" maxlength="15" placeholder="" value="${esc(h.realityMaxClient||'')}"></label>
       <p class="hint">${esc(t('cfg.sec.reality.hint'))}</p></div>`;
   },
   tls(h){
-    const defLabel = {'' : t('cfg.sec.tls.alpn.default')};
+    const auto = {'': t('cfg.sec.auto')};
     return `<div class="secbox">
-      <label><span>${t('cfg.sec.tls.alpn')}</span><select data-k="alpn">${opts(['','h2,http/1.1','h2','http/1.1'], defLabel)}</select></label>
+      <label><span>${t('cfg.sec.tls.sni')}</span><input data-k="sni" maxlength="253" placeholder="vpn.example.net" value="${esc(h.sni||'')}"></label>
+      <label><span>${t('cfg.sec.fp')}</span><select data-k="fp">${opts(FPS)}</select></label>
+      <label><span>${t('cfg.sec.tls.minVer')}</span><select data-k="minVersion">${opts(VERS,auto)}</select></label>
+      <label><span>${t('cfg.sec.tls.maxVer')}</span><select data-k="maxVersion">${opts(VERS,auto)}</select></label>
+      <label><span>${t('cfg.sec.tls.cipher')}</span><input data-k="cipherSuites" maxlength="127" placeholder="chacha20-ietf-poly1305" value="${esc(h.cipherSuites||'')}"></label>
+      <label><span>${t('cfg.sec.tls.cert')}</span><input data-k="certFile" maxlength="255" placeholder="/etc/ssl/medusa.crt" value="${esc(h.certFile||'')}"></label>
+      <label><span>${t('cfg.sec.tls.key')}</span><input data-k="keyFile" maxlength="255" placeholder="/etc/ssl/medusa.key" value="${esc(h.keyFile||'')}"></label>
       <label class="chk"><input type="checkbox" data-k="rejectUnknownSni" ${h.rejectUnknownSni?'checked':''}><span>${esc(t('cfg.sec.tls.rejectSni'))}</span></label>
       <p class="hint">${esc(t('cfg.sec.tls.hint'))}</p></div>`;
   },
@@ -1085,12 +1107,21 @@ const SEC_FIELDS = {
 const secHTML = (sec, h = {}) => (SEC_FIELDS[sec] || (()=>''))(h);
 function secBody(cfg, root){
   const sec = K(cfg,'security').value, body = {};
+  const val = k => K(root,k) ? K(root,k).value.trim() : '';
   if(sec==='reality'){
-    const dest = K(root,'dest') ? K(root,'dest').value.trim() : '';
-    body.dest = dest;                                  // пустое = «как по умолчанию»
+    body.dest = val('dest');                            // пустое = «как по умолчанию»
     body.fp = K(root,'fp').value;
+    body.serverNames = val('serverNames');
+    body.realityMinClient = val('realityMinClient');
+    body.realityMaxClient = val('realityMaxClient');
   } else if(sec==='tls'){
-    body.alpn = K(root,'alpn') ? K(root,'alpn').value : '';
+    body.sni = val('sni');
+    body.fp = K(root,'fp').value;
+    body.minVersion = K(root,'minVersion').value;
+    body.maxVersion = K(root,'maxVersion').value;
+    body.cipherSuites = val('cipherSuites');
+    body.certFile = val('certFile');
+    body.keyFile = val('keyFile');
     body.rejectUnknownSni = !!(K(root,'rejectUnknownSni') && K(root,'rejectUnknownSni').checked);
   }
   return body;
@@ -1102,13 +1133,17 @@ function secBody(cfg, root){
 const ADV_BY = {
   ws: h=>`<label><span>${t('cfg.adv.path')}</span><input data-k="path" maxlength="256" placeholder="/ws" value="${esc(h.path||'')}"></label>
     <label><span>${t('cfg.adv.hostHeader')}</span><input data-k="hostHeader" maxlength="63" placeholder="cdn.example.com" value="${esc(h.hostHeader||'')}"></label>`,
-  grpc: h=>`<label><span>${t('cfg.adv.serviceName')}</span><input data-k="serviceName" maxlength="64" placeholder="medusa" value="${esc(h.serviceName||'')}"></label>`,
+  grpc: h=>`<label><span>${t('cfg.adv.serviceName')}</span><input data-k="serviceName" maxlength="64" placeholder="medusa" value="${esc(h.serviceName||'')}"></label>
+    <label><span>${t('cfg.adv.grpc.authority')}</span><input data-k="grpcAuthority" maxlength="63" placeholder="grpc.example.net" value="${esc(h.grpcAuthority||'')}"></label>
+    <label class="chk"><input type="checkbox" data-k="grpcMultiMode" ${h.grpcMultiMode?'checked':''}><span>${esc(t('cfg.adv.grpc.multi'))}</span></label>`,
 };
 const advHTML = (net, h = {}) => ADV_BY[net] ? `<details class="adv"><summary>${esc(t('cfg.adv'))}</summary><div class="advf">${ADV_BY[net](h)}</div></details>` : '';
 function advBody(cfg, root){
   const net = K(cfg,'network').value, body = {};
   if(net==='ws'){ body.path = K(root,'path').value.trim(); body.hostHeader = K(root,'hostHeader').value.trim(); }
-  else if(net==='grpc'){ body.serviceName = K(root,'serviceName').value.trim(); }
+  else if(net==='grpc'){ body.serviceName = K(root,'serviceName').value.trim();
+    body.grpcAuthority = K(root,'grpcAuthority').value.trim();
+    body.grpcMultiMode = !!K(root,'grpcMultiMode').checked; }
   return body;
 }
 
@@ -1242,8 +1277,13 @@ function renderHostExtras(h){
   const sec = K($('#hcfg'),'security').value, net = K($('#hcfg'),'network').value;
   $('#hsec').innerHTML = secHTML(sec, h);
   if(sec==='reality') K($('#hsec'),'fp').value = h.fp || 'chrome';
-  if(sec==='tls' && K($('#hsec'),'alpn')) K($('#hsec'),'alpn').value = h.alpn || '';
+  if(sec==='tls'){
+    K($('#hsec'),'fp').value = h.fp || 'chrome';
+    K($('#hsec'),'minVersion').value = h.minVersion || '';
+    K($('#hsec'),'maxVersion').value = h.maxVersion || '';
+  }
   $('#hadv').innerHTML = advHTML(net, h);
+  if(net==='grpc') K($('#hadv'),'grpcMultiMode').checked = !!h.grpcMultiMode;
 }
 function hostDialogShell(){
   $('#hform').reset();

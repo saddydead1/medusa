@@ -168,18 +168,25 @@ def subscription_link(token: str, host: dict | sqlite3.Row) -> str:
             params["path"] = host["path"]
         if host["host_header"]:
             params["host"] = host["host_header"]
-    elif host["network"] == "grpc" and host["service_name"]:
-        params["serviceName"] = host["service_name"]
+    elif host["network"] == "grpc":
+        if host["service_name"]:
+            params["serviceName"] = host["service_name"]
+        if host["grpc_multi_mode"]:
+            params["mode"] = "multiMode"
     security = host["security"]
     if security == "tls":
-        params.update({"security": "tls", "sni": address})
+        params.update({"security": "tls", "sni": host["sni"] or address})
+        if host["fp"]:
+            params["fp"] = host["fp"]
     elif security == "reality":
         params["security"] = "reality"
         if host["public_key"]:
             params["pbk"] = host["public_key"]
         params["fp"] = host["fp"] or "chrome"
-        if not is_ip(address):
-            params["sni"] = address
+        # sni для клиента — первое имя из списка, который принимает reality
+        sni = host["sni"] or (host["server_names"].split(",")[0].strip() if host["server_names"] else "") or address
+        if not is_ip(sni):
+            params["sni"] = sni
         params["sid"] = reality_short_id(token)
         params["spx"] = "/"
     else:
@@ -256,13 +263,15 @@ def subscription_page(token: str, request: Request,
         return shell(f'{st["panelName"]} — {s["404.title"]}', lang, st["theme"], body, status=404)
 
     hosts = conn.execute(
-        """SELECT h.name, h.address, h.public_key, h.fp, h.path, h.host_header, h.service_name,
+        """SELECT h.name, h.address, h.public_key, h.fp, h.sni, h.server_names, h.path,
+                  h.host_header, h.service_name, h.grpc_multi_mode,
                   h.protocol, h.port, h.network, h.security,
                   n.address AS node_address
            FROM hosts h JOIN nodes n ON n.id = h.node_id
            WHERE h.chain_id IS NULL ORDER BY h.name""").fetchall()
     chains = conn.execute(
-        """SELECT c.name, c.hops, h.address, h.public_key, h.fp, h.path, h.host_header, h.service_name,
+        """SELECT c.name, c.hops, h.address, h.public_key, h.fp, h.sni, h.server_names, h.path,
+                  h.host_header, h.service_name, h.grpc_multi_mode,
                   h.protocol, h.port, h.network, h.security,
                   n.address AS node_address
            FROM chains c JOIN hosts h ON h.chain_id = c.id JOIN nodes n ON n.id = h.node_id

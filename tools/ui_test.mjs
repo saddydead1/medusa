@@ -315,11 +315,14 @@ await page.evaluate(() => {
 });
 
 /* поля защиты: появились только потому, что защита выбрана */
-ok(await page.locator('#hsec [data-k="dest"]').count() === 1 && await page.locator('#hsec [data-k="fp"]').count() === 1,
-   'reality показал свои поля: маскированный адрес и отпечаток клиента');
+ok(await page.locator('#hsec [data-k="dest"]').count() === 1 && await page.locator('#hsec [data-k="fp"]').count() === 1 &&
+   await page.locator('#hsec [data-k="serverNames"]').count() === 1 && await page.locator('#hsec [data-k="realityMinClient"]').count() === 1,
+   'reality показал свои поля: маскированный адрес, отпечаток, список sni и версию клиента');
 await page.evaluate(() => { const el = document.querySelector('#hcfg [data-k="security"]'); el.value = 'tls'; el.dispatchEvent(new Event('change', {bubbles: true})); });
-ok(await page.locator('#hsec [data-k="alpn"]').count() === 1 && await page.locator('#hsec [data-k="rejectUnknownSni"]').count() === 1,
-   'tls показал свои поля: alpn и «отвергать чужой SNI»');
+ok(await page.locator('#hsec [data-k="sni"]').count() === 1 && await page.locator('#hsec [data-k="rejectUnknownSni"]').count() === 1 &&
+   await page.locator('#hsec [data-k="certFile"]').count() === 1 && await page.locator('#hsec [data-k="minVersion"]').count() === 1,
+   'tls показал свои поля: sni, версии, сертификаты и «отвергать чужой SNI»');
+ok(await page.locator('#hsec [data-k="alpn"]').count() === 0, 'alpn больше не поле панели: у Xray свои разумные договорённости');
 await page.evaluate(() => { const el = document.querySelector('#hcfg [data-k="security"]'); el.value = 'none'; el.dispatchEvent(new Event('change', {bubbles: true})); });
 ok((await page.locator('#hsec').innerHTML()).trim() === '', 'без защиты показывать нечего — и не показывают');
 await page.evaluate(() => { const el = document.querySelector('#hcfg [data-k="security"]'); el.value = 'reality'; el.dispatchEvent(new Event('change', {bubbles: true})); });
@@ -336,7 +339,8 @@ await page.click('#hadv summary');
 ok(await page.locator('#hadv [data-k="path"]').count() === 1 && await page.locator('#hadv [data-k="hostHeader"]').count() === 1,
    'раскрыли websocket: путь и Host-заголовок на месте');
 await page.evaluate(() => { const el = document.querySelector('#hcfg [data-k="network"]'); el.value = 'grpc'; el.dispatchEvent(new Event('change', {bubbles: true})); });
-ok(await page.locator('#hadv [data-k="serviceName"]').count() === 1, 'gRPC показал своё имя сервиса');
+ok(await page.locator('#hadv [data-k="serviceName"]').count() === 1 && await page.locator('#hadv [data-k="grpcAuthority"]').count() === 1 &&
+   await page.locator('#hadv [data-k="grpcMultiMode"]').count() === 1, 'gRPC показал имя сервиса, authority и multiMode');
 await page.evaluate(() => {
   const set = (k, v) => { const el = document.querySelector(`#hcfg [data-k="${k}"]`); el.value = v; el.dispatchEvent(new Event('change', {bubbles: true})); };
   set('security', 'reality'); set('network', 'tcp');

@@ -12,6 +12,15 @@ ADDRESS_PATTERN = r"^[A-Za-z0-9._:\-\[\]]+$"
 # те же адреса, но пустое значение разрешено: пустая строка в PATCH означает
 # «сбросить к разумному по умолчанию»
 ADDR_OR_EMPTY = r"^[A-Za-z0-9._:\-\[\]]*$"
+# sni — домен без порта; список sni для reality — домены через запятую
+SNI_PATTERN = r"^[A-Za-z0-9.\-\[\]]*$"
+SNI_LIST_PATTERN = r"^[A-Za-z0-9.\-\[\], ]*$"
+# версии tls и версии клиента reality: «1.2», «24.7.10», пусто — значение по умолчанию
+VER_PATTERN = r"^$|^\d+\.\d+(\.\d+)?$"
+# наборы шифров tls 1.2: имена из гостя tls-библиотеки Go, через запятую
+CIPHER_PATTERN = r"^$|^[a-z0-9\-,]+$"
+# путь к файлу на ноде: только латиница, цифры и служебные символы пути
+FILE_PATH_PATTERN = r"^[/A-Za-z0-9._+\-]*$"
 ADDRESS = Annotated[str, Field(min_length=4, max_length=63, pattern=ADDRESS_PATTERN)]
 NODE_NAME = Annotated[str, Field(min_length=2, max_length=32)]
 STATUS = Literal["active", "disabled"]
@@ -70,13 +79,28 @@ class HostCreate(BaseModel):
     # поля защиты: каждое живёт только со своей защитой (проверка в роутере);
     # пустая строка — сброс к значению по умолчанию
     dest: Annotated[str | None, Field(max_length=63, pattern=ADDR_OR_EMPTY)] = None
-    fp: Literal["chrome", "edge", "safari", "firefox", "android"] | None = None
-    alpn: Literal["", "h2,http/1.1", "h2", "http/1.1"] | None = None
+    # отпечаток клиента (utls): куда нода притворяется браузером; работает и у
+    # reality, и у tls — пустой Literal не разрешён именно поэтому
+    fp: Literal["chrome", "edge", "safari", "firefox", "android", "ios"] | None = None
     rejectUnknownSni: bool | None = None
-    # транспортные детали: путь и Host у websocket, имя сервиса у gRPC
+    # tls: sni, границы версий протокола, шифры tls 1.2 и пути к своим сертификатам
+    sni: Annotated[str | None, Field(max_length=253, pattern=SNI_PATTERN)] = None
+    minVersion: Literal["", "1.0", "1.1", "1.2", "1.3"] | None = None
+    maxVersion: Literal["", "1.0", "1.1", "1.2", "1.3"] | None = None
+    cipherSuites: Annotated[str | None, Field(max_length=127, pattern=CIPHER_PATTERN)] = None
+    certFile: Annotated[str | None, Field(max_length=255, pattern=FILE_PATH_PATTERN)] = None
+    keyFile: Annotated[str | None, Field(max_length=255, pattern=FILE_PATH_PATTERN)] = None
+    # reality: какие sni он принимает (пусто — адрес хоста) и допуски по версии клиента
+    serverNames: Annotated[str | None, Field(max_length=255, pattern=SNI_LIST_PATTERN)] = None
+    realityMinClient: Annotated[str | None, Field(max_length=15, pattern=VER_PATTERN)] = None
+    realityMaxClient: Annotated[str | None, Field(max_length=15, pattern=VER_PATTERN)] = None
+    # транспортные детали: путь и Host у websocket; имя сервиса, authority и
+    # двунаправленный поток у gRPC
     path: Annotated[str | None, Field(max_length=256)] = None
     hostHeader: Annotated[str | None, Field(max_length=63, pattern=ADDR_OR_EMPTY)] = None
     serviceName: Annotated[str | None, Field(max_length=64)] = None
+    grpcAuthority: Annotated[str | None, Field(max_length=63, pattern=ADDR_OR_EMPTY)] = None
+    grpcMultiMode: bool | None = None
 
 
 class HostPatch(BaseModel):
@@ -90,12 +114,22 @@ class HostPatch(BaseModel):
     network: NETWORKS | None = None
     security: SECURITY | None = None
     dest: Annotated[str | None, Field(max_length=63, pattern=ADDR_OR_EMPTY)] = None
-    fp: Literal["chrome", "edge", "safari", "firefox", "android"] | None = None
-    alpn: Literal["", "h2,http/1.1", "h2", "http/1.1"] | None = None
+    fp: Literal["chrome", "edge", "safari", "firefox", "android", "ios"] | None = None
     rejectUnknownSni: bool | None = None
+    sni: Annotated[str | None, Field(max_length=253, pattern=SNI_PATTERN)] = None
+    minVersion: Literal["", "1.0", "1.1", "1.2", "1.3"] | None = None
+    maxVersion: Literal["", "1.0", "1.1", "1.2", "1.3"] | None = None
+    cipherSuites: Annotated[str | None, Field(max_length=127, pattern=CIPHER_PATTERN)] = None
+    certFile: Annotated[str | None, Field(max_length=255, pattern=FILE_PATH_PATTERN)] = None
+    keyFile: Annotated[str | None, Field(max_length=255, pattern=FILE_PATH_PATTERN)] = None
+    serverNames: Annotated[str | None, Field(max_length=255, pattern=SNI_LIST_PATTERN)] = None
+    realityMinClient: Annotated[str | None, Field(max_length=15, pattern=VER_PATTERN)] = None
+    realityMaxClient: Annotated[str | None, Field(max_length=15, pattern=VER_PATTERN)] = None
     path: Annotated[str | None, Field(max_length=256)] = None
     hostHeader: Annotated[str | None, Field(max_length=63, pattern=ADDR_OR_EMPTY)] = None
     serviceName: Annotated[str | None, Field(max_length=64)] = None
+    grpcAuthority: Annotated[str | None, Field(max_length=63, pattern=ADDR_OR_EMPTY)] = None
+    grpcMultiMode: bool | None = None
 
 
 class Hop(BaseModel):

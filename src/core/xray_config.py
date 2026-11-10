@@ -98,11 +98,32 @@ def connect_address(host: dict) -> str:
     return host["address"] or host["node_address"]
 
 
+def reality_server_names(host: dict) -> list[str]:
+    """Список sni, которые принимает reality: свои алиасы (serverNames через
+    запятую), иначе — sni хоста, иначе — адрес хоста (он обязан быть доменом)."""
+    raw = (host.get("server_names") or "").replace(",", " ").split()
+    names = [n.strip().lower() for n in raw if n.strip()]
+    if names:
+        return names
+    sni = (host.get("sni") or "").strip()
+    return [sni or connect_address(host)]
+
+
+def cert_files(host: dict) -> tuple[str, str]:
+    """Файлы сертификатов tls-хоста: свои пути (они абсолютные — нода их не
+    переписывает) или генерируемые нодой self-signed рядом с конфигом."""
+    cert = (host.get("cert_file") or "").strip()
+    key = (host.get("key_file") or "").strip()
+    if cert and key:
+        return cert, key
+    return cert_paths(host["id"])
+
+
 def stream_settings(host: dict) -> dict[str, Any]:
     address = connect_address(host)
     stream: dict[str, Any] = {"network": host["network"], "security": host["security"]}
-    # транспортные детали: путь и Host у websocket, имя сервиса у gRPC;
-    # пустое — не пишем вовсе, у Xray свои разумные значения
+    # транспортные детали: путь и Host у websocket; имя сервиса, authority и
+    # двунаправленный поток у gRPC; пустое — не пишем вовсе, у Xray свои разумные значения
     if host["network"] == "ws":
         ws: dict[str, Any] = {}
         if host.get("path"):
@@ -111,32 +132,54 @@ def stream_settings(host: dict) -> dict[str, Any]:
             ws["host"] = host["host_header"]
         if ws:
             stream["wsSettings"] = ws
-    elif host["network"] == "grpc" and host.get("service_name"):
-        stream["grpcSettings"] = {"serviceName": host["service_name"]}
+    elif host["network"] == "grpc":
+        grpc: dict[str, Any] = {}
+        if host.get("service_name"):
+            grpc["serviceName"] = host["service_name"]
+        if host.get("grpc_authority"):
+            grpc["authority"] = host["grpc_authority"]
+        if host.get("grpc_multi_mode"):
+            grpc["multiMode"] = True
+        if grpc:
+            stream["grpcSettings"] = grpc
+    # отпечаток клиента (utls): куда нода притворяется браузером — работает при
+    # любой шифрующей защите, поэтому поле общее, а не reality-специальное
+    fingerprint = (host.get("fp") or "").strip()
+    if fingerprint and host["security"] in ("tls", "reality"):
+        stream["fingerprint"] = fingerprint
     if host["security"] == "tls":
-        crt, key = cert_paths(host["id"])
+        sni = (host.get("sni") or "").strip() or address
+        crt, key = cert_files(host)
         tls: dict[str, Any] = {
-            "serverName": address,
+            "serverName": sni,
             "certificates": [{"certificateFile": crt, "keyFile": key}],
         }
-        alpn = (host.get("alpn") or "").strip()
-        if alpn:
-            tls["alpn"] = alpn.split(",")     # пусто — как повёл себя Xray (у него свои разумные alpn)
+        # границы версий и шифры tls 1.2 — только если человек задал их сам;
+        # alpn панель больше не называет: у Xray свои разумные договорённости
+        if host.get("min_version"):
+            tls["minVersion"] = host["min_version"]
+        if host.get("max_version"):
+            tls["maxVersion"] = host["max_version"]
+        if host.get("cipher_suites"):
+            tls["cipherSuites"] = host["cipher_suites"]
         if host.get("reject_unknown_sni"):
             tls["rejectUnknownSni"] = True
         stream["tlsSettings"] = tls
     elif host["security"] == "reality":
         # Xray 26: серверный reality — это serverNames/shortIds/dest/privateKey;
         # адрес обязан быть доменом (панель это проверяет: IP в SNI не влезает)
-        stream["realitySettings"] = {
+        reality: dict[str, Any] = {
             "show": False,
             "dest": host.get("dest") or REALITY_DEST,
-            "serverNames": [address],
+            "serverNames": reality_server_names(host),
             "privateKey": host.get("private_key") or "",
-            "minClientVer": REALITY_MIN_CLIENT,
+            "minClientVer": host.get("reality_min_client") or REALITY_MIN_CLIENT,
             "shortIds": [],
             "spiderX": "/",
         }
+        if host.get("reality_max_client"):
+            reality["maxClientVer"] = host["reality_max_client"]
+        stream["realitySettings"] = reality
     return stream
 
 

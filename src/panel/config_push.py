@@ -82,18 +82,22 @@ def collect(conn: sqlite3.Connection, node_id: int) -> dict[str, Any]:
         raise LookupError(f"ноды {node_id} уже нет")
     hosts = [dict(r) for r in conn.execute(
         """SELECT h.id, h.name, h.address, h.protocol, h.port, h.network, h.security,
-                  h.private_key, h.public_key, h.dest, h.fp, h.alpn, h.reject_unknown_sni,
-                  h.path, h.host_header, h.service_name,
+                  h.private_key, h.public_key, h.dest, h.fp, h.reject_unknown_sni,
+                  h.sni, h.min_version, h.max_version, h.cipher_suites, h.cert_file, h.key_file,
+                  h.server_names, h.reality_min_client, h.reality_max_client,
+                  h.path, h.host_header, h.service_name, h.grpc_authority, h.grpc_multi_mode,
                   n.address AS node_address
            FROM hosts h JOIN nodes n ON n.id = h.node_id
            WHERE h.node_id = ? AND h.chain_id IS NULL ORDER BY h.port""", (node_id,)).fetchall()]
     users = [dict(r) for r in conn.execute("SELECT name, token, status FROM users ORDER BY name").fetchall()]
     certs = []
     for host in hosts:
-        if host["security"] != "tls":
+        # свои файлы сертификатов ноде подсказывать не нужно: они уже лежат там, где их указали
+        if host["security"] != "tls" or (host["cert_file"] and host["key_file"]):
             continue
         crt, key = cert_paths(host["id"])
-        certs.append({"file": crt, "key": key, "host": host["address"] or node["address"]})
+        # сертификат выпускается под то имя, с которым клиент придёт по sni
+        certs.append({"file": crt, "key": key, "host": host["sni"] or host["address"] or node["address"]})
     return {"node": dict(node), "hosts": hosts, "users": users,
             "config": render_node_config(dict(node), hosts, users), "certs": certs}
 
