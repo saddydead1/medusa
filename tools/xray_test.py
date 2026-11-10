@@ -140,14 +140,24 @@ def main() -> int:
 
             reality = client.post("/api/hosts", json={"name": "R443", "node": "stub", "protocol": "vless",
                                                       "port": 443, "network": "tcp", "security": "reality",
-                                                      "address": "vpn.example.net"}).json()
+                                                      "address": "vpn.example.net",
+                                                      "dest": "mask.example.net:443", "fp": "firefox"}).json()
             ok(reality["address"] == "vpn.example.net", f"адрес подключения хоста сохранён: {reality['address']}")
             ok(len(reality["publicKey"] or "") >= 40, f"reality-хост получил публичный ключ: {reality['publicKey'][:12]}…")
             ok(all(k not in reality for k in ("private_key", "privateKey", "apiKey")),
                "приватный ключ reality из панели наружу не утекает")
+            ok(reality["dest"] == "mask.example.net:443" and reality["fp"] == "firefox",
+               "маскированный адрес и отпечаток клиента сохранены у хоста")
             tls = client.post("/api/hosts", json={"name": "T8443", "node": "stub", "protocol": "vless",
                                                   "port": 8443, "network": "ws", "security": "tls",
-                                                  "address": "127.0.0.1"}).json()
+                                                  "address": "127.0.0.1",
+                                                  "alpn": "h2", "rejectUnknownSni": True}).json()
+            ok(tls["alpn"] == "h2" and tls["rejectUnknownSni"] is True,
+               "tls-хост записал alpn и «отвергать чужой SNI»")
+            crossed = client.post("/api/hosts", json={"name": "кривой", "node": "stub", "protocol": "vless",
+                                                      "port": 3099, "network": "tcp", "security": "tls",
+                                                      "address": "127.0.0.1", "fp": "chrome"})
+            ok(crossed.status_code == 400, f"поле чужой защиты отвергается: {crossed.json()['detail']}")
             plain = client.post("/api/hosts", json={"name": "N3011", "node": "stub", "protocol": "vless",
                                                     "port": 3011, "network": "tcp", "security": "none"}).json()
             ok(plain["address"] == "", "хост без своего адреса — значит подключаться к адресу ноды")
@@ -175,6 +185,8 @@ def main() -> int:
             ok(cfg_path.exists(), f"рабочий конфиг ноды записан: {cfg_path}")
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
             by_port = {i["port"]: i for i in cfg["inbounds"]}
+            ok({i["tag"] for i in cfg["inbounds"]} == {"R443", "T8443", "N3011"},
+               f"теги инбаундов — имена хостов, как их видит человек: {sorted(i['tag'] for i in cfg['inbounds'])}")
             ok(sorted(by_port) == [443, 3011, 8443], f"инбаунды по портам хостов: {sorted(by_port)}")
 
             r = by_port[443]
@@ -182,8 +194,8 @@ def main() -> int:
                "reality-инбаунд с приватным ключом из панели")
             ok(r["streamSettings"]["realitySettings"]["serverNames"] == ["vpn.example.net"],
                "serverNames берут адрес подключения, а не адрес ноды")
-            ok(r["streamSettings"]["realitySettings"]["dest"],
-               "Xray 26 требует у reality dest — панель подставляет маскированный адрес")
+            ok(r["streamSettings"]["realitySettings"]["dest"] == "mask.example.net:443",
+               "маскированный адрес хоста ушёл в reality dest")
             ok(r["settings"]["decryption"] == "none", "vless-инбаунд: decryption=none")
             client0 = r["settings"]["clients"][0]
             ok(uuid.UUID(client0["id"]) == uuid.UUID(user_uuid(vasya["token"])),
@@ -192,6 +204,9 @@ def main() -> int:
                "короткий id подписчика лежит у инбаунда")
 
             t = by_port[8443]
+            ok(t["streamSettings"]["tlsSettings"]["alpn"] == ["h2"] and
+               t["streamSettings"]["tlsSettings"]["rejectUnknownSni"] is True,
+               "alpn и rejectUnknownSNI доехали до tls-инбаунда")
             cert = cfg_path.parent / t["streamSettings"]["tlsSettings"]["certificates"][0]["certificateFile"]
             key = cfg_path.parent / t["streamSettings"]["tlsSettings"]["certificates"][0]["keyFile"]
             ok(cert.exists() and key.exists(), f"tls-хост получил выпущенный сертификат: {cert.name}")
@@ -238,6 +253,16 @@ def main() -> int:
             client.delete(f"/api/hosts/{plain['id']}")
             cfg = wait_cfg(cfg_path, lambda c: len(c["inbounds"]) == 2)
             ok(len(cfg["inbounds"]) == 2, "удалённый хост исчез из конфига")
+
+            # два хоста с одним именем на одной ноде — порт уникален, а тег нет:
+            # второй получает имя с id, теги в конфиге не должны сталкиваться
+            dup = client.post("/api/hosts", json={"name": "R443", "node": "stub", "protocol": "vless",
+                                                   "port": free_port(), "network": "tcp", "security": "none",
+                                                   "address": "127.0.0.1"}).json()
+            cfg = wait_cfg(cfg_path, lambda c: len(c["inbounds"]) == 3)
+            tags = [i["tag"] for i in cfg["inbounds"]]
+            ok(len(set(tags)) == 3 and "R443" in tags and any(tag == f"R443-{dup['id']}" for tag in tags),
+               f"одноимённые хосты получили разные теги: {sorted(tags)}")
 
             # панель подтвердит ревизию чуть позже, чем файл конфига сменился: ждём оба факта
             final = wait_rows(client, node["id"], lambda r: not r["configDirty"]) or \

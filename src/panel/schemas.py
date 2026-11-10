@@ -64,6 +64,11 @@ class HostCreate(BaseModel):
     # адрес, к которому подключается подписчик (домен или IP ноды наружу);
     # пусто — значит подключаться к адресу ноды, он же у панели для своей связи
     address: Annotated[str | None, Field(min_length=4, max_length=63, pattern=ADDRESS_PATTERN)] = None
+    # поля защиты: каждое живёт только со своей защитой (проверка в роутере)
+    dest: Annotated[str | None, Field(min_length=4, max_length=63, pattern=ADDRESS_PATTERN)] = None
+    fp: Literal["chrome", "edge", "safari", "firefox", "android"] | None = None
+    alpn: Literal["h2,http/1.1", "h2", "http/1.1"] | None = None
+    rejectUnknownSni: bool | None = None
 
 
 class Hop(BaseModel):

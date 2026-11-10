@@ -310,6 +310,18 @@ await page.evaluate(() => {
   document.querySelector('#hnode').dispatchEvent(new Event('change'));
   set('protocol', 'vless'); set('security', 'reality'); set('network', 'tcp'); set('port', 443);
 });
+
+/* поля защиты: появились только потому, что защита выбрана */
+ok(await page.locator('#hsec [data-k="dest"]').count() === 1 && await page.locator('#hsec [data-k="fp"]').count() === 1,
+   'reality показал свои поля: маскированный адрес и отпечаток клиента');
+await page.evaluate(() => { const el = document.querySelector('#hcfg [data-k="security"]'); el.value = 'tls'; el.dispatchEvent(new Event('change', {bubbles: true})); });
+ok(await page.locator('#hsec [data-k="alpn"]').count() === 1 && await page.locator('#hsec [data-k="rejectUnknownSni"]').count() === 1,
+   'tls показал свои поля: alpn и «отвергать чужой SNI»');
+await page.evaluate(() => { const el = document.querySelector('#hcfg [data-k="security"]'); el.value = 'none'; el.dispatchEvent(new Event('change', {bubbles: true})); });
+ok((await page.locator('#hsec').innerHTML()).trim() === '', 'без защиты показывать нечего — и не показывают');
+await page.evaluate(() => { const el = document.querySelector('#hcfg [data-k="security"]'); el.value = 'reality'; el.dispatchEvent(new Event('change', {bubbles: true})); });
+ok((await page.textContent('#hdlg')).includes('Адрес хоста'), 'метка поля названа адресом хоста');
+
 await submit('#hform');
 await wait(() => document.querySelector('#view').textContent.includes('FI Reality'));
 ok((await text()).includes('FI Reality') && (await text()).includes('vps-fi'), 'хост создан и привязан к ноде');

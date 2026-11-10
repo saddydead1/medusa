@@ -53,6 +53,11 @@ def as_dict(row: sqlite3.Row) -> dict:
         # публичный ключ reality не секрет: именно он нужен клиенту в ссылке;
         # приватного наружу никогда не отдаём
         "publicKey": row["public_key"],
+        # настройки защиты: панель их отдаёт как есть, пустое — «значения по умолчанию знает рендер»
+        "dest": row["dest"],
+        "fp": row["fp"],
+        "alpn": row["alpn"],
+        "rejectUnknownSni": bool(row["reject_unknown_sni"]),
     }
 
 
@@ -78,16 +83,24 @@ def create_host(
     address = (body.address or "").strip()
     if body.security == "reality" and is_ip(address or node["address"]):
         raise bad_request("хосту reality нужен адрес-домен: клиент не умеет подставлять IP в SNI")
+    # поля защиты живут только со своей защитой: случайный alpn у reality или dest у tls —
+    # не «лишнее», а путаница, которую лучше увидеть сразу
+    if (body.dest is not None or body.fp is not None) and body.security != "reality":
+        raise bad_request("маскированный адрес и отпечаток клиента — настройки reality, а не другой защиты")
+    if (body.alpn is not None or body.rejectUnknownSni is not None) and body.security != "tls":
+        raise bad_request("alpn и отношение к чужому SNI — настройки tls, а не другой защиты")
     private_key = public_key = ""
     if body.security == "reality":
         private_key, public_key = new_reality_keys()
     try:
         conn.execute(
             """INSERT INTO hosts (name, node_id, protocol, port, network, security, chain_id,
-                                  address, private_key, public_key, created_at)
-               VALUES (?,?,?,?,?,?,NULL,?,?,?,?)""",
+                                  address, private_key, public_key, dest, fp, alpn, reject_unknown_sni, created_at)
+               VALUES (?,?,?,?,?,?,NULL,?,?,?,?,?,?,?,?)""",
             (body.name, node["id"], body.protocol, body.port, body.network, body.security,
-             address, private_key, public_key, now_ms()),
+             address, private_key, public_key,
+             (body.dest or "").strip(), body.fp or "", body.alpn or "",
+             1 if body.rejectUnknownSni else 0, now_ms()),
         )
     except sqlite3.IntegrityError:
         raise conflict(f"порт {body.port} на ноде {body.node} уже занят")

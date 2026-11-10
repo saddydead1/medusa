@@ -121,11 +121,11 @@ def main() -> int:
         # --- хосты ---
         host = client.post("/api/hosts", json={"name": "FI Reality", "node": "vps-fi", "protocol": "vless",
                                                "port": 443, "network": "tcp", "security": "reality",
-                                               "address": "fi.example.net"}).json()
+                                               "address": "fi.example.net", "fp": "edge"}).json()
         ok(host["node"] == "vps-fi" and host["chain"] is None, f"хост создан: {host['name']} на {host['node']}")
-        ok(host["address"] == "fi.example.net" and host["publicKey"] and
-           all(k not in host for k in ("private_key", "privateKey")),
-           "reality-хост: адрес-домен сохранён, публичный ключ есть, приватного нет")
+        ok(host["address"] == "fi.example.net" and host["publicKey"] and host["fp"] == "edge" and
+           host["dest"] == "" and all(k not in host for k in ("private_key", "privateKey")),
+           "reality-хост: адрес-домен, публичный ключ и отпечаток клиента есть, приватного нет")
         ip_reality = client.post("/api/hosts", json={"name": "по IP", "node": "vps-fi", "protocol": "vless",
                                                      "port": 444, "network": "tcp", "security": "reality"})
         ok(ip_reality.status_code == 400, f"reality на IP-адресе отвергается: {ip_reality.json()['detail']}")

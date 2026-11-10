@@ -494,6 +494,14 @@ tbody tr:hover{background:var(--surface-2);box-shadow:inset 3px 0 0 var(--accent
 .hopbox .hop select{background:var(--surface)}
 .cfgh,.cfg{display:grid;grid-template-columns:1.2fr 1fr 1fr .9fr;gap:7px}
 .cfgh{font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);margin-bottom:4px}
+/* поля защиты: всплывают только при выбранной защите и выглядят продолжением строки */
+#hsec:empty{display:none}
+.secbox{margin:10px 0 0;padding:11px 13px;border:1px dashed color-mix(in srgb,var(--accent) 40%,var(--line));
+  border-radius:var(--r-md);background:var(--surface-2)}
+.secbox label{margin-bottom:9px}
+.secbox .hint{margin:2px 0 0;font-size:12px}
+.secbox .chk{display:flex;align-items:center;gap:8px;font-weight:550;color:var(--muted)}
+.secbox .chk input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent)}
 .cfg select,.cfg input{min-width:0;width:100%;padding:7px 9px;font-size:13px;border-radius:var(--r-sm)}
 .hop{display:flex;gap:9px;align-items:center;margin-bottom:8px}
 .hop span{width:58px;font-size:13px;color:var(--muted)}

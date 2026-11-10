@@ -24,6 +24,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import ipaddress
+import re
 import uuid
 from typing import Any
 
@@ -76,6 +77,17 @@ def cert_paths(host_id: int) -> tuple[str, str]:
     return f"certs/host-{host_id}.crt", f"certs/host-{host_id}.key"
 
 
+def host_tag(host: dict) -> str:
+    """Тег инбаунда = имя хоста, как его видит человек.
+
+    Имя не обязано быть уникальным (уникален порт на ноде), поэтому внутри одного
+    конфига первому достаётся чистое имя, а совпадающим — имя с id. Пустое имя —
+    редкий случай (фронт не пускает), но и ему находится тег.
+    """
+    name = re.sub(r"[\x00-\x1f\x7f\s]+", " ", str(host.get("name") or "")).strip()
+    return name or f"medusa-host-{host['id']}"
+
+
 def clients_for(users: list[dict], protocol: str, security: str) -> list[dict]:
     if protocol == "trojan":
         return [{"password": user_password(u["token"])} for u in users]
@@ -91,16 +103,22 @@ def stream_settings(host: dict) -> dict[str, Any]:
     stream: dict[str, Any] = {"network": host["network"], "security": host["security"]}
     if host["security"] == "tls":
         crt, key = cert_paths(host["id"])
-        stream["tlsSettings"] = {
+        tls: dict[str, Any] = {
             "serverName": address,
             "certificates": [{"certificateFile": crt, "keyFile": key}],
         }
+        alpn = (host.get("alpn") or "").strip()
+        if alpn:
+            tls["alpn"] = alpn.split(",")     # пусто — как повёл себя Xray (у него свои разумные alpn)
+        if host.get("reject_unknown_sni"):
+            tls["rejectUnknownSni"] = True
+        stream["tlsSettings"] = tls
     elif host["security"] == "reality":
         # Xray 26: серверный reality — это serverNames/shortIds/dest/privateKey;
         # адрес обязан быть доменом (панель это проверяет: IP в SNI не влезает)
         stream["realitySettings"] = {
             "show": False,
-            "dest": REALITY_DEST,
+            "dest": host.get("dest") or REALITY_DEST,
             "serverNames": [address],
             "privateKey": host.get("private_key") or "",
             "minClientVer": REALITY_MIN_CLIENT,
@@ -110,12 +128,12 @@ def stream_settings(host: dict) -> dict[str, Any]:
     return stream
 
 
-def inbound(host: dict, users: list[dict]) -> dict[str, Any]:
+def inbound(host: dict, users: list[dict], tag: str) -> dict[str, Any]:
     users = active_only(users)
     protocol, security = host["protocol"], host["security"]
     clients = clients_for(users, protocol, security)
     entry: dict[str, Any] = {
-        "tag": f"medusa-host-{host['id']}",
+        "tag": tag,
         "port": host["port"],
         "protocol": protocol,
         "settings": {"clients": clients},
@@ -133,7 +151,15 @@ def inbound(host: dict, users: list[dict]) -> dict[str, Any]:
 def render_node_config(node: dict, hosts: list[dict], users: list[dict]) -> dict:
     """Один узел = один конфиг. Цепочки сюда пока не попадают: их хопа — про связь
     нод между собой, а не про инбаунд для подписчика."""
-    inbounds = [inbound(h, users) for h in hosts if h["protocol"] in SUPPORTED_PROTOCOLS]
+    hosts = [h for h in hosts if h["protocol"] in SUPPORTED_PROTOCOLS]
+    seen: set[str] = set()
+    inbounds = []
+    for host in hosts:
+        tag = host_tag(host)
+        if tag in seen:
+            tag = f"{tag}-{host['id']}"      # одноимённые хосты на одной ноде: тег остаётся разным
+        seen.add(tag)
+        inbounds.append(inbound(host, users, tag))
     return {
         "log": {"loglevel": "warning"},
         "dns": {"servers": ["1.1.1.1", "8.8.8.8"]},

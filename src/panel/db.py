@@ -196,6 +196,13 @@ COLUMNS = {
         # публичный — в ссылку подписки
         "private_key": "TEXT NOT NULL DEFAULT ''",
         "public_key": "TEXT NOT NULL DEFAULT ''",
+        # отдельные настройки защиты: у reality это маскирование (dest) и отпечаток
+        # клиента, у tls — alpn и отношение к чужому SNI; пустые — значит разумные
+        # значения по умолчанию, их знает рендер конфига
+        "dest": "TEXT NOT NULL DEFAULT ''",
+        "fp": "TEXT NOT NULL DEFAULT ''",
+        "alpn": "TEXT NOT NULL DEFAULT ''",
+        "reject_unknown_sni": "INTEGER NOT NULL DEFAULT 0",
     },
 }
 

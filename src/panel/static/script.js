@@ -101,10 +101,14 @@ const I18N = {
     'dlg.admin.title':'Новый администратор','dlg.admin.login':'Логин',
     'dlg.admin.password':'Пароль (минимум 8 символов)',
     'dlg.admin.hint':'Администратор управляет пользователями, хостами, цепочками и нодами. Настройки и других администраторов меняет владелец.',
-    'dlg.host.title':'Новый хост','dlg.host.name':'Название (его увидит пользователь)','dlg.host.node':'Нода','dlg.host.address':'Адрес для подключения (IP или домен)',
+    'dlg.host.title':'Новый хост','dlg.host.name':'Название (его увидит пользователь)','dlg.host.node':'Нода','dlg.host.address':'Адрес хоста (IP или домен)',
     'dlg.chain.title':'Новая цепочка','dlg.chain.name':'Название хоста (его увидит пользователь)',
     'dlg.chain.hint':'Пользователь увидит цепочку как один хост и подключится к первой ноде. Инбаунд на каждой ноде создастся автоматически.',
     'cfg.protocol':'Протокол','cfg.transport':'Транспорт','cfg.security':'Защита','cfg.port':'Порт',
+    'cfg.sec.reality.dest':'Маскированный адрес (dest)','cfg.sec.reality.fp':'Отпечаток браузера клиента',
+    'cfg.sec.reality.hint':'Ключи панель сгенерирует сама. Адрес хоста для reality — только доменом.',
+    'cfg.sec.tls.alpn':'ALPN','cfg.sec.tls.alpn.default':'как обычно (Xray сам)','cfg.sec.tls.rejectSni':'Отвергать чужой SNI',
+    'cfg.sec.tls.hint':'Сертификат нода выпустит сама (self-signed): строгому клиенту нужно назвать его отпечаток pinnedPeerCertSha256.',
     'cfg.protocol.short':'Протокол','cfg.port.short':'Порт',
     'th.address':'Адрес','th.node':'Нода','th.users':'Пользователей','th.traffic':'Трафик',
     'th.name':'Имя','th.title':'Название','th.status':'Статус','th.login':'Логин','th.role':'Роль',
@@ -199,10 +203,14 @@ const I18N = {
     'dlg.admin.title':'New administrator','dlg.admin.login':'Username',
     'dlg.admin.password':'Password (at least 8 characters)',
     'dlg.admin.hint':'An administrator manages users, hosts, chains and nodes. Only the owner can change settings and other administrators.',
-    'dlg.host.title':'New host','dlg.host.name':'Name (the user will see it)','dlg.host.node':'Node','dlg.host.address':'Client-facing address (IP or domain)',
+    'dlg.host.title':'New host','dlg.host.name':'Name (the user will see it)','dlg.host.node':'Node','dlg.host.address':'Host address (IP or domain)',
     'dlg.chain.title':'New chain','dlg.chain.name':'Host name (the user will see it)',
     'dlg.chain.hint':'The user sees a chain as a single host and connects to the first node. An inbound on every node is created automatically.',
     'cfg.protocol':'Protocol','cfg.transport':'Transport','cfg.security':'Security','cfg.port':'Port',
+    'cfg.sec.reality.dest':'Camouflage address (dest)','cfg.sec.reality.fp':'Client browser fingerprint',
+    'cfg.sec.reality.hint':'The panel generates the keypair itself. A reality host address must be a domain.',
+    'cfg.sec.tls.alpn':'ALPN','cfg.sec.tls.alpn.default':'as usual (Xray default)','cfg.sec.tls.rejectSni':'Reject unknown SNI',
+    'cfg.sec.tls.hint':'The node issues a self-signed certificate: strict clients must pin it via pinnedPeerCertSha256.',
     'cfg.protocol.short':'Protocol','cfg.port.short':'Port',
     'th.address':'Address','th.node':'Node','th.users':'Users','th.traffic':'Traffic',
     'th.name':'Name','th.title':'Name','th.status':'Status','th.login':'Username','th.role':'Role',
@@ -1037,13 +1045,50 @@ function syncCfg(root){
   [...net.options].forEach(o=>o.disabled = (sec.value==='reality' && o.value==='ws') || (proto==='ss' && o.value!=='tcp'));
   if(net.selectedOptions[0].disabled) net.value = [...net.options].find(o=>!o.disabled).value;
 }
-function initCfg(root){
+function initCfg(root, onChange){
   K(root,'security').value = 'reality'; syncCfg(root);
-  root.querySelector('.cfgwrap').addEventListener('change', e=>{
-    if(e.target.matches('[data-k="protocol"],[data-k="security"]')) syncCfg(root);
+  if(onChange) onChange();
+  /* слушаем не сам cfgwrap: поля защиты живут в соседнем контейнере (#hsec),
+     а реагируют на смену протокола/защиты в cfgwrap — общий родитель удобней */
+  (root.parentElement || root).addEventListener('change', e=>{
+    if(e.target.matches('[data-k="protocol"],[data-k="security"]')){ syncCfg(root); if(onChange) onChange(); }
   });
 }
 const readCfg = root => ({protocol:K(root,'protocol').value, network:K(root,'network').value, security:K(root,'security').value, port:+K(root,'port').value});
+
+/* ----- поля защиты: они появляются только тогда, когда защита выбрана -----
+   reality: маскированный dest (куда нода «притворяется» сайтом) и отпечаток,
+   который имитирует клиент; tls: alpn и поведение при чужом SNI. У «none» —
+   показывать нечего, и это правильно: там настраивать нечего */
+const SEC_FIELDS = {
+  reality(){
+    return `<div class="secbox">
+      <label><span>${t('cfg.sec.reality.dest')}</span><input data-k="dest" maxlength="63" placeholder="www.microsoft.com:443"></label>
+      <label><span>${t('cfg.sec.reality.fp')}</span><select data-k="fp">${opts(['chrome','edge','safari','firefox','android'])}</select></label>
+      <p class="hint">${esc(t('cfg.sec.reality.hint'))}</p></div>`;
+  },
+  tls(){
+    const defLabel = {'' : t('cfg.sec.tls.alpn.default')};
+    return `<div class="secbox">
+      <label><span>${t('cfg.sec.tls.alpn')}</span><select data-k="alpn">${opts(['','h2,http/1.1','h2','http/1.1'], defLabel)}</select></label>
+      <label class="chk"><input type="checkbox" data-k="rejectUnknownSni"><span>${esc(t('cfg.sec.tls.rejectSni'))}</span></label>
+      <p class="hint">${esc(t('cfg.sec.tls.hint'))}</p></div>`;
+  },
+};
+const secHTML = sec => (SEC_FIELDS[sec] || (()=>''))();
+function secBody(cfg, root){
+  const sec = K(cfg,'security').value, body = {};
+  if(sec==='reality'){
+    const dest = K(root,'dest') ? K(root,'dest').value.trim() : '';
+    if(dest) body.dest = dest;
+    body.fp = K(root,'fp').value;
+  } else if(sec==='tls'){
+    const alpn = K(root,'alpn') ? K(root,'alpn').value : '';
+    if(alpn) body.alpn = alpn;
+    body.rejectUnknownSni = !!(K(root,'rejectUnknownSni') && K(root,'rejectUnknownSni').checked);
+  }
+  return body;
+}
 
 /* ----- диалог «новая нода»: адрес и версия Xray, остальное соберёт опрос нод позже ----- */
 const FV = (root,k) => root.querySelector(`[data-f="${k}"]`).value.trim();
@@ -1172,7 +1217,7 @@ async function openHost(){
   if(!ctx.nodes.length) return toast(t('toast.noNodes'));
   $('#hform').reset();
   $('#hnode').innerHTML = nodeOptions();
-  $('#hcfg').innerHTML = cfgHTML(); initCfg($('#hcfg'));
+  $('#hcfg').innerHTML = cfgHTML(); initCfg($('#hcfg'), ()=>{ $('#hsec').innerHTML = secHTML(K($('#hcfg'),'security').value); });
   K($('#hcfg'),'port').value = freePort($('#hnode').value);
   $('#hdlg').returnValue = ''; $('#hdlg').showModal();
 }
@@ -1185,7 +1230,7 @@ $('#hform').addEventListener('submit', e=>{
 $('#hdlg').addEventListener('close', async ()=>{
   if($('#hdlg').returnValue!=='ok') return;
   try{
-    await call('POST','/api/hosts',{name:$('#hform [name=name]').value, node:$('#hnode').value, address:($('#hform [name=address]').value||'').trim()||null, ...readCfg($('#hcfg'))});
+    await call('POST','/api/hosts',{name:$('#hform [name=name]').value, node:$('#hnode').value, address:($('#hform [name=address]').value||'').trim()||null, ...readCfg($('#hcfg')), ...secBody($('#hcfg'), $('#hsec'))});
     toast(t('toast.hostCreated')); show();
   }catch(err){ toast(t('toast.error',{msg:err.message})) }
 });

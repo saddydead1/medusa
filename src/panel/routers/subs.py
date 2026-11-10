@@ -169,7 +169,7 @@ def subscription_link(token: str, host: dict | sqlite3.Row) -> str:
         params["security"] = "reality"
         if host["public_key"]:
             params["pbk"] = host["public_key"]
-        params["fp"] = "chrome"
+        params["fp"] = host["fp"] or "chrome"
         if not is_ip(address):
             params["sni"] = address
         params["sid"] = reality_short_id(token)
@@ -248,12 +248,12 @@ def subscription_page(token: str, request: Request,
         return shell(f'{st["panelName"]} — {s["404.title"]}', lang, st["theme"], body, status=404)
 
     hosts = conn.execute(
-        """SELECT h.name, h.address, h.public_key, h.protocol, h.port, h.network, h.security,
+        """SELECT h.name, h.address, h.public_key, h.fp, h.protocol, h.port, h.network, h.security,
                   n.address AS node_address
            FROM hosts h JOIN nodes n ON n.id = h.node_id
            WHERE h.chain_id IS NULL ORDER BY h.name""").fetchall()
     chains = conn.execute(
-        """SELECT c.name, c.hops, h.address, h.public_key, h.protocol, h.port, h.network, h.security,
+        """SELECT c.name, c.hops, h.address, h.public_key, h.fp, h.protocol, h.port, h.network, h.security,
                   n.address AS node_address
            FROM chains c JOIN hosts h ON h.chain_id = c.id JOIN nodes n ON n.id = h.node_id
            ORDER BY c.name""").fetchall()

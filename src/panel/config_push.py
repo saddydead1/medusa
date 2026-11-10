@@ -82,7 +82,8 @@ def collect(conn: sqlite3.Connection, node_id: int) -> dict[str, Any]:
         raise LookupError(f"ноды {node_id} уже нет")
     hosts = [dict(r) for r in conn.execute(
         """SELECT h.id, h.name, h.address, h.protocol, h.port, h.network, h.security,
-                  h.private_key, h.public_key, n.address AS node_address
+                  h.private_key, h.public_key, h.dest, h.fp, h.alpn, h.reject_unknown_sni,
+                  n.address AS node_address
            FROM hosts h JOIN nodes n ON n.id = h.node_id
            WHERE h.node_id = ? AND h.chain_id IS NULL ORDER BY h.port""", (node_id,)).fetchall()]
     users = [dict(r) for r in conn.execute("SELECT name, token, status FROM users ORDER BY name").fetchall()]
