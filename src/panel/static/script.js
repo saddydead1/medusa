@@ -175,7 +175,7 @@ const I18N = {
     'err.load':'Не удалось загрузить данные: {msg}.<br>Проверьте, что бэкенд запущен и токен задан.',
     'toast.hostCreated':'Хост создан','toast.hostEdited':'Хост обновлён',
     'dlg.host.editTitle':'Хост: изменение',
-    'cfg.adv':'Дополнительные настройки','cfg.adv.path':'Путь (path)','cfg.adv.hostHeader':'Host-заголовок','cfg.adv.serviceName':'Имя сервиса (gRPC)',
+    'cfg.adv':'Настройки транспорта','cfg.adv.path':'Путь (path)','cfg.adv.hostHeader':'Host-заголовок','cfg.adv.serviceName':'Имя сервиса (gRPC)',
     'cfg.adv.grpc.authority':'Authority (к кому «обращается» gRPC)',
     'chain.maxHops':'Максимум {n} хопов','btn.remove':'Убрать',
     'chain.minNodes':'Для цепочки нужны минимум две ноды',
@@ -283,7 +283,7 @@ const I18N = {
     'err.load':'Could not load data: {msg}.<br>Check that the backend is running and the token is set.',
     'toast.hostCreated':'Host created','toast.hostEdited':'Host updated',
     'dlg.host.editTitle':'Host: edit',
-    'cfg.adv':'Additional settings','cfg.adv.path':'Path','cfg.adv.hostHeader':'Host header','cfg.adv.serviceName':'Service name (gRPC)',
+    'cfg.adv':'Transport settings','cfg.adv.path':'Path','cfg.adv.hostHeader':'Host header','cfg.adv.serviceName':'Service name (gRPC)',
     'cfg.adv.grpc.authority':'Authority (gRPC target host)',
     'chain.maxHops':'At most {n} hops','btn.remove':'Remove',
     'chain.minNodes':'A chain needs at least two nodes',
@@ -1106,7 +1106,7 @@ function secBody(cfg, root){
   return body;
 }
 
-/* ----- «Дополнительные настройки»: свёрнуты по умолчанию и показываются там,
+/* ----- «Настройки транспорта»: свёрнуты по умолчанию и показываются там,
    где есть что настроить: у ws — путь и Host-заголовок, у gRPC — имя сервиса и
    authority, а отпечаток клиента (utls) — при любой шифрующей защите;
    у tcp без шифрования настраивать нечего и блок не появляется */

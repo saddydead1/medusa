@@ -329,13 +329,13 @@ ok((await page.locator('#hsec').innerHTML()).trim() === '', 'без защиты
 await page.evaluate(() => { const el = document.querySelector('#hcfg [data-k="security"]'); el.value = 'reality'; el.dispatchEvent(new Event('change', {bubbles: true})); });
 ok((await page.textContent('#hdlg')).includes('Адрес хоста'), 'метка поля названа адресом хоста');
 
-/* «Дополнительные настройки»: свёрнуты и есть только там, где настраивать нечего не умеет транспорт */
+/* «Настройки транспорта»: свёрнуты и есть только там, где транспорту есть что настроить */
 await page.evaluate(() => {
   const set = (k, v) => { const el = document.querySelector(`#hcfg [data-k="${k}"]`); el.value = v; el.dispatchEvent(new Event('change', {bubbles: true})); };
   set('security', 'tls'); set('network', 'ws');
 });
 ok(await page.locator('#hadv summary').count() === 1, 'у websocket есть доп. настройки, и они свёрнуты');
-ok(!(await page.locator('#hadv details').first().evaluate(el => el.open)), 'блок «Дополнительные настройки» по умолчанию скрыт');
+ok(!(await page.locator('#hadv details').first().evaluate(el => el.open)), 'блок «Настройки транспорта» по умолчанию скрыт');
 await page.click('#hadv summary');
 ok(await page.locator('#hadv [data-k="path"]').count() === 1 && await page.locator('#hadv [data-k="hostHeader"]').count() === 1,
    'раскрыли websocket: путь и Host-заголовок на месте');
