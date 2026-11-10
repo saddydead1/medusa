@@ -667,3 +667,22 @@ dialog[open]::backdrop{animation:fadein .26s}
 .subpg .stat b{font-size:20px}
 .subpg .head h2{display:flex;align-items:center;gap:12px}
 .subpg .empty b{display:block;font-size:15px;font-weight:650;color:var(--ink);margin-bottom:6px}
+/* кнопки шапки: тема и язык рядом */
+.subpg .topbtns{display:flex;align-items:center;gap:8px;margin-left:auto}
+.subpg .head{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+/* солнце/луна: виден только тот, что соответствует теме */
+.themebtn .moon{display:none}
+:root[data-theme="light"] .themebtn .sun{display:none}
+:root[data-theme="light"] .themebtn .moon{display:inline}
+/* «Ссылка подписки»: поле с адресом, копирование, QR прямо на странице */
+.sublink{padding:14px 16px}
+.sublink .subrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.sublink input.url{flex:1;min-width:240px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;
+  background:var(--surface-2);color:var(--ink);font:13px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace}
+.sublink .qr{width:140px;height:140px;border:1px solid var(--line);border-radius:10px;background:#fff}
+.sublink .hint{margin:10px 0 0;font-size:12.5px;color:var(--muted)}
+/* модалка QR: картинка подписки или отдельного хоста */
+#qrdlg{padding:20px 22px;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);text-align:center}
+#qrdlg img{width:260px;height:260px;background:#fff;border-radius:10px}
+#qrdlg .cap{margin:12px 0 14px;font-size:13.5px;font-weight:650;color:var(--ink-2)}
+#qrdlg .closer{margin:0 auto}

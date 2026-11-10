@@ -174,6 +174,7 @@ def main() -> int:
            "GET /sub/<токен>: HTML-страница без входа администратора")
         ok("brother" in page.text and "активен" in page.text, "на странице подписки есть никнейм и живой статус")
         ok("langbtn" in page.text, "переключатель языка на месте")
+        ok("themebtn" in page.text, "переключатель темы на месте")
         ok("FI Reality" in page.text and "SUB-ROUTE" in page.text, "хосты и цепочки доступны подписчику")
         ok(client.get("/sub/nesushchestvuet").status_code == 404, "чужого токена подписки нет -> 404")
         off_page = client.get(f"/sub/{masha['token']}")
@@ -183,8 +184,29 @@ def main() -> int:
         ok("Hosts" in en_page.text and "Chains" in en_page.text, "страница подписки на английском по ?lang=en")
         forced = client.get(f"/sub/{brother['token']}", headers={"Accept-Language": "en-US,en;q=0.9"})
         ok("Хосты" in forced.text, "английский браузер видит русский: язык переключается только кнопкой")
-        ok("vless://" in page.text and page.text.count('data-copy="') == 2,
-           "кнопка копирования ссылки есть у vless-хоста и у входа цепочки")
+        ok("vless://" in page.text and page.text.count('data-copy="') == 3,
+           "кнопка копирования есть у хоста, у входа цепочки и у ссылки подписки")
+        ok(page.text.count('data-qr="') == 3, "кнопка QR — у хоста, у входа цепочки и у ссылки подписки")
+        ok(f'/sub/{brother["token"]}/qr/subscribe' in page.text, "QR ссылки подписки живёт прямо на странице")
+        # --- машинный вид подписки: все ссылки одним запросом + QR ---
+        import base64 as b64
+        links = client.get(f"/sub/{brother['token']}/links")
+        decoded = b64.b64decode(links.text).decode("utf-8")
+        ok(links.status_code == 200 and "text/plain" in links.headers["content-type"]
+           and decoded.count("vless://") == 2,
+           "ссылки подписки: base64 из двух vless-ссылок, как ждёт v2rayN")
+        raw_links = client.get(f"/sub/{brother['token']}/links?raw=1")
+        ok(raw_links.status_code == 200 and raw_links.text.startswith("vless://"),
+           "?raw=1 отдаёт ссылки без base64")
+        qr = client.get(f"/sub/{brother['token']}/qr/subscribe")
+        ok(qr.status_code == 200 and "image/svg" in qr.headers["content-type"] and b"<svg" in qr.content,
+           "QR на ссылку подписки — живой SVG")
+        qr_host = client.get(f"/sub/{brother['token']}/qr/host/{host['id']}")
+        ok(qr_host.status_code == 200 and b"<svg" in qr_host.content, "QR отдельного хоста собран")
+        ok(client.get(f"/sub/{brother['token']}/qr/host/999999").status_code == 404, "QR чужого хоста не выдаётся")
+        ok(client.get(f"/sub/{masha['token']}/links").status_code == 404,
+           "отключённому пользователю машинные ссылки не раздаются")
+        ok(client.get("/sub/nesushchestvuet/links").status_code == 404, "чужого токена на машинных путях тоже нет")
         client.delete(f"/api/chains/{sub_chain['id']}")
 
         # --- имя ноды можно менять: хосты и цепочки держатся за id, а не за имя ---

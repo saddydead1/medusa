@@ -98,7 +98,7 @@ def main() -> int:
     print(f"Xray: {XRAY_BIN}")
 
     panel_port, node_port = free_port(), free_port()
-    hosts_ports = {name: free_port() for name in ("plain", "reality", "tls")}
+    hosts_ports = {name: free_port() for name in ("plain", "reality", "tls", "ws", "grpc")}
 
     node_proc = spawn(
         [str(ROOT / ".venv/bin/python"), "-m", "uvicorn", "src.node.main:app",
@@ -138,8 +138,14 @@ def main() -> int:
         tls = api.post("/api/hosts", json={"name": "wss", "node": "demo", "protocol": "vless",
                                            "port": hosts_ports["tls"], "network": "ws", "security": "tls",
                                            "address": "localhost"}).json()
+        ws = api.post("/api/hosts", json={"name": "ws", "node": "demo", "protocol": "vless",
+                                          "port": hosts_ports["ws"], "network": "ws", "security": "none",
+                                          "path": "/medusa-tunnel", "hostHeader": "cdn.example.net"}).json()
+        grpc = api.post("/api/hosts", json={"name": "grpc", "node": "demo", "protocol": "vless",
+                                            "port": hosts_ports["grpc"], "network": "grpc", "security": "none",
+                                            "serviceName": "medusa-live", "grpcAuthority": "grpc.example.net"}).json()
         user = api.post("/api/users", json={"name": "petya"}).json()
-        print("заведены: нода demo, хосты plain/reality/wss, пользователь petya")
+        print("заведены: нода demo, хосты plain/reality/wss/ws/grpc, пользователь petya")
 
         # панель применяет конфиг сама; ждём подтверждения от ноды
         applied = None
@@ -162,11 +168,21 @@ def main() -> int:
             return 2
 
         # порты хостов действительно слушают
-        for label in ("plain", "reality", "tls"):
+        for label in ("plain", "reality", "tls", "ws", "grpc"):
             port = hosts_ports[label]
             with socket.socket() as probe:
                 probe.settimeout(5)
                 ok(probe.connect_ex(("127.0.0.1", port)) == 0, f"порт {label} ({port}) слушается Xray")
+
+        # транспортные детали доехали до живого конфига Xray дословно
+        cfg = json.loads(CFG_PATH.read_text(encoding="utf-8"))
+        by_port = {i["port"]: i for i in cfg["inbounds"]}
+        wss = by_port[hosts_ports["ws"]]["streamSettings"]
+        ok(wss["wsSettings"]["path"] == "/medusa-tunnel" and wss["wsSettings"]["host"] == "cdn.example.net",
+           "живой конфиг Xray: путь и Host-заголовок websocket")
+        gr = by_port[hosts_ports["grpc"]]["streamSettings"]["grpcSettings"]
+        ok(gr["serviceName"] == "medusa-live" and gr["authority"] == "grpc.example.net",
+           "живой конфиг Xray: имя сервиса и authority gRPC")
 
         # ---- настоящий клиент: SOCKS-туннель и внешний запрос наружу ----
         def client_json(proxy_port: int, outbound: dict) -> Path:
@@ -246,6 +262,14 @@ def main() -> int:
             print("  " + link)
         netloc = urllib.parse.urlparse(links[0]).netloc if links else "?"
         print(f"  (внутри ссылки адрес подключения: {netloc})")
+
+        # машинный вид: одно вставление ссылки в приложение — все хосты разом
+        machine = api.get(f"/sub/{user['token']}/links?raw=1").text.splitlines()
+        ok(len(machine) == 5 and all(l.startswith("vless://") for l in machine),
+           "ссылка подписки одним запросом отдаёт все пять хостов")
+        qr = api.get(f"/sub/{user['token']}/qr/subscribe")
+        ok(qr.status_code == 200 and qr.headers["content-type"].startswith("image/svg"),
+           "QR ссылки подписки рисуется прямо на странице")
 
         if "--keep" in sys.argv:
             print(f"\nпанель живёт: {panel_url}, вход medusa / livecheck123. Ctrl+C — остановить.")

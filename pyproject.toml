@@ -6,6 +6,8 @@ dependencies = [
     "cbor2>=6.2.1",
     "cryptography>=50.0.2",
     "fastapi[standard]>=0.162.0",
+    # QR для страницы подписки: чисто питоновский генератор, SVG без картинок
+    "segno>=1.6",
 ]
 
 [project.scripts]
