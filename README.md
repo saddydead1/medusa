@@ -399,7 +399,7 @@ src/node/         агент ноды: main.py (сборка), cli.py (medusa-no
                   api.py (/node/health|identity|status), xray.py (версия Xray)
 src/core/         то, что у панели и ноды общее: contract.py (модели и пути обмена),
                   api_keys.py (генерация API-ключа, отпечаток, сравнение), version.py
-deploy/           Dockerfile.panel, Dockerfile.node, compose.yaml
+deploy/           Dockerfile.panel, Dockerfile.node, docker-compose.yaml
                   (образ панели не видит src/node, образ ноды не видит src/panel)
 tools/            panel_test.py, auth_test.py (права, сессии, FIDO2-рукопожатие), node_test.py,
                   arch_test.py, ui_test.mjs, mock/*.mjs, run_all.sh
@@ -411,10 +411,13 @@ tools/            panel_test.py, auth_test.py (права, сессии, FIDO2-�
 
 ## Docker
 
+Образы: `deploy/Dockerfile.panel` (панель) и `deploy/Dockerfile.node` (нода + Xray).
+Контекст сборки — корень репозитория, `.dockerignore` выбрасывает базу, venv и тулзы.
+
 ```bash
 docker build -f deploy/Dockerfile.panel -t medusa-panel .
 docker build -f deploy/Dockerfile.node  -t medusa-node  .
-docker compose -f deploy/compose.yaml up --build
+docker compose -f deploy/docker-compose.yaml up --build      # панель + нода на одной машине
 ```
 
 Образ панели копирует из `src/` только `src/panel` и `src/core`, образ ноды — только
@@ -422,11 +425,53 @@ docker compose -f deploy/compose.yaml up --build
 обстоятельствах. Xray в образ ноды берётся из `ghcr.io/xtls/xray-core` (версию стоит
 зафиксировать тегом, а не `latest`).
 
-Нода в `compose.yaml` стоит на `network_mode: host`: ей нужно слушать и свой API-порт,
-и клиентские порты Xray, и панель должна дотягиваться до обоих по одному адресу.
+### Нода на другой машине
 
-Сборки на этой машине не проверялись: Docker здесь нет. А вот граница импортов проверена
-`arch_test.py` — именно он не даст панели и ноде случайно узнать друг про друга больше, чем нужно.
+Проще всего собрать там, где запускать — репозиторий маленький, сборка недолгая:
+
+```bash
+# на машине ноды
+git clone https://github.com/saddydead1/medusa && cd medusa
+docker build -f deploy/Dockerfile.node -t medusa-node .
+
+docker run -d --name medusa-node --restart unless-stopped \
+  --network host \
+  -v medusa-node:/var/lib/medusa-node \
+  -e MEDUSA_NODE_PORT=9443 \
+  -e MEDUSA_NODE_API_KEY="sk-api-..." \
+  medusa-node
+docker logs medusa-node        # ключ задан? нода напечатала свой — взять его в панель
+```
+
+`--network host` (он же в docker-compose.yaml) обязателен: ноде нужно слушать и API-порт,
+и клиентские порты Xray, которые панель выбирает сама. Открыть брандмауэр: API-порт
+и порты хостов. Если нода строится на машине другой архитектуры, чем VPS:
+`docker build --platform linux/amd64 ...` (для ARM-VPS — `linux/arm64`).
+
+Вариант «собрать один раз, раздавать много раз» — реестр:
+
+```bash
+docker login ghcr.io
+docker buildx build --platform linux/amd64 -f deploy/Dockerfile.node \
+  -t ghcr.io/<you>/medusa-node:latest --push .
+# на ноде: docker pull ghcr.io/<you>/medusa-node:latest && docker run ...
+```
+
+(или без реестра: `docker save medusa-node | gzip > node.tar.gz`, `scp`, `docker load`).
+
+Панель — обычный контейнер с портом и томом для базы:
+
+```bash
+docker run -d --name medusa-panel --restart unless-stopped \
+  -p 8000:8000 -v medusa-panel:/data \
+  -e MEDUSA_ADMIN_USER=admin \
+  medusa-panel
+docker logs medusa-panel   # панель напечатает пароль владельца: без MEDUSA_ADMIN_PASSWORD она его генерирует сама
+```
+
+Сборок на этой машине не проверялись: Docker-клиент есть, демона нет. А вот граница
+импортов проверена `arch_test.py` — именно он не даст панели и ноде случайно узнать
+друг про друга больше, чем нужно.
 
 
 ## Проверки
