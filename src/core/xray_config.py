@@ -101,6 +101,18 @@ def connect_address(host: dict) -> str:
 def stream_settings(host: dict) -> dict[str, Any]:
     address = connect_address(host)
     stream: dict[str, Any] = {"network": host["network"], "security": host["security"]}
+    # транспортные детали: путь и Host у websocket, имя сервиса у gRPC;
+    # пустое — не пишем вовсе, у Xray свои разумные значения
+    if host["network"] == "ws":
+        ws: dict[str, Any] = {}
+        if host.get("path"):
+            ws["path"] = host["path"]
+        if host.get("host_header"):
+            ws["host"] = host["host_header"]
+        if ws:
+            stream["wsSettings"] = ws
+    elif host["network"] == "grpc" and host.get("service_name"):
+        stream["grpcSettings"] = {"serviceName": host["service_name"]}
     if host["security"] == "tls":
         crt, key = cert_paths(host["id"])
         tls: dict[str, Any] = {

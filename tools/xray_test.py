@@ -151,9 +151,12 @@ def main() -> int:
             tls = client.post("/api/hosts", json={"name": "T8443", "node": "stub", "protocol": "vless",
                                                   "port": 8443, "network": "ws", "security": "tls",
                                                   "address": "127.0.0.1",
-                                                  "alpn": "h2", "rejectUnknownSni": True}).json()
+                                                  "alpn": "h2", "rejectUnknownSni": True,
+                                                  "path": "/tun8443", "hostHeader": "cdn.example.net"}).json()
             ok(tls["alpn"] == "h2" and tls["rejectUnknownSni"] is True,
                "tls-хост записал alpn и «отвергать чужой SNI»")
+            ok(tls["path"] == "/tun8443" and tls["hostHeader"] == "cdn.example.net",
+               "websocket-хост записал путь и Host-заголовок")
             crossed = client.post("/api/hosts", json={"name": "кривой", "node": "stub", "protocol": "vless",
                                                       "port": 3099, "network": "tcp", "security": "tls",
                                                       "address": "127.0.0.1", "fp": "chrome"})
@@ -161,13 +164,21 @@ def main() -> int:
             plain = client.post("/api/hosts", json={"name": "N3011", "node": "stub", "protocol": "vless",
                                                     "port": 3011, "network": "tcp", "security": "none"}).json()
             ok(plain["address"] == "", "хост без своего адреса — значит подключаться к адресу ноды")
+            grpc = client.post("/api/hosts", json={"name": "G3077", "node": "stub", "protocol": "vless",
+                                                   "port": 3077, "network": "grpc", "security": "none",
+                                                   "serviceName": "medusa-grpc"}).json()
+            ok(grpc["serviceName"] == "medusa-grpc", "gRPC-хост записал имя сервиса")
+            ws_cross = client.post("/api/hosts", json={"name": "кривой-ws", "node": "stub", "protocol": "vless",
+                                                       "port": 3088, "network": "tcp", "security": "none",
+                                                       "path": "/x"})
+            ok(ws_cross.status_code == 400, f"путь без websocket отвергается: {ws_cross.json()['detail']}")
 
             vasya = client.post("/api/users", json={"name": "vasya"}).json()
 
             cfg_path = STATE.parent / "xray" / "config.json"
             # панель доставляет конфиг сама: ни одной кнопки «применить» в тесте нет.
             # ждём именно конечного состояния: три хоста и один клиент в reality
-            wait_cfg(cfg_path, lambda c: len(c["inbounds"]) == 3 and len(clients_at(c, 443)) == 1)
+            wait_cfg(cfg_path, lambda c: len(c["inbounds"]) == 4 and len(clients_at(c, 443)) == 1)
             row = wait_rows(client, node["id"], lambda r: not r["configDirty"] and r["appliedRev"] >= 1)
             ok(row is not None and row["applyError"] is None,
                f"панель сама доставила конфиг после правок: ревизия {row['appliedRev'] if row else '—'}")
@@ -185,9 +196,9 @@ def main() -> int:
             ok(cfg_path.exists(), f"рабочий конфиг ноды записан: {cfg_path}")
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
             by_port = {i["port"]: i for i in cfg["inbounds"]}
-            ok({i["tag"] for i in cfg["inbounds"]} == {"R443", "T8443", "N3011"},
+            ok({i["tag"] for i in cfg["inbounds"]} == {"R443", "T8443", "N3011", "G3077"},
                f"теги инбаундов — имена хостов, как их видит человек: {sorted(i['tag'] for i in cfg['inbounds'])}")
-            ok(sorted(by_port) == [443, 3011, 8443], f"инбаунды по портам хостов: {sorted(by_port)}")
+            ok(sorted(by_port) == [443, 3011, 3077, 8443], f"инбаунды по портам хостов: {sorted(by_port)}")
 
             r = by_port[443]
             ok(r["streamSettings"]["security"] == "reality" and r["streamSettings"]["realitySettings"]["privateKey"],
@@ -207,6 +218,12 @@ def main() -> int:
             ok(t["streamSettings"]["tlsSettings"]["alpn"] == ["h2"] and
                t["streamSettings"]["tlsSettings"]["rejectUnknownSni"] is True,
                "alpn и rejectUnknownSNI доехали до tls-инбаунда")
+            ok(t["streamSettings"]["wsSettings"]["path"] == "/tun8443" and
+               t["streamSettings"]["wsSettings"]["host"] == "cdn.example.net",
+               "путь и Host-заголовок websocket доехали до конфига")
+            g = by_port[3077]
+            ok(g["streamSettings"]["grpcSettings"]["serviceName"] == "medusa-grpc",
+               "имя сервиса gRPC доехало до конфига")
             cert = cfg_path.parent / t["streamSettings"]["tlsSettings"]["certificates"][0]["certificateFile"]
             key = cfg_path.parent / t["streamSettings"]["tlsSettings"]["certificates"][0]["keyFile"]
             ok(cert.exists() and key.exists(), f"tls-хост получил выпущенный сертификат: {cert.name}")
@@ -251,17 +268,17 @@ def main() -> int:
             ok(row["applyError"] and row["configDirty"] is True, "ошибка применения записана в строку ноды")
 
             client.delete(f"/api/hosts/{plain['id']}")
-            cfg = wait_cfg(cfg_path, lambda c: len(c["inbounds"]) == 2)
-            ok(len(cfg["inbounds"]) == 2, "удалённый хост исчез из конфига")
+            cfg = wait_cfg(cfg_path, lambda c: len(c["inbounds"]) == 3)
+            ok(len(cfg["inbounds"]) == 3, "удалённый хост исчез из конфига")
 
             # два хоста с одним именем на одной ноде — порт уникален, а тег нет:
             # второй получает имя с id, теги в конфиге не должны сталкиваться
             dup = client.post("/api/hosts", json={"name": "R443", "node": "stub", "protocol": "vless",
                                                    "port": free_port(), "network": "tcp", "security": "none",
                                                    "address": "127.0.0.1"}).json()
-            cfg = wait_cfg(cfg_path, lambda c: len(c["inbounds"]) == 3)
+            cfg = wait_cfg(cfg_path, lambda c: len(c["inbounds"]) == 4)
             tags = [i["tag"] for i in cfg["inbounds"]]
-            ok(len(set(tags)) == 3 and "R443" in tags and any(tag == f"R443-{dup['id']}" for tag in tags),
+            ok(len(set(tags)) == 4 and "R443" in tags and any(tag == f"R443-{dup['id']}" for tag in tags),
                f"одноимённые хосты получили разные теги: {sorted(tags)}")
 
             # панель подтвердит ревизию чуть позже, чем файл конфига сменился: ждём оба факта

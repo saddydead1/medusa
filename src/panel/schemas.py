@@ -9,6 +9,9 @@ NAME = Annotated[str, Field(min_length=2, max_length=32, pattern=r"^[A-Za-z0-9_.
 PORT = Annotated[int, Field(ge=1, le=65535)]
 # IPv4/IPv6/домен — один и тот же алфавит и у адреса ноды, и у адреса хоста
 ADDRESS_PATTERN = r"^[A-Za-z0-9._:\-\[\]]+$"
+# те же адреса, но пустое значение разрешено: пустая строка в PATCH означает
+# «сбросить к разумному по умолчанию»
+ADDR_OR_EMPTY = r"^[A-Za-z0-9._:\-\[\]]*$"
 ADDRESS = Annotated[str, Field(min_length=4, max_length=63, pattern=ADDRESS_PATTERN)]
 NODE_NAME = Annotated[str, Field(min_length=2, max_length=32)]
 STATUS = Literal["active", "disabled"]
@@ -64,11 +67,35 @@ class HostCreate(BaseModel):
     # адрес, к которому подключается подписчик (домен или IP ноды наружу);
     # пусто — значит подключаться к адресу ноды, он же у панели для своей связи
     address: Annotated[str | None, Field(min_length=4, max_length=63, pattern=ADDRESS_PATTERN)] = None
-    # поля защиты: каждое живёт только со своей защитой (проверка в роутере)
-    dest: Annotated[str | None, Field(min_length=4, max_length=63, pattern=ADDRESS_PATTERN)] = None
+    # поля защиты: каждое живёт только со своей защитой (проверка в роутере);
+    # пустая строка — сброс к значению по умолчанию
+    dest: Annotated[str | None, Field(max_length=63, pattern=ADDR_OR_EMPTY)] = None
     fp: Literal["chrome", "edge", "safari", "firefox", "android"] | None = None
-    alpn: Literal["h2,http/1.1", "h2", "http/1.1"] | None = None
+    alpn: Literal["", "h2,http/1.1", "h2", "http/1.1"] | None = None
     rejectUnknownSni: bool | None = None
+    # транспортные детали: путь и Host у websocket, имя сервиса у gRPC
+    path: Annotated[str | None, Field(max_length=256)] = None
+    hostHeader: Annotated[str | None, Field(max_length=63, pattern=ADDR_OR_EMPTY)] = None
+    serviceName: Annotated[str | None, Field(max_length=64)] = None
+
+
+class HostPatch(BaseModel):
+    """Правка хоста: то же, что при создании, но всё необязательное —
+    панель меняет только то, что принесли."""
+    name: Annotated[str | None, Field(min_length=2, max_length=48)] = None
+    node: NODE_NAME | None = None
+    address: Annotated[str | None, Field(min_length=4, max_length=63, pattern=ADDRESS_PATTERN)] = None
+    protocol: PROTOCOLS | None = None
+    port: PORT | None = None
+    network: NETWORKS | None = None
+    security: SECURITY | None = None
+    dest: Annotated[str | None, Field(max_length=63, pattern=ADDR_OR_EMPTY)] = None
+    fp: Literal["chrome", "edge", "safari", "firefox", "android"] | None = None
+    alpn: Literal["", "h2,http/1.1", "h2", "http/1.1"] | None = None
+    rejectUnknownSni: bool | None = None
+    path: Annotated[str | None, Field(max_length=256)] = None
+    hostHeader: Annotated[str | None, Field(max_length=63, pattern=ADDR_OR_EMPTY)] = None
+    serviceName: Annotated[str | None, Field(max_length=64)] = None
 
 
 class Hop(BaseModel):

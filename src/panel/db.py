@@ -203,6 +203,11 @@ COLUMNS = {
         "fp": "TEXT NOT NULL DEFAULT ''",
         "alpn": "TEXT NOT NULL DEFAULT ''",
         "reject_unknown_sni": "INTEGER NOT NULL DEFAULT 0",
+        # транспортные детали: путь и Host-заголовок у ws, имя сервиса у gRPC;
+        # для tcp показывать нечего — они пустые
+        "path": "TEXT NOT NULL DEFAULT ''",
+        "host_header": "TEXT NOT NULL DEFAULT ''",
+        "service_name": "TEXT NOT NULL DEFAULT ''",
     },
 }
 

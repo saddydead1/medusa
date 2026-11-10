@@ -502,6 +502,15 @@ tbody tr:hover{background:var(--surface-2);box-shadow:inset 3px 0 0 var(--accent
 .secbox .hint{margin:2px 0 0;font-size:12px}
 .secbox .chk{display:flex;align-items:center;gap:8px;font-weight:550;color:var(--muted)}
 .secbox .chk input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent)}
+/* «Дополнительные настройки»: свёрнутый блок, появляется только у транспорта, где есть что настройки */
+#hadv:empty{display:none}
+#hdlg details.adv{margin:10px 0 0;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface-2)}
+.adv summary{padding:11px 14px;font-size:13px;font-weight:600;color:var(--ink-2);cursor:pointer;list-style:none}
+.adv summary::-webkit-details-marker{display:none}
+.adv summary::before{content:"›";display:inline-block;margin-right:9px;color:var(--muted);transition:transform var(--t)}
+.adv[open] summary::before{transform:rotate(90deg)}
+.adv .advf{padding:4px 14px 14px;border-top:1px solid var(--line)}
+.adv .advf label{margin-bottom:9px}
 .cfg select,.cfg input{min-width:0;width:100%;padding:7px 9px;font-size:13px;border-radius:var(--r-sm)}
 .hop{display:flex;gap:9px;align-items:center;margin-bottom:8px}
 .hop span{width:58px;font-size:13px;color:var(--muted)}

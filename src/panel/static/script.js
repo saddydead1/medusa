@@ -171,7 +171,10 @@ const I18N = {
     'confirm.delHost':'Удалить хост?','confirm.delChain':'Удалить цепочку? Её хост и инбаунды на нодах тоже удалятся.',
     'confirm.delUser':'Удалить пользователя? Это действие нельзя отменить.',
     'err.load':'Не удалось загрузить данные: {msg}.<br>Проверьте, что бэкенд запущен и токен задан.',
-    'toast.hostCreated':'Хост создан','chain.maxHops':'Максимум {n} хопов','btn.remove':'Убрать',
+    'toast.hostCreated':'Хост создан','toast.hostEdited':'Хост обновлён',
+    'dlg.host.editTitle':'Хост: изменение',
+    'cfg.adv':'Дополнительные настройки','cfg.adv.path':'Путь (path)','cfg.adv.hostHeader':'Host-заголовок','cfg.adv.serviceName':'Имя сервиса (gRPC)',
+    'chain.maxHops':'Максимум {n} хопов','btn.remove':'Убрать',
     'chain.minNodes':'Для цепочки нужны минимум две ноды',
     'chain.hopSameNode':'Соседние хопы должны быть на разных нодах',
 
@@ -273,7 +276,10 @@ const I18N = {
     'confirm.delHost':'Delete this host?','confirm.delChain':'Delete this chain? Its host and the inbounds on the nodes will be removed too.',
     'confirm.delUser':'Delete this user? This cannot be undone.',
     'err.load':'Could not load data: {msg}.<br>Check that the backend is running and the token is set.',
-    'toast.hostCreated':'Host created','chain.maxHops':'At most {n} hops','btn.remove':'Remove',
+    'toast.hostCreated':'Host created','toast.hostEdited':'Host updated',
+    'dlg.host.editTitle':'Host: edit',
+    'cfg.adv':'Additional settings','cfg.adv.path':'Path','cfg.adv.hostHeader':'Host header','cfg.adv.serviceName':'Service name (gRPC)',
+    'chain.maxHops':'At most {n} hops','btn.remove':'Remove',
     'chain.minNodes':'A chain needs at least two nodes',
     'chain.hopSameNode':'Neighbouring hops must be on different nodes',
 
@@ -844,7 +850,7 @@ const pages = {
     const route = h=>{ const c = cmap[h.chain]; return c ? `<span class="route">${c.hops.map(x=>esc(x.node)).join(ic('chev'))}</span>` : esc(h.node); };
     const group = (icon,title,n,btn,inner)=>`<section class="grp"><div class="sect"><h3>${ic(icon)}${title}<span class="count">${n}</span></h3>${btn}</div>${inner}</section>`;
     const dRows = direct.map(h=>`<tr><td>${esc(h.name)}</td><td>${h.address?esc(h.address):`<span class="mono">${esc(h.node)}</span>`}</td><td>${esc(h.node)}</td>${cfg(h)}
-      <td><div class="acts">${w?`<button class="btn sm del" data-a="hdel" data-id="${h.id}">${ic('trash')}${t('btn.delete')}</button>`:''}</div></td></tr>`).join('');
+      <td><div class="acts">${w?`<button class="btn sm" data-a="hedit" data-id="${h.id}">${ic('gear')}${t('btn.edit')}</button><button class="btn sm del" data-a="hdel" data-id="${h.id}">${ic('trash')}${t('btn.delete')}</button>`:''}</div></td></tr>`).join('');
     const cRows = viaChain.map(h=>`<tr><td>${esc(h.name)}</td><td>${route(h)}</td>${cfg(h)}
       <td><div class="acts"><button class="btn sm" data-a="gochain">${ic('link')}${t('btn.chain')}</button></div></td></tr>`).join('');
     const tbl = (heads,rows,empty)=>`<div class="panel">${rows?`<table><thead><tr>${heads.map(x=>`<th>${x}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>`:`<div class="empty">${empty}</div>`}</div>`;
@@ -990,7 +996,7 @@ $('#view').addEventListener('click', async e=>{
   const a = b.dataset.a, id = +b.dataset.id;
   /* диалог своей учётки нужен всякому вошедшему: пароль, свои ключи;
      а бэкенд и так не пропустит правку чужого */
-  const WRITE_ACTIONS = ['new','newnode','newhost','newchain','anew','del','toggle','hdel','cdel','atoggle','adel','ncheck','ndelete'];
+  const WRITE_ACTIONS = ['new','newnode','newhost','newchain','anew','del','toggle','hdel','hedit','cdel','atoggle','adel','ncheck','ndelete'];
   if(WRITE_ACTIONS.includes(a) && !canWrite()) return toast(t('auth.required'));
   try{
     if(a==='new'){ $('#dlg').returnValue=''; return $('#dlg').showModal(); }
@@ -1004,6 +1010,7 @@ $('#view').addEventListener('click', async e=>{
     if(a==='aedit') return openAdminEdit(id);
     if(a==='sdiscard') return discardDraft();
     if(a==='hdel'){ if(!confirm(t('confirm.delHost'))) return; await call('DELETE','/api/hosts/'+id); toast(t('toast.deleted')); return show(); }
+    if(a==='hedit') return openHostEdit(id);
     if(a==='cdel'){ if(!confirm(t('confirm.delChain'))) return; await call('DELETE','/api/chains/'+id); toast(t('toast.chainDeleted')); return show(); }
     if(a==='copy'){
       const u = (await call('GET','/api/users')).find(x=>x.id===id);
@@ -1046,12 +1053,12 @@ function syncCfg(root){
   if(net.selectedOptions[0].disabled) net.value = [...net.options].find(o=>!o.disabled).value;
 }
 function initCfg(root, onChange){
-  K(root,'security').value = 'reality'; syncCfg(root);
+  K(root,'security').value = 'none'; syncCfg(root);
   if(onChange) onChange();
   /* слушаем не сам cfgwrap: поля защиты живут в соседнем контейнере (#hsec),
      а реагируют на смену протокола/защиты в cfgwrap — общий родитель удобней */
   (root.parentElement || root).addEventListener('change', e=>{
-    if(e.target.matches('[data-k="protocol"],[data-k="security"]')){ syncCfg(root); if(onChange) onChange(); }
+    if(e.target.matches('[data-k="protocol"],[data-k="security"],[data-k="network"]')){ syncCfg(root); if(onChange) onChange(); }
   });
 }
 const readCfg = root => ({protocol:K(root,'protocol').value, network:K(root,'network').value, security:K(root,'security').value, port:+K(root,'port').value});
@@ -1061,32 +1068,47 @@ const readCfg = root => ({protocol:K(root,'protocol').value, network:K(root,'net
    который имитирует клиент; tls: alpn и поведение при чужом SNI. У «none» —
    показывать нечего, и это правильно: там настраивать нечего */
 const SEC_FIELDS = {
-  reality(){
+  reality(h){
     return `<div class="secbox">
-      <label><span>${t('cfg.sec.reality.dest')}</span><input data-k="dest" maxlength="63" placeholder="www.microsoft.com:443"></label>
+      <label><span>${t('cfg.sec.reality.dest')}</span><input data-k="dest" maxlength="63" placeholder="www.microsoft.com:443" value="${esc(h.dest||'')}"></label>
       <label><span>${t('cfg.sec.reality.fp')}</span><select data-k="fp">${opts(['chrome','edge','safari','firefox','android'])}</select></label>
       <p class="hint">${esc(t('cfg.sec.reality.hint'))}</p></div>`;
   },
-  tls(){
+  tls(h){
     const defLabel = {'' : t('cfg.sec.tls.alpn.default')};
     return `<div class="secbox">
       <label><span>${t('cfg.sec.tls.alpn')}</span><select data-k="alpn">${opts(['','h2,http/1.1','h2','http/1.1'], defLabel)}</select></label>
-      <label class="chk"><input type="checkbox" data-k="rejectUnknownSni"><span>${esc(t('cfg.sec.tls.rejectSni'))}</span></label>
+      <label class="chk"><input type="checkbox" data-k="rejectUnknownSni" ${h.rejectUnknownSni?'checked':''}><span>${esc(t('cfg.sec.tls.rejectSni'))}</span></label>
       <p class="hint">${esc(t('cfg.sec.tls.hint'))}</p></div>`;
   },
 };
-const secHTML = sec => (SEC_FIELDS[sec] || (()=>''))();
+const secHTML = (sec, h = {}) => (SEC_FIELDS[sec] || (()=>''))(h);
 function secBody(cfg, root){
   const sec = K(cfg,'security').value, body = {};
   if(sec==='reality'){
     const dest = K(root,'dest') ? K(root,'dest').value.trim() : '';
-    if(dest) body.dest = dest;
+    body.dest = dest;                                  // пустое = «как по умолчанию»
     body.fp = K(root,'fp').value;
   } else if(sec==='tls'){
-    const alpn = K(root,'alpn') ? K(root,'alpn').value : '';
-    if(alpn) body.alpn = alpn;
+    body.alpn = K(root,'alpn') ? K(root,'alpn').value : '';
     body.rejectUnknownSni = !!(K(root,'rejectUnknownSni') && K(root,'rejectUnknownSni').checked);
   }
+  return body;
+}
+
+/* ----- «Дополнительные настройки»: свёрнуты по умолчанию и показываются только
+   там, где у транспорта есть что настроить: у ws — путь и Host-заголовок,
+   у gRPC — имя сервиса; у tcp настраивать нечего и блок не появляется */
+const ADV_BY = {
+  ws: h=>`<label><span>${t('cfg.adv.path')}</span><input data-k="path" maxlength="256" placeholder="/ws" value="${esc(h.path||'')}"></label>
+    <label><span>${t('cfg.adv.hostHeader')}</span><input data-k="hostHeader" maxlength="63" placeholder="cdn.example.com" value="${esc(h.hostHeader||'')}"></label>`,
+  grpc: h=>`<label><span>${t('cfg.adv.serviceName')}</span><input data-k="serviceName" maxlength="64" placeholder="medusa" value="${esc(h.serviceName||'')}"></label>`,
+};
+const advHTML = (net, h = {}) => ADV_BY[net] ? `<details class="adv"><summary>${esc(t('cfg.adv'))}</summary><div class="advf">${ADV_BY[net](h)}</div></details>` : '';
+function advBody(cfg, root){
+  const net = K(cfg,'network').value, body = {};
+  if(net==='ws'){ body.path = K(root,'path').value.trim(); body.hostHeader = K(root,'hostHeader').value.trim(); }
+  else if(net==='grpc'){ body.serviceName = K(root,'serviceName').value.trim(); }
   return body;
 }
 
@@ -1211,27 +1233,75 @@ function freePort(node, extra=[]){
 }
 const nodeOptions = ()=>ctx.nodes.map(n=>`<option>${esc(n.name)}</option>`).join('');
 
-/* ----- диалог «Новый хост» ----- */
+/* ----- диалог «хост»: один и тот же и для нового, и для правки -----
+   при правке предзаполняется всё, что видно в списке, и пустые поля доп.
+   настроек означают «сбросить», а не «оставить как было» */
+let hostEditing = null;
+const setCfg = (k,v)=>{ const el = K($('#hcfg'),k); if(v!=null && v!=='') el.value = v; };
+function renderHostExtras(h){
+  const sec = K($('#hcfg'),'security').value, net = K($('#hcfg'),'network').value;
+  $('#hsec').innerHTML = secHTML(sec, h);
+  if(sec==='reality') K($('#hsec'),'fp').value = h.fp || 'chrome';
+  if(sec==='tls' && K($('#hsec'),'alpn')) K($('#hsec'),'alpn').value = h.alpn || '';
+  $('#hadv').innerHTML = advHTML(net, h);
+}
+function hostDialogShell(){
+  $('#hform').reset();
+  $('#hdlg').returnValue = '';
+  $('#hnode').innerHTML = nodeOptions();
+  $('#hcfg').innerHTML = cfgHTML();
+}
 async function openHost(){
   await loadCtx();
   if(!ctx.nodes.length) return toast(t('toast.noNodes'));
-  $('#hform').reset();
-  $('#hnode').innerHTML = nodeOptions();
-  $('#hcfg').innerHTML = cfgHTML(); initCfg($('#hcfg'), ()=>{ $('#hsec').innerHTML = secHTML(K($('#hcfg'),'security').value); });
+  hostEditing = null;
+  hostDialogShell();
+  $('#hdlg h3').textContent = t('dlg.host.title');
+  $('#hdlg [value=ok]').textContent = t('btn.create');
+  initCfg($('#hcfg'), ()=>renderHostExtras({}));
   K($('#hcfg'),'port').value = freePort($('#hnode').value);
-  $('#hdlg').returnValue = ''; $('#hdlg').showModal();
+  $('#hdlg').showModal();
+}
+async function openHostEdit(id){
+  await loadCtx();
+  const h = ctx.hosts.find(x=>x.id===id);
+  if(!h) return toast(t('err.notFound'));
+  hostEditing = id;
+  hostDialogShell();
+  $('#hdlg h3').textContent = t('dlg.host.editTitle');
+  $('#hdlg [value=ok]').textContent = t('btn.save');
+  $('#hform [name=name]').value = h.name;
+  $('#hform [name=address]').value = h.address || '';
+  $('#hnode').value = h.node;
+  initCfg($('#hcfg'), ()=>renderHostExtras(h));
+  setCfg('protocol', h.protocol); setCfg('network', h.network); setCfg('security', h.security);
+  syncCfg($('#hcfg'));
+  K($('#hcfg'),'port').value = h.port;
+  renderHostExtras(h);
+  $('#hdlg').showModal();
 }
 $('#hnode').onchange = ()=>{ K($('#hcfg'),'port').value = freePort($('#hnode').value); };
 $('#hform').addEventListener('submit', e=>{
   if(e.submitter && e.submitter.value!=='ok') return;
   const port = readCfg($('#hcfg')).port, node = $('#hnode').value;
+  const own = hostEditing && ctx.hosts.find(x=>x.id===hostEditing);
+  if(own && own.port===port && own.node===node) return;   // свой порт при правке — не конфликт
   if(taken(node).has(port)){ e.preventDefault(); toast(t('toast.portTaken',{port,node})); }
 });
 $('#hdlg').addEventListener('close', async ()=>{
   if($('#hdlg').returnValue!=='ok') return;
+  const base = {name:$('#hform [name=name]').value, node:$('#hnode').value,
+                address:($('#hform [name=address]').value||'').trim()||null,
+                ...readCfg($('#hcfg')), ...secBody($('#hcfg'), $('#hsec'))};
   try{
-    await call('POST','/api/hosts',{name:$('#hform [name=name]').value, node:$('#hnode').value, address:($('#hform [name=address]').value||'').trim()||null, ...readCfg($('#hcfg')), ...secBody($('#hcfg'), $('#hsec'))});
-    toast(t('toast.hostCreated')); show();
+    if(hostEditing){
+      await call('PATCH','/api/hosts/'+hostEditing, {...base, ...advBody($('#hcfg'), $('#hadv'))});
+      toast(t('toast.hostEdited'));
+    }else{
+      await call('POST','/api/hosts', {...base, ...advBody($('#hcfg'), $('#hadv'))});
+      toast(t('toast.hostCreated'));
+    }
+    show();
   }catch(err){ toast(t('toast.error',{msg:err.message})) }
 });
 

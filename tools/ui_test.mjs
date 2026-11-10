@@ -302,6 +302,9 @@ ok((await toastText()).includes('уже есть'), `текст об ошибк�
 await go('hosts');
 await page.click('[data-a="newhost"]');
 await openDlg('#hdlg');
+ok(await page.evaluate(() => document.querySelector('#hcfg [data-k="security"]').value) === 'none',
+   'по умолчанию защита выключена: включается только по явному выбору');
+ok((await page.locator('#hadv').innerHTML()).trim() === '', 'у tcp дополнительных настроек нет');
 await page.evaluate(() => {
   const set = (k, v) => { const el = document.querySelector(`#hcfg [data-k="${k}"]`); if(el){ el.value = v; el.dispatchEvent(new Event('change', {bubbles: true})); } };
   document.querySelector('#hform [name=name]').value = 'FI Reality';
@@ -322,9 +325,43 @@ ok((await page.locator('#hsec').innerHTML()).trim() === '', 'без защиты
 await page.evaluate(() => { const el = document.querySelector('#hcfg [data-k="security"]'); el.value = 'reality'; el.dispatchEvent(new Event('change', {bubbles: true})); });
 ok((await page.textContent('#hdlg')).includes('Адрес хоста'), 'метка поля названа адресом хоста');
 
+/* «Дополнительные настройки»: свёрнуты и есть только там, где настраивать нечего не умеет транспорт */
+await page.evaluate(() => {
+  const set = (k, v) => { const el = document.querySelector(`#hcfg [data-k="${k}"]`); el.value = v; el.dispatchEvent(new Event('change', {bubbles: true})); };
+  set('security', 'tls'); set('network', 'ws');
+});
+ok(await page.locator('#hadv summary').count() === 1, 'у websocket есть доп. настройки, и они свёрнуты');
+ok(!(await page.locator('#hadv details').first().evaluate(el => el.open)), 'блок «Дополнительные настройки» по умолчанию скрыт');
+await page.click('#hadv summary');
+ok(await page.locator('#hadv [data-k="path"]').count() === 1 && await page.locator('#hadv [data-k="hostHeader"]').count() === 1,
+   'раскрыли websocket: путь и Host-заголовок на месте');
+await page.evaluate(() => { const el = document.querySelector('#hcfg [data-k="network"]'); el.value = 'grpc'; el.dispatchEvent(new Event('change', {bubbles: true})); });
+ok(await page.locator('#hadv [data-k="serviceName"]').count() === 1, 'gRPC показал своё имя сервиса');
+await page.evaluate(() => {
+  const set = (k, v) => { const el = document.querySelector(`#hcfg [data-k="${k}"]`); el.value = v; el.dispatchEvent(new Event('change', {bubbles: true})); };
+  set('security', 'reality'); set('network', 'tcp');
+});
+ok((await page.locator('#hadv').innerHTML()).trim() === '', 'у tcp доп. настроек снова нет');
+
 await submit('#hform');
 await wait(() => document.querySelector('#view').textContent.includes('FI Reality'));
 ok((await text()).includes('FI Reality') && (await text()).includes('vps-fi'), 'хост создан и привязан к ноде');
+
+/* правка хоста: кнопка «Изменить» открывает тот же диалог, предзаполненный текущими значениями */
+await page.click('#view [data-a="hedit"]');
+await openDlg('#hdlg');
+ok((await page.textContent('#hdlg h3')).includes('изменение'), 'заголовок диалога говорит, что это правка');
+ok(await page.evaluate(() => document.querySelector('#hform [name=name]').value) === 'FI Reality', 'имя предзаполнено');
+ok(await page.evaluate(() => document.querySelector('#hcfg [data-k="security"]').value) === 'reality', 'выбранная защита предзаполнена');
+ok(await page.locator('#hsec [data-k="dest"]').count() === 1, 'поля защиты показаны сразу, потому что защита уже выбрана');
+ok((await page.locator('#hadv').innerHTML()).trim() === '', 'у tcp-хоста правки тоже нет доп. настроек');
+await page.evaluate(() => {
+  document.querySelector('#hform [name=name]').value = 'FI Reality-2';
+  const el = document.querySelector('#hcfg [data-k="port"]'); el.value = 9412; el.dispatchEvent(new Event('change', {bubbles: true}));
+});
+await submit('#hform');
+await wait(() => document.querySelector('#view').textContent.includes('9412'));
+ok((await text()).includes('FI Reality-2') && (await text()).includes('9412'), 'хост изменён: имя и порт обновлены');
 
 /* ---------- цепочка: её хост подсосался из цепочки ---------- */
 await go('chains');

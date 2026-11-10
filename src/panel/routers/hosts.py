@@ -2,6 +2,11 @@
 
 Хост цепочки здесь не выдумывается фронтендом: он создаётся вместе с цепочкой
 и живёт в той же таблице, ссылаясь на неё (цепочка -> хост через chain_id).
+Хост цепочки нельзя ни удалить, ни изменить отдельно — только вместе с цепочкой.
+
+Хост можно править (PATCH): имя, нода, адрес, порт, протокол, транспорт, защита и
+её поля. Правка живая: меняем состав — помечаем ноду грязной и тут же отправляем
+ей новый конфиг.
 """
 from __future__ import annotations
 
@@ -16,7 +21,7 @@ from src.core.xray_config import is_ip
 from src.panel import config_push
 from src.panel.db import get_conn, now_ms
 from src.panel.deps import bad_request, conflict, fetch_one, node_by_name, writer
-from src.panel.schemas import HostCreate
+from src.panel.schemas import HostCreate, HostPatch
 
 router = APIRouter(prefix="/api/hosts", tags=["hosts"])
 
@@ -58,7 +63,47 @@ def as_dict(row: sqlite3.Row) -> dict:
         "fp": row["fp"],
         "alpn": row["alpn"],
         "rejectUnknownSni": bool(row["reject_unknown_sni"]),
+        # транспортные детали
+        "path": row["path"],
+        "hostHeader": row["host_header"],
+        "serviceName": row["service_name"],
     }
+
+
+def clean(value: object) -> str:
+    return str(value or "").strip()
+
+
+def check_combination(protocol: str, network: str, security: str, address: str, node_address: str) -> None:
+    """Смысл combos один на create и patch: набор «reality поверх ws» или reality на IP
+    одинаково бессмысленен при создании и при правке."""
+    if security == "reality" and network == "ws":
+        raise bad_request("reality не работает поверх ws")
+    if protocol == "ss" and network != "tcp":
+        raise bad_request("shadowsocks тут только через tcp")
+    if security == "reality" and is_ip(address or node_address):
+        raise bad_request("хосту reality нужен адрес-домен: клиент не умеет подставлять IP в SNI")
+
+
+def check_fields(body: HostCreate | HostPatch, security: str, network: str) -> None:
+    """Поле чужой защиты или чужого транспорта — не «лишнее», а путаница:
+    панель отвергает сразу, чтобы потом не удивляться молча игнорируемому полю."""
+    if (body.dest is not None or body.fp is not None) and security != "reality":
+        raise bad_request("маскированный адрес и отпечаток клиента — настройки reality, а не другой защиты")
+    if (body.alpn is not None or body.rejectUnknownSni is not None) and security != "tls":
+        raise bad_request("alpn и отношение к чужому SNI — настройки tls, а не другой защиты")
+    if (body.path is not None or body.hostHeader is not None) and network != "ws":
+        raise bad_request("путь и Host-заголовок — настройки websocket, а не другого транспорта")
+    if body.serviceName is not None and network != "grpc":
+        raise bad_request("имя сервиса — настройка gRPC, а не другого транспорта")
+
+
+def check_port(conn: sqlite3.Connection, node_id: int, node_name: str, port: int, own_id: int | None = None) -> None:
+    busy = conn.execute(
+        "SELECT id FROM hosts WHERE node_id = ? AND port = ? AND id IS NOT ?", (node_id, port, own_id)
+    ).fetchone()
+    if busy:
+        raise conflict(f"порт {port} на ноде {node_name} уже занят")
 
 
 @router.get("")
@@ -73,34 +118,24 @@ def create_host(
     _: sqlite3.Row | None = Depends(writer),
 ) -> dict:
     node = node_by_name(conn, body.node)
-    if body.security == "reality" and body.network == "ws":
-        raise bad_request("reality не работает поверх ws")
-    if body.protocol == "ss" and body.network != "tcp":
-        raise bad_request("shadowsocks тут только через tcp")
-    busy = conn.execute("SELECT id FROM hosts WHERE node_id = ? AND port = ?", (node["id"], body.port)).fetchone()
-    if busy:
-        raise conflict(f"порт {body.port} на ноде {body.node} уже занят")
-    address = (body.address or "").strip()
-    if body.security == "reality" and is_ip(address or node["address"]):
-        raise bad_request("хосту reality нужен адрес-домен: клиент не умеет подставлять IP в SNI")
-    # поля защиты живут только со своей защитой: случайный alpn у reality или dest у tls —
-    # не «лишнее», а путаница, которую лучше увидеть сразу
-    if (body.dest is not None or body.fp is not None) and body.security != "reality":
-        raise bad_request("маскированный адрес и отпечаток клиента — настройки reality, а не другой защиты")
-    if (body.alpn is not None or body.rejectUnknownSni is not None) and body.security != "tls":
-        raise bad_request("alpn и отношение к чужому SNI — настройки tls, а не другой защиты")
+    address = clean(body.address)
+    check_combination(body.protocol, body.network, body.security, address, node["address"])
+    check_fields(body, body.security, body.network)
+    check_port(conn, node["id"], body.node, body.port)
     private_key = public_key = ""
     if body.security == "reality":
         private_key, public_key = new_reality_keys()
     try:
         conn.execute(
             """INSERT INTO hosts (name, node_id, protocol, port, network, security, chain_id,
-                                  address, private_key, public_key, dest, fp, alpn, reject_unknown_sni, created_at)
-               VALUES (?,?,?,?,?,?,NULL,?,?,?,?,?,?,?,?)""",
+                                  address, private_key, public_key, dest, fp, alpn, reject_unknown_sni,
+                                  path, host_header, service_name, created_at)
+               VALUES (?,?,?,?,?,?,NULL,?,?,?,?,?,?,?,?,?,?,?)""",
             (body.name, node["id"], body.protocol, body.port, body.network, body.security,
              address, private_key, public_key,
-             (body.dest or "").strip(), body.fp or "", body.alpn or "",
-             1 if body.rejectUnknownSni else 0, now_ms()),
+             clean(body.dest), body.fp or "", body.alpn or "",
+             1 if body.rejectUnknownSni else 0,
+             clean(body.path), clean(body.hostHeader), clean(body.serviceName), now_ms()),
         )
     except sqlite3.IntegrityError:
         raise conflict(f"порт {body.port} на ноде {body.node} уже занят")
@@ -109,6 +144,65 @@ def create_host(
     config_push.mark_dirty(conn, [node["id"]])
     config_push.schedule_push([node["id"]])
     return as_dict(fetch_one(conn, SELECT + " WHERE h.id = ?", (new_id,)))
+
+
+@router.patch("/{host_id}")
+def patch_host(
+    host_id: int,
+    body: HostPatch,
+    conn: sqlite3.Connection = Depends(get_conn),
+    _: sqlite3.Row | None = Depends(writer),
+) -> dict:
+    row = fetch_one(conn, "SELECT * FROM hosts WHERE id = ?", (host_id,))
+    if row["chain_id"] is not None:
+        raise conflict("хост цепочки меняется вместе с цепочкой")
+
+    node_id = row["node_id"]
+    if body.node is not None:
+        node_id = node_by_name(conn, body.node)["id"]
+    node = fetch_one(conn, "SELECT name, address FROM nodes WHERE id = ?", (node_id,))
+
+    merged = {
+        "name": body.name if body.name is not None else row["name"],
+        "protocol": body.protocol or row["protocol"],
+        "port": body.port if body.port is not None else row["port"],
+        "network": body.network or row["network"],
+        "security": body.security or row["security"],
+        # пустая строка — сброс к разумному по умолчанию, None — оставить как было
+        "address": clean(body.address) if body.address is not None else row["address"],
+        "dest": clean(body.dest) if body.dest is not None else row["dest"],
+        "fp": body.fp if body.fp is not None else row["fp"],
+        "alpn": body.alpn if body.alpn is not None else row["alpn"],
+        "reject_unknown_sni": (1 if body.rejectUnknownSni else 0)
+                              if body.rejectUnknownSni is not None else row["reject_unknown_sni"],
+        "path": clean(body.path) if body.path is not None else row["path"],
+        "host_header": clean(body.hostHeader) if body.hostHeader is not None else row["host_header"],
+        "service_name": clean(body.serviceName) if body.serviceName is not None else row["service_name"],
+    }
+
+    check_combination(merged["protocol"], merged["network"], merged["security"], merged["address"], node["address"])
+    check_fields(body, merged["security"], merged["network"])
+    check_port(conn, node_id, node["name"], merged["port"], own_id=host_id)
+
+    private_key, public_key = row["private_key"], row["public_key"]
+    if merged["security"] == "reality" and not private_key:
+        private_key, public_key = new_reality_keys()   # хост только сейчас стал reality
+
+    conn.execute(
+        """UPDATE hosts SET name = ?, node_id = ?, protocol = ?, port = ?, network = ?, security = ?,
+                           address = ?, private_key = ?, public_key = ?, dest = ?, fp = ?, alpn = ?,
+                           reject_unknown_sni = ?, path = ?, host_header = ?, service_name = ?
+           WHERE id = ?""",
+        (merged["name"], node_id, merged["protocol"], merged["port"], merged["network"], merged["security"],
+         merged["address"], private_key, public_key, merged["dest"], merged["fp"], merged["alpn"],
+         merged["reject_unknown_sni"], merged["path"], merged["host_header"], merged["service_name"], host_id),
+    )
+    conn.commit()
+
+    touched = {row["node_id"], node_id}      # если хост переехал на другую ноду — грязными станут обе
+    config_push.mark_dirty(conn, list(touched))
+    config_push.schedule_push(list(touched))
+    return as_dict(fetch_one(conn, SELECT + " WHERE h.id = ?", (host_id,)))
 
 
 @router.delete("/{host_id}", status_code=204)

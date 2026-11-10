@@ -224,6 +224,41 @@ def main() -> int:
         ok(clash.status_code == 409, f"такое имя ноды уже занято -> {clash.json()['detail']}")
         client.patch(f"/api/nodes/{home['id']}", json={"name": "home"})
 
+        # --- правка хоста: PATCH по частям, как и положено правке ---
+        fi_host = next(h for h in client.get("/api/hosts").json() if h["name"] == "FI Reality")
+        edited = client.patch(f"/api/hosts/{fi_host['id']}", json={
+            "name": "FI Reality v2", "port": 9412, "dest": "mask.example.net:443", "fp": "chrome"}).json()
+        ok(edited["name"] == "FI Reality v2" and edited["port"] == 9412, "хосту поменяли имя и порт")
+        ok(edited["dest"] == "mask.example.net:443" and edited["fp"] == "chrome",
+           "reality-настройки хоста сохранены при правке")
+        busy = client.post("/api/hosts", json={"name": "занято", "node": "vps-fi", "protocol": "vless",
+                                               "port": 9412, "network": "tcp", "security": "none"})
+        ok(busy.status_code == 409, "новый хост не лезет на порт, занятый при правке")
+        reverted = client.patch(f"/api/hosts/{fi_host['id']}", json={"name": "FI Reality", "port": 443}).json()
+        ok(reverted["port"] == 443 and reverted["name"] == "FI Reality", "правку откатывают так же легко, как делают")
+        cross = client.patch(f"/api/hosts/{fi_host['id']}", json={"alpn": "h2"})
+        ok(cross.status_code == 400, f"alpn для reality-хоста отвергается: {cross.json()['detail']}")
+        bad_path = client.patch(f"/api/hosts/{fi_host['id']}", json={"path": "/x"})
+        ok(bad_path.status_code == 400, f"путь без websocket отвергается: {bad_path.json()['detail']}")
+        ip_addr = client.patch(f"/api/hosts/{fi_host['id']}", json={"address": "1.2.3.4"})
+        ok(ip_addr.status_code == 400, "reality-хосту нельзя подставить IP вместо домена")
+        tls_ws = client.post("/api/hosts", json={"name": "TLS WS", "node": "vps-fi", "protocol": "vless",
+                                                 "port": 9413, "network": "ws", "security": "tls",
+                                                 "address": "ws.example.net", "path": "/tunnel",
+                                                 "hostHeader": "cdn.example.net", "serviceName": None}).json()
+        ok(tls_ws["path"] == "/tunnel" and tls_ws["hostHeader"] == "cdn.example.net",
+           "транспортные поля websocket сохранены при создании")
+        cleared = client.patch(f"/api/hosts/{tls_ws['id']}", json={"path": ""}).json()
+        ok(cleared["path"] == "", "пустой путь при правке означает «сбросить», а не «оставить»")
+        client.delete(f"/api/hosts/{tls_ws['id']}")
+        mini = client.post("/api/chains", json={"name": "MINI", "hops": [
+            {"node": "vps-fi", "protocol": "vless", "network": "tcp", "security": "reality", "port": 3011},
+            {"node": "home", "protocol": "vless", "network": "tcp", "security": "reality", "port": 3012}]}).json()
+        mini_host = next(h for h in client.get("/api/hosts").json() if h["chain"] == mini["id"])
+        alone = client.patch(f"/api/hosts/{mini_host['id']}", json={"port": 3099})
+        ok(alone.status_code == 409, f"хост цепочки поодиночке не правится -> {alone.json()['detail']}")
+        client.delete(f"/api/chains/{mini['id']}")
+
         # --- удаление ноды уносит связанные хосты ---
         ok(client.delete(f"/api/nodes/{fi['id']}").status_code == 204, "удалить ноду")
 

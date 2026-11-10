@@ -83,6 +83,7 @@ def collect(conn: sqlite3.Connection, node_id: int) -> dict[str, Any]:
     hosts = [dict(r) for r in conn.execute(
         """SELECT h.id, h.name, h.address, h.protocol, h.port, h.network, h.security,
                   h.private_key, h.public_key, h.dest, h.fp, h.alpn, h.reject_unknown_sni,
+                  h.path, h.host_header, h.service_name,
                   n.address AS node_address
            FROM hosts h JOIN nodes n ON n.id = h.node_id
            WHERE h.node_id = ? AND h.chain_id IS NULL ORDER BY h.port""", (node_id,)).fetchall()]
