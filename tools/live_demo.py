@@ -272,6 +272,17 @@ def main() -> int:
         negotiated = b64.b64decode(api.get(f"/sub/{user['token']}", headers={"Accept": "*/*"}).text).decode("utf-8")
         ok(negotiated.count("vless://") == 5,
            "та же ссылка подписки: клиент без Accept: text/html получает ссылки вместо страницы")
+        # Clash и его производные понимают только YAML со списком proxies
+        import yaml as _yaml
+        clash_doc = _yaml.safe_load(api.get(f"/sub/{user['token']}",
+                                            headers={"Accept": "*/*", "User-Agent": "clash-verge/v2.4.0"}).text)
+        ok(len(clash_doc["proxies"]) == 5 and all(p["type"] == "vless" for p in clash_doc["proxies"]),
+           "clash yaml: все пять хостов списком proxies")
+        reality_p = next(p for p in clash_doc["proxies"] if p["name"] == "reality")
+        w_p = next(p for p in clash_doc["proxies"] if p["name"] == "ws")
+        ok(reality_p["reality-opts"]["public-key"] and reality_p["client-fingerprint"] == "chrome"
+           and w_p["ws-opts"]["path"] == "/medusa-tunnel",
+           "clash yaml: reality-ключи и websocket-детали описаны по- clash-вому")
         qr = api.get(f"/sub/{user['token']}/qr/subscribe")
         ok(qr.status_code == 200 and qr.headers["content-type"].startswith("image/svg"),
            "QR ссылки подписки рисуется прямо на странице")

@@ -204,6 +204,19 @@ def main() -> int:
            "та же ссылка с ?raw=1 — без base64")
         as_moz = client.get(f"/sub/{brother['token']}", headers={"User-Agent": "Mozilla/5.0 (Linux; Android)"})
         ok("text/html" in as_moz.headers["content-type"], "приложение с Mozilla-UA получит страницу — у okhttp его нет")
+        # Clash и его производные понимают только YAML со proxies:
+        clash_resp = client.get(f"/sub/{brother['token']}", headers={"Accept": "*/*", "User-Agent": "clash-verge/v2.4.0"})
+        import yaml as _yaml
+        clash_doc = _yaml.safe_load(clash_resp.text)
+        clash_names = sorted(p["name"] for p in clash_doc["proxies"])
+        ok(clash_resp.status_code == 200 and clash_names == ["FI Reality", "SUB-ROUTE"],
+           f"Clash-UA получает YAML, а не base64: {clash_names}")
+        reality_proxy = next(p for p in clash_doc["proxies"] if p["name"] == "FI Reality")
+        ok(reality_proxy["type"] == "vless" and reality_proxy["servername"] == "fi.example.net"
+           and reality_proxy["reality-opts"]["public-key"] and reality_proxy["reality-opts"]["short-id"],
+           "clash yaml: reality-ключ, short-id и servername на месте")
+        ok(client.get(f"/sub/{brother['token']}/links?target=clash").text.startswith("# medusa"),
+           "?target=clash отдаёт YAML и на явном /links пути")
         links = client.get(f"/sub/{brother['token']}/links")
         decoded = b64.b64decode(links.text).decode("utf-8")
         ok(links.status_code == 200 and "text/plain" in links.headers["content-type"]
@@ -306,6 +319,12 @@ def main() -> int:
         cleared = client.patch(f"/api/hosts/{tls_ws['id']}", json={"path": "", "certFile": "", "keyFile": ""}).json()
         ok(cleared["path"] == "" and cleared["certFile"] == "",
            "пустое поле при правке означает «сбросить», а не «оставить»")
+        clash_tls_doc = _yaml.safe_load(client.get(f"/sub/{brother['token']}",
+                                                   headers={"Accept": "*/*", "User-Agent": "clash"}).text)
+        tls_proxy = next(p for p in clash_tls_doc["proxies"] if p["name"] == "TLS WS")
+        ok(tls_proxy["skip-cert-verify"] is True and tls_proxy["servername"] == "tls.example.net"
+           and "alpn" not in tls_proxy,
+           "clash yaml: tls-хост с self-signed не заставит Clash проверять чужой сертификат")
         client.delete(f"/api/hosts/{tls_ws['id']}")
         mini = client.post("/api/chains", json={"name": "MINI", "hops": [
             {"node": "vps-fi", "protocol": "vless", "network": "tcp", "security": "reality", "port": 3011},

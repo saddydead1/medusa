@@ -778,6 +778,7 @@ dependencies = [
     { name = "cbor2" },
     { name = "cryptography" },
     { name = "fastapi", extra = ["standard"] },
+    { name = "pyyaml" },
     { name = "segno" },
 ]
 
@@ -786,6 +787,7 @@ requires-dist = [
     { name = "cbor2", specifier = ">=6.2.1" },
     { name = "cryptography", specifier = ">=50.0.2" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.162.0" },
+    { name = "pyyaml", specifier = ">=6" },
     { name = "segno", specifier = ">=1.6" },
 ]
 

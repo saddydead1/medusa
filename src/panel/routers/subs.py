@@ -11,12 +11,17 @@
 Язык по умолчанию русский, `?lang=en` переключает на английский.
 
 Машинные эндпоинты той же подписки:
-* `GET /sub/<token>/links` — все ссылки сразу: base64-строка (как ждут
-  v2rayN/v2rayNG и большинство клиентов); `?raw=1` — те же строки без base64;
+* `GET /sub/<token>` — один адрес на два применения: браузеру (Accept: text/html
+  или Mozilla-UA) — HTML-страница, остальным — список ссылок: Clash и его
+  производные (UA содержит «clash» или `?target=clash`) получают YAML со
+  `proxies:`, прочие — base64-строку vless-ссылок (как ждут v2rayN/v2rayNG);
+  `?raw=1` — ссылки без base64. Именно эту ссылку и вставляют в приложение;
+* `GET /sub/<token>/links` — то же без переговоров: всегда список ссылок
+  (Clash-UA всё равно получает YAML);
 * `GET /sub/<token>/qr/subscribe` — QR на ссылку подписки (целая подписка
   одним сканированием);
 * `GET /sub/<token>/qr/host/<id>` — QR на ссылку одного хоста.
-Раздача конфигов Clash YAML / sing-box JSON — впереди.
+Раздача конфигов sing-box JSON — впереди.
 """
 from __future__ import annotations
 
@@ -28,6 +33,7 @@ from datetime import datetime, timezone
 from urllib.parse import quote, urlencode
 
 import segno
+import yaml
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, Response
 
@@ -70,9 +76,9 @@ STRINGS = {
         "qr.show": "QR-код", "qr.host": "Показать QR-код ссылки этого хоста",
         "sub.link": "Ссылка подписки",
         "sub.link.hint": "Это тот же адрес, что в адресной строке: откроешь в браузере — увидишь "
-                         "эту страницу; вставишь в приложение (v2rayN, v2rayNG, Hiddify…) — все "
-                         "доступные хосты добавятся разом. Ссылка содержит ваш личный токен — "
-                         "не раздавайте её другим людям.",
+                         "эту страницу; вставишь в приложение (v2rayN, v2rayNG, Hiddify, Clash Verge…) — все "
+                         "доступные хосты добавятся разом (Clash получит свой YAML автоматически). "
+                         "Ссылка содержит ваш личный токен — не раздавайте её другим людям.",
         "disabled.note": "Учётка отключена: подписка не раздаётся, хосты скрыты",
         "404.title": "Ссылка не найдена",
         "404.text": "Такого токена подписки нет: возможно, пользователя удалили или в ссылке опечатка.",
@@ -92,8 +98,9 @@ STRINGS = {
         "qr.show": "QR code", "qr.host": "Show the QR code of this host's link",
         "sub.link": "Subscription link",
         "sub.link.hint": "It is the very address from the address bar: open it in a browser and "
-                         "you get this page; paste it into the app (v2rayN, v2rayNG, Hiddify…) and "
-                         "every available host is imported at once. The link carries your personal "
+                         "you get this page; paste it into the app (v2rayN, v2rayNG, Hiddify, Clash Verge…) "
+                         "and every available host is imported at once (Clash clients get their YAML "
+                         "automatically). The link carries your personal "
                          "token — do not hand it around.",
         "disabled.note": "Account disabled: the subscription is off, hosts are hidden",
         "404.title": "Link not found",
@@ -388,7 +395,71 @@ def wants_page(request: Request) -> bool:
     return "text/html" in accept or "mozilla" in agent
 
 
+def wants_clash(request: Request) -> bool:
+    """Clash и его производные (Clash Verge, flclash, Mihomo proxy-provider)
+    понимают только YAML со `proxies:`. Узнаём по их UA или по явному ?target=clash."""
+    agent = request.headers.get("user-agent", "").lower()
+    return request.query_params.get("target", "").lower() == "clash" or "clash" in agent
+
+
+def clash_proxy(token: str, host: dict | sqlite3.Row) -> dict:
+    """Один хост подписки — один Clash-прокси (Mihomo-формат: vless + reality).
+
+    Сертификаты tls у нод self-signed — Clash не должен спотыкаться об них:
+    skip-cert-verify включён. reality от Clash Verge требует актуального Mihomo
+    (reality там живёт с 2023 года)."""
+    address = host["address"] or host["node_address"]
+    proxy: dict = {
+        "name": host["name"],
+        "type": host["protocol"],
+        "server": address,
+        "port": host["port"],
+        "uuid": user_uuid(token),
+        "network": host["network"],
+        "udp": True,
+    }
+    if host["network"] == "ws":
+        opts: dict = {}
+        if host["path"]:
+            opts["path"] = host["path"]
+        if host["host_header"]:
+            opts["headers"] = {"Host": host["host_header"]}
+        if opts:
+            proxy["ws-opts"] = opts
+    elif host["network"] == "grpc" and host["service_name"]:
+        proxy["grpc-opts"] = {"grpc-service-name": host["service_name"]}
+    security = host["security"]
+    if security == "tls":
+        proxy["tls"] = True
+        proxy["servername"] = host["sni"] or address
+        proxy["skip-cert-verify"] = True
+        if host["fp"]:
+            proxy["client-fingerprint"] = host["fp"]
+    elif security == "reality":
+        proxy["tls"] = True
+        names = [n.strip() for n in (host["server_names"] or "").replace(",", " ").split() if n.strip()]
+        proxy["servername"] = names[0] if names else address
+        reality_opts: dict = {"short-id": reality_short_id(token)}
+        if host["public_key"]:
+            reality_opts["public-key"] = host["public_key"]
+        proxy["reality-opts"] = reality_opts
+        proxy["client-fingerprint"] = host["fp"] or "chrome"
+    return proxy
+
+
+def clash_response(user: sqlite3.Row, conn: sqlite3.Connection) -> Response:
+    rows = [r for r in fetch_hosts(conn) if r["protocol"] == "vless"]
+    rows += [r for r in fetch_chains(conn) if r["protocol"] == "vless"]
+    body = "# medusa: подписка панели, сгенерировано — не правьте руками\n" + yaml.safe_dump(
+        {"proxies": [clash_proxy(user["token"], r) for r in rows]},
+        sort_keys=False, allow_unicode=True, default_flow_style=False)
+    return Response(content=body.encode("utf-8"), media_type="text/plain; charset=utf-8",
+                    headers={"Cache-Control": "no-store"})
+
+
 def links_response(request: Request, user: sqlite3.Row, conn: sqlite3.Connection) -> Response:
+    if wants_clash(request):
+        return clash_response(user, conn)
     links = [subscription_link(user["token"], r) for r in fetch_hosts(conn)]
     links += [subscription_link(user["token"], r) for r in fetch_chains(conn)]
     plain = "\n".join(links)
