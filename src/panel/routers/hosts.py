@@ -63,20 +63,14 @@ def as_dict(row: sqlite3.Row) -> dict:
         "fp": row["fp"],
         "rejectUnknownSni": bool(row["reject_unknown_sni"]),
         "sni": row["sni"],
-        "minVersion": row["min_version"],
-        "maxVersion": row["max_version"],
-        "cipherSuites": row["cipher_suites"],
         "certFile": row["cert_file"],
         "keyFile": row["key_file"],
         "serverNames": row["server_names"],
-        "realityMinClient": row["reality_min_client"],
-        "realityMaxClient": row["reality_max_client"],
         # транспортные детали
         "path": row["path"],
         "hostHeader": row["host_header"],
         "serviceName": row["service_name"],
         "grpcAuthority": row["grpc_authority"],
-        "grpcMultiMode": bool(row["grpc_multi_mode"]),
     }
 
 
@@ -102,18 +96,17 @@ def check_fields(body: HostCreate | HostPatch, security: str, network: str) -> N
         raise bad_request("отпечаток клиента работает только при шифровании (tls или reality)")
     if body.dest is not None and security != "reality":
         raise bad_request("маскированный адрес — настройка reality, а не другой защиты")
-    reality_extra = (body.serverNames, body.realityMinClient, body.realityMaxClient)
-    if any(v is not None for v in reality_extra) and security != "reality":
-        raise bad_request("список sni и допуски по версии клиента — настройки reality, а не другой защиты")
-    tls_fields = (body.sni, body.minVersion, body.maxVersion, body.cipherSuites, body.certFile, body.keyFile)
+    if body.serverNames is not None and security != "reality":
+        raise bad_request("список принимаемых sni — настройка reality, а не другой защиты")
+    tls_fields = (body.sni, body.certFile, body.keyFile)
     if any(v is not None for v in tls_fields) and security != "tls":
-        raise bad_request("sni, версии tls, шифры и файлы сертификатов — настройки tls, а не другой защиты")
+        raise bad_request("sni и файлы сертификатов — настройки tls, а не другой защиты")
     if body.rejectUnknownSni is not None and security != "tls":
         raise bad_request("отношение к чужому SNI — настройка tls, а не другой защиты")
     if (body.path is not None or body.hostHeader is not None) and network != "ws":
         raise bad_request("путь и Host-заголовок — настройки websocket, а не другого транспорта")
-    if (body.serviceName is not None or body.grpcAuthority is not None or body.grpcMultiMode is not None) and network != "grpc":
-        raise bad_request("имя сервиса, authority и двунаправленный поток — настройки gRPC, а не другого транспорта")
+    if (body.serviceName is not None or body.grpcAuthority is not None) and network != "grpc":
+        raise bad_request("имя сервиса и authority — настройки gRPC, а не другого транспорта")
 
 
 def check_cert_pair(cert_file: str, key_file: str) -> None:
@@ -161,19 +154,16 @@ def create_host(
         conn.execute(
             """INSERT INTO hosts (name, node_id, protocol, port, network, security, chain_id,
                                   address, private_key, public_key, dest, fp, alpn, reject_unknown_sni,
-                                  path, host_header, service_name, grpc_authority, grpc_multi_mode,
-                                  sni, min_version, max_version, cipher_suites, cert_file, key_file,
-                                  server_names, reality_min_client, reality_max_client, created_at)
-               VALUES (?,?,?,?,?,?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                  path, host_header, service_name, grpc_authority,
+                                  sni, cert_file, key_file, server_names, created_at)
+               VALUES (?,?,?,?,?,?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (body.name, node["id"], body.protocol, body.port, body.network, body.security,
              address, private_key, public_key,
              clean(body.dest), body.fp or "", "",
              1 if body.rejectUnknownSni else 0,
-             clean(body.path), clean(body.hostHeader), clean(body.serviceName),
-             clean(body.grpcAuthority), 1 if body.grpcMultiMode else 0,
-             clean(body.sni), body.minVersion or "", body.maxVersion or "", clean(body.cipherSuites),
-             clean(body.certFile), clean(body.keyFile),
-             clean(body.serverNames), clean(body.realityMinClient), clean(body.realityMaxClient), now_ms()),
+             clean(body.path), clean(body.hostHeader), clean(body.serviceName), clean(body.grpcAuthority),
+             clean(body.sni), clean(body.certFile), clean(body.keyFile),
+             clean(body.serverNames), now_ms()),
         )
     except sqlite3.IntegrityError:
         raise conflict(f"порт {body.port} на ноде {body.node} уже занят")
@@ -216,17 +206,10 @@ def patch_host(
         "host_header": clean(body.hostHeader) if body.hostHeader is not None else row["host_header"],
         "service_name": clean(body.serviceName) if body.serviceName is not None else row["service_name"],
         "grpc_authority": clean(body.grpcAuthority) if body.grpcAuthority is not None else row["grpc_authority"],
-        "grpc_multi_mode": (1 if body.grpcMultiMode else 0)
-                           if body.grpcMultiMode is not None else row["grpc_multi_mode"],
         "sni": clean(body.sni) if body.sni is not None else row["sni"],
-        "min_version": body.minVersion if body.minVersion is not None else row["min_version"],
-        "max_version": body.maxVersion if body.maxVersion is not None else row["max_version"],
-        "cipher_suites": clean(body.cipherSuites) if body.cipherSuites is not None else row["cipher_suites"],
         "cert_file": clean(body.certFile) if body.certFile is not None else row["cert_file"],
         "key_file": clean(body.keyFile) if body.keyFile is not None else row["key_file"],
         "server_names": clean(body.serverNames) if body.serverNames is not None else row["server_names"],
-        "reality_min_client": clean(body.realityMinClient) if body.realityMinClient is not None else row["reality_min_client"],
-        "reality_max_client": clean(body.realityMaxClient) if body.realityMaxClient is not None else row["reality_max_client"],
     }
 
     check_combination(merged["protocol"], merged["network"], merged["security"], merged["address"], node["address"])
@@ -242,16 +225,13 @@ def patch_host(
         """UPDATE hosts SET name = ?, node_id = ?, protocol = ?, port = ?, network = ?, security = ?,
                            address = ?, private_key = ?, public_key = ?, dest = ?, fp = ?, alpn = ?,
                            reject_unknown_sni = ?, path = ?, host_header = ?, service_name = ?,
-                           grpc_authority = ?, grpc_multi_mode = ?, sni = ?, min_version = ?,
-                           max_version = ?, cipher_suites = ?, cert_file = ?, key_file = ?,
-                           server_names = ?, reality_min_client = ?, reality_max_client = ?
+                           grpc_authority = ?, sni = ?, cert_file = ?, key_file = ?, server_names = ?
            WHERE id = ?""",
         (merged["name"], node_id, merged["protocol"], merged["port"], merged["network"], merged["security"],
          merged["address"], private_key, public_key, merged["dest"], merged["fp"], row["alpn"],
          merged["reject_unknown_sni"], merged["path"], merged["host_header"], merged["service_name"],
-         merged["grpc_authority"], merged["grpc_multi_mode"], merged["sni"], merged["min_version"],
-         merged["max_version"], merged["cipher_suites"], merged["cert_file"], merged["key_file"],
-         merged["server_names"], merged["reality_min_client"], merged["reality_max_client"], host_id),
+         merged["grpc_authority"], merged["sni"], merged["cert_file"], merged["key_file"],
+         merged["server_names"], host_id),
     )
     conn.commit()
 

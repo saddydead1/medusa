@@ -168,11 +168,8 @@ def subscription_link(token: str, host: dict | sqlite3.Row) -> str:
             params["path"] = host["path"]
         if host["host_header"]:
             params["host"] = host["host_header"]
-    elif host["network"] == "grpc":
-        if host["service_name"]:
-            params["serviceName"] = host["service_name"]
-        if host["grpc_multi_mode"]:
-            params["mode"] = "multiMode"
+    elif host["network"] == "grpc" and host["service_name"]:
+        params["serviceName"] = host["service_name"]
     security = host["security"]
     if security == "tls":
         params.update({"security": "tls", "sni": host["sni"] or address})
@@ -264,14 +261,14 @@ def subscription_page(token: str, request: Request,
 
     hosts = conn.execute(
         """SELECT h.name, h.address, h.public_key, h.fp, h.sni, h.server_names, h.path,
-                  h.host_header, h.service_name, h.grpc_multi_mode,
+                  h.host_header, h.service_name,
                   h.protocol, h.port, h.network, h.security,
                   n.address AS node_address
            FROM hosts h JOIN nodes n ON n.id = h.node_id
            WHERE h.chain_id IS NULL ORDER BY h.name""").fetchall()
     chains = conn.execute(
         """SELECT c.name, c.hops, h.address, h.public_key, h.fp, h.sni, h.server_names, h.path,
-                  h.host_header, h.service_name, h.grpc_multi_mode,
+                  h.host_header, h.service_name,
                   h.protocol, h.port, h.network, h.security,
                   n.address AS node_address
            FROM chains c JOIN hosts h ON h.chain_id = c.id JOIN nodes n ON n.id = h.node_id

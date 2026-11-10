@@ -315,13 +315,14 @@ await page.evaluate(() => {
 });
 
 /* поля защиты: появились только потому, что защита выбрана */
-ok(await page.locator('#hsec [data-k="dest"]').count() === 1 && await page.locator('#hsec [data-k="fp"]').count() === 1 &&
-   await page.locator('#hsec [data-k="serverNames"]').count() === 1 && await page.locator('#hsec [data-k="realityMinClient"]').count() === 1,
-   'reality показал свои поля: маскированный адрес, отпечаток, список sni и версию клиента');
+ok(await page.locator('#hsec [data-k="dest"]').count() === 1 && await page.locator('#hsec [data-k="serverNames"]').count() === 1 &&
+   await page.locator('#hsec [data-k="fp"]').count() === 0,
+   'reality показал свои поля: маскированный адрес и список sni, а отпечаток — не тут');
+ok(await page.locator('#hadv [data-k="fp"]').count() === 1, 'отпечаток клиента живёт в «Дополнительных настройках»');
 await page.evaluate(() => { const el = document.querySelector('#hcfg [data-k="security"]'); el.value = 'tls'; el.dispatchEvent(new Event('change', {bubbles: true})); });
 ok(await page.locator('#hsec [data-k="sni"]').count() === 1 && await page.locator('#hsec [data-k="rejectUnknownSni"]').count() === 1 &&
-   await page.locator('#hsec [data-k="certFile"]').count() === 1 && await page.locator('#hsec [data-k="minVersion"]').count() === 1,
-   'tls показал свои поля: sni, версии, сертификаты и «отвергать чужой SNI»');
+   await page.locator('#hsec [data-k="certFile"]').count() === 1 && await page.locator('#hsec [data-k="minVersion"]').count() === 0,
+   'tls показал свои поля: sni, сертификаты и «отвергать чужой SNI», а версий больше нет');
 ok(await page.locator('#hsec [data-k="alpn"]').count() === 0, 'alpn больше не поле панели: у Xray свои разумные договорённости');
 await page.evaluate(() => { const el = document.querySelector('#hcfg [data-k="security"]'); el.value = 'none'; el.dispatchEvent(new Event('change', {bubbles: true})); });
 ok((await page.locator('#hsec').innerHTML()).trim() === '', 'без защиты показывать нечего — и не показывают');
@@ -340,12 +341,13 @@ ok(await page.locator('#hadv [data-k="path"]').count() === 1 && await page.locat
    'раскрыли websocket: путь и Host-заголовок на месте');
 await page.evaluate(() => { const el = document.querySelector('#hcfg [data-k="network"]'); el.value = 'grpc'; el.dispatchEvent(new Event('change', {bubbles: true})); });
 ok(await page.locator('#hadv [data-k="serviceName"]').count() === 1 && await page.locator('#hadv [data-k="grpcAuthority"]').count() === 1 &&
-   await page.locator('#hadv [data-k="grpcMultiMode"]').count() === 1, 'gRPC показал имя сервиса, authority и multiMode');
+   await page.locator('#hadv [data-k="grpcMultiMode"]').count() === 0, 'gRPC показал имя сервиса и authority, без multiMode');
 await page.evaluate(() => {
   const set = (k, v) => { const el = document.querySelector(`#hcfg [data-k="${k}"]`); el.value = v; el.dispatchEvent(new Event('change', {bubbles: true})); };
   set('security', 'reality'); set('network', 'tcp');
 });
-ok((await page.locator('#hadv').innerHTML()).trim() === '', 'у tcp доп. настроек снова нет');
+ok(await page.locator('#hadv [data-k="path"]').count() === 0 && await page.locator('#hadv [data-k="fp"]').count() === 1,
+   'у tcp с reality из доп. настроек остался один отпечаток');
 
 await submit('#hform');
 await wait(() => document.querySelector('#view').textContent.includes('FI Reality'));
@@ -358,7 +360,7 @@ ok((await page.textContent('#hdlg h3')).includes('изменение'), 'заг�
 ok(await page.evaluate(() => document.querySelector('#hform [name=name]').value) === 'FI Reality', 'имя предзаполнено');
 ok(await page.evaluate(() => document.querySelector('#hcfg [data-k="security"]').value) === 'reality', 'выбранная защита предзаполнена');
 ok(await page.locator('#hsec [data-k="dest"]').count() === 1, 'поля защиты показаны сразу, потому что защита уже выбрана');
-ok((await page.locator('#hadv').innerHTML()).trim() === '', 'у tcp-хоста правки тоже нет доп. настроек');
+ok(await page.evaluate(() => document.querySelector('#hadv [data-k="fp"]').value) === 'chrome', 'отпечаток предзаполнен значением по умолчанию');
 await page.evaluate(() => {
   document.querySelector('#hform [name=name]').value = 'FI Reality-2';
   const el = document.querySelector('#hcfg [data-k="port"]'); el.value = 9412; el.dispatchEvent(new Event('change', {bubbles: true}));

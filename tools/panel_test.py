@@ -236,14 +236,12 @@ def main() -> int:
         ok(busy.status_code == 409, "новый хост не лезет на порт, занятый при правке")
         reverted = client.patch(f"/api/hosts/{fi_host['id']}", json={"name": "FI Reality", "port": 443}).json()
         ok(reverted["port"] == 443 and reverted["name"] == "FI Reality", "правку откатывают так же легко, как делают")
-        cross = client.patch(f"/api/hosts/{fi_host['id']}", json={"minVersion": "1.3"})
+        cross = client.patch(f"/api/hosts/{fi_host['id']}", json={"certFile": "/etc/ssl/a.crt"})
         ok(cross.status_code == 400, f"поле tls для reality-хоста отвергается: {cross.json()['detail']}")
         sni_cross = client.patch(f"/api/hosts/{fi_host['id']}", json={"sni": "x.example.net"})
         ok(sni_cross.status_code == 400, f"sni — поле tls, у reality для этого есть serverNames -> {sni_cross.json()['detail']}")
-        names = client.patch(f"/api/hosts/{fi_host['id']}", json={
-            "serverNames": "fi.example.net alt.example.net", "realityMinClient": "24.7.10"}).json()
-        ok(names["serverNames"] == "fi.example.net alt.example.net" and names["realityMinClient"] == "24.7.10",
-           "reality записал список sni и минимальную версию клиента")
+        names = client.patch(f"/api/hosts/{fi_host['id']}", json={"serverNames": "fi.example.net alt.example.net"}).json()
+        ok(names["serverNames"] == "fi.example.net alt.example.net", "reality записал список sni")
         fp_none = client.post("/api/hosts", json={"name": "прямой", "node": "vps-fi", "protocol": "vless",
                                                   "port": 9416, "network": "tcp", "security": "none", "fp": "chrome"})
         ok(fp_none.status_code == 400, f"отпечаток без шифрования отвергается: {fp_none.json()['detail']}")
@@ -255,13 +253,11 @@ def main() -> int:
                                                  "port": 9413, "network": "ws", "security": "tls",
                                                  "address": "ws.example.net", "path": "/tunnel",
                                                  "hostHeader": "cdn.example.net", "sni": "tls.example.net",
-                                                 "minVersion": "1.2", "maxVersion": "1.3",
-                                                 "cipherSuites": "chacha20-ietf-poly1305", "fp": "safari"}).json()
+                                                 "fp": "safari"}).json()
         ok(tls_ws["path"] == "/tunnel" and tls_ws["hostHeader"] == "cdn.example.net",
            "транспортные поля websocket сохранены при создании")
-        ok(tls_ws["sni"] == "tls.example.net" and tls_ws["minVersion"] == "1.2" and
-           tls_ws["maxVersion"] == "1.3" and tls_ws["cipherSuites"] == "chacha20-ietf-poly1305" and
-           tls_ws["fp"] == "safari", "tls записал sni, версии, шифры и отпечаток")
+        ok(tls_ws["sni"] == "tls.example.net" and tls_ws["fp"] == "safari",
+           "tls записал sni и отпечаток")
         half = client.patch(f"/api/hosts/{tls_ws['id']}", json={"certFile": "/etc/ssl/medusa.crt"})
         ok(half.status_code == 400, f"сертификат без ключа отвергается: {half.json()['detail']}")
         pair = client.patch(f"/api/hosts/{tls_ws['id']}", json={"certFile": "/etc/ssl/medusa.crt",

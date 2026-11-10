@@ -138,8 +138,6 @@ def stream_settings(host: dict) -> dict[str, Any]:
             grpc["serviceName"] = host["service_name"]
         if host.get("grpc_authority"):
             grpc["authority"] = host["grpc_authority"]
-        if host.get("grpc_multi_mode"):
-            grpc["multiMode"] = True
         if grpc:
             stream["grpcSettings"] = grpc
     # отпечаток клиента (utls): куда нода притворяется браузером — работает при
@@ -154,32 +152,23 @@ def stream_settings(host: dict) -> dict[str, Any]:
             "serverName": sni,
             "certificates": [{"certificateFile": crt, "keyFile": key}],
         }
-        # границы версий и шифры tls 1.2 — только если человек задал их сам;
-        # alpn панель больше не называет: у Xray свои разумные договорённости
-        if host.get("min_version"):
-            tls["minVersion"] = host["min_version"]
-        if host.get("max_version"):
-            tls["maxVersion"] = host["max_version"]
-        if host.get("cipher_suites"):
-            tls["cipherSuites"] = host["cipher_suites"]
+        # версии протокола и наборы шифров панель не называет: у Xray свои
+        # разумные договорённости, ломать их пользовательской волей незачем
         if host.get("reject_unknown_sni"):
             tls["rejectUnknownSni"] = True
         stream["tlsSettings"] = tls
     elif host["security"] == "reality":
         # Xray 26: серверный reality — это serverNames/shortIds/dest/privateKey;
         # адрес обязан быть доменом (панель это проверяет: IP в SNI не влезает)
-        reality: dict[str, Any] = {
+        stream["realitySettings"] = {
             "show": False,
             "dest": host.get("dest") or REALITY_DEST,
             "serverNames": reality_server_names(host),
             "privateKey": host.get("private_key") or "",
-            "minClientVer": host.get("reality_min_client") or REALITY_MIN_CLIENT,
+            "minClientVer": REALITY_MIN_CLIENT,
             "shortIds": [],
             "spiderX": "/",
         }
-        if host.get("reality_max_client"):
-            reality["maxClientVer"] = host["reality_max_client"]
-        stream["realitySettings"] = reality
     return stream
 
 

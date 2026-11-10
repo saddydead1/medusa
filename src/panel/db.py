@@ -203,28 +203,22 @@ COLUMNS = {
         "fp": "TEXT NOT NULL DEFAULT ''",
         "alpn": "TEXT NOT NULL DEFAULT ''",
         "reject_unknown_sni": "INTEGER NOT NULL DEFAULT 0",
-        # транспортные детали: путь и Host-заголовок у ws, имя сервиса/authority/
-        # двунаправленный поток у gRPC; для tcp показывать нечего — они пустые
+        # транспортные детали: путь и Host-заголовок у ws, имя сервиса и authority
+        # у gRPC; для tcp показывать нечего — они пустые
         "path": "TEXT NOT NULL DEFAULT ''",
         "host_header": "TEXT NOT NULL DEFAULT ''",
         "service_name": "TEXT NOT NULL DEFAULT ''",
         "grpc_authority": "TEXT NOT NULL DEFAULT ''",
-        "grpc_multi_mode": "INTEGER NOT NULL DEFAULT 0",
-        # tls: sni клиента (адрес хоста по умолчанию), границы версий протокола,
-        # наборы шифров для tls 1.2 и пути к своим сертификатом на самой ноде
-        # (пустые — нода выпустит self-signed сама; колонка alpn осталась в старых
-        # базах, но больше не используется: разумные alpn знает сам Xray)
+        # tls: sni клиента (адрес хоста по умолчанию) и пути к своим сертификатам
+        # на самой ноде (пустые — нода выпустит self-signed сама); reality: какие
+        # sni он принимает (пусто — адрес хоста)
         "sni": "TEXT NOT NULL DEFAULT ''",
-        "min_version": "TEXT NOT NULL DEFAULT ''",
-        "max_version": "TEXT NOT NULL DEFAULT ''",
-        "cipher_suites": "TEXT NOT NULL DEFAULT ''",
         "cert_file": "TEXT NOT NULL DEFAULT ''",
         "key_file": "TEXT NOT NULL DEFAULT ''",
-        # reality: какие sni он принимает (по адресе хоста) и допуски по
-        # версиям клиента; minClientVer по умолчанию ставит рендер
         "server_names": "TEXT NOT NULL DEFAULT ''",
-        "reality_min_client": "TEXT NOT NULL DEFAULT ''",
-        "reality_max_client": "TEXT NOT NULL DEFAULT ''",
+        # колонки alpn, min_version, max_version, cipher_suites, reality_min_client,
+        # reality_max_client, grpc_multi_mode остались разве что в старых базах:
+        # панель ими больше не управляет — разумные значения знает сам Xray
     },
 }
 

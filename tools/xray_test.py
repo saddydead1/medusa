@@ -142,32 +142,29 @@ def main() -> int:
                                                       "port": 443, "network": "tcp", "security": "reality",
                                                       "address": "vpn.example.net",
                                                       "dest": "mask.example.net:443", "fp": "firefox",
-                                                      "serverNames": "vpn.example.net, backup.example.net",
-                                                      "realityMaxClient": "99.0.0"}).json()
+                                                      "serverNames": "vpn.example.net, backup.example.net"}).json()
             ok(reality["address"] == "vpn.example.net", f"адрес подключения хоста сохранён: {reality['address']}")
             ok(len(reality["publicKey"] or "") >= 40, f"reality-хост получил публичный ключ: {reality['publicKey'][:12]}…")
             ok(all(k not in reality for k in ("private_key", "privateKey", "apiKey")),
                "приватный ключ reality из панели наружу не утекает")
             ok(reality["dest"] == "mask.example.net:443" and reality["fp"] == "firefox",
                "маскированный адрес и отпечаток клиента сохранены у хоста")
-            ok(reality["serverNames"] == "vpn.example.net, backup.example.net" and reality["realityMaxClient"] == "99.0.0",
-               "reality записал список sni и максимальную версию клиента")
+            ok(reality["serverNames"] == "vpn.example.net, backup.example.net",
+               "reality записал список sni")
             tls = client.post("/api/hosts", json={"name": "T8443", "node": "stub", "protocol": "vless",
                                                   "port": 8443, "network": "ws", "security": "tls",
                                                   "address": "127.0.0.1",
                                                   "sni": "tls.example.net", "rejectUnknownSni": True,
-                                                  "minVersion": "1.2", "maxVersion": "1.3",
-                                                  "cipherSuites": "chacha20-ietf-poly1305", "fp": "safari",
+                                                  "fp": "safari",
                                                   "path": "/tun8443", "hostHeader": "cdn.example.net"}).json()
             ok(tls["sni"] == "tls.example.net" and tls["rejectUnknownSni"] is True,
                "tls-хост записал sni и «отвергать чужой SNI»")
-            ok(tls["minVersion"] == "1.2" and tls["maxVersion"] == "1.3" and tls["fp"] == "safari",
-               "tls-хост записал границы версий и отпечаток клиента")
+            ok(tls["fp"] == "safari", "tls-хост записал отпечаток клиента")
             ok(tls["path"] == "/tun8443" and tls["hostHeader"] == "cdn.example.net",
                "websocket-хост записал путь и Host-заголовок")
             crossed = client.post("/api/hosts", json={"name": "кривой", "node": "stub", "protocol": "vless",
                                                       "port": 3099, "network": "tcp", "security": "tls",
-                                                      "address": "127.0.0.1", "realityMinClient": "24.0.0"})
+                                                      "address": "127.0.0.1", "dest": "mask.example.net:443"})
             ok(crossed.status_code == 400, f"поле чужой защиты отвергается: {crossed.json()['detail']}")
             plain = client.post("/api/hosts", json={"name": "N3011", "node": "stub", "protocol": "vless",
                                                     "port": 3011, "network": "tcp", "security": "none"}).json()
@@ -175,7 +172,7 @@ def main() -> int:
             grpc = client.post("/api/hosts", json={"name": "G3077", "node": "stub", "protocol": "vless",
                                                    "port": 3077, "network": "grpc", "security": "none",
                                                    "serviceName": "medusa-grpc",
-                                                   "grpcAuthority": "cdn.example.net", "grpcMultiMode": True}).json()
+                                                   "grpcAuthority": "cdn.example.net"}).json()
             ok(grpc["serviceName"] == "medusa-grpc", "gRPC-хост записал имя сервиса")
             ws_cross = client.post("/api/hosts", json={"name": "кривой-ws", "node": "stub", "protocol": "vless",
                                                        "port": 3088, "network": "tcp", "security": "none",
@@ -214,9 +211,8 @@ def main() -> int:
                "reality-инбаунд с приватным ключом из панели")
             ok(r["streamSettings"]["realitySettings"]["serverNames"] == ["vpn.example.net", "backup.example.net"],
                "serverNames — список sni хоста, а не только адрес подключения")
-            ok(r["streamSettings"]["realitySettings"]["maxClientVer"] == "99.0.0" and
-               r["streamSettings"]["realitySettings"]["minClientVer"] == "24.0.0",
-               "допуски по версии клиента доехали до reality-инбаунда")
+            ok(r["streamSettings"]["realitySettings"]["minClientVer"] == "24.0.0",
+               "панель сама держит минимальную версию клиента (старые клиенты не отваливаются)")
             ok(r["streamSettings"]["fingerprint"] == "firefox",
                "отпечаток клиента ушёл в конфиг и reality-инбаунда")
             ok(r["streamSettings"]["realitySettings"]["dest"] == "mask.example.net:443",
@@ -231,20 +227,16 @@ def main() -> int:
             t = by_port[8443]
             tls_cfg = t["streamSettings"]["tlsSettings"]
             ok(tls_cfg["serverName"] == "tls.example.net" and tls_cfg["rejectUnknownSni"] is True and
-               "alpn" not in tls_cfg,
-               "sni и rejectUnknownSNI доехали до tls-инбаунда, а alpn панель не называет вовсе")
-            ok(tls_cfg["minVersion"] == "1.2" and tls_cfg["maxVersion"] == "1.3" and
-               tls_cfg["cipherSuites"] == "chacha20-ietf-poly1305",
-               "границы версий и наборы шифров доехали до tls-инбаунда")
+               "alpn" not in tls_cfg and "minVersion" not in tls_cfg and "cipherSuites" not in tls_cfg,
+               "sni и rejectUnknownSNI доехали, а версии/шифры/alpn панель не называет вовсе")
             ok(t["streamSettings"]["fingerprint"] == "safari",
                "отпечаток клиента работает и у tls, не только у reality")
             ok(t["streamSettings"]["wsSettings"]["path"] == "/tun8443" and
                t["streamSettings"]["wsSettings"]["host"] == "cdn.example.net",
                "путь и Host-заголовок websocket доехали до конфига")
             g = by_port[3077]
-            ok(g["streamSettings"]["grpcSettings"] == {"serviceName": "medusa-grpc",
-                                                        "authority": "cdn.example.net", "multiMode": True},
-               "имя сервиса, authority и multiMode gRPC доехали до конфига")
+            ok(g["streamSettings"]["grpcSettings"] == {"serviceName": "medusa-grpc", "authority": "cdn.example.net"},
+               "имя сервиса и authority gRPC доехали до конфига")
             cert = cfg_path.parent / t["streamSettings"]["tlsSettings"]["certificates"][0]["certificateFile"]
             key = cfg_path.parent / t["streamSettings"]["tlsSettings"]["certificates"][0]["keyFile"]
             ok(cert.exists() and key.exists(), f"tls-хост получил выпущенный сертификат: {cert.name}")
