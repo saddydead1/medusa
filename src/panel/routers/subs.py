@@ -69,8 +69,9 @@ STRINGS = {
         "theme.switch": "Сменить тему",
         "qr.show": "QR-код", "qr.host": "Показать QR-код ссылки этого хоста",
         "sub.link": "Ссылка подписки",
-        "sub.link.hint": "Вставьте её в приложение (v2rayN, v2rayNG, Hiddify…) или отсканируйте QR: "
-                         "все доступные хосты добавятся разом. Ссылка содержит ваш личный токен — "
+        "sub.link.hint": "Это тот же адрес, что в адресной строке: откроешь в браузере — увидишь "
+                         "эту страницу; вставишь в приложение (v2rayN, v2rayNG, Hiddify…) — все "
+                         "доступные хосты добавятся разом. Ссылка содержит ваш личный токен — "
                          "не раздавайте её другим людям.",
         "disabled.note": "Учётка отключена: подписка не раздаётся, хосты скрыты",
         "404.title": "Ссылка не найдена",
@@ -90,7 +91,8 @@ STRINGS = {
         "theme.switch": "Switch theme",
         "qr.show": "QR code", "qr.host": "Show the QR code of this host's link",
         "sub.link": "Subscription link",
-        "sub.link.hint": "Paste it into the app (v2rayN, v2rayNG, Hiddify…) or scan the QR: "
+        "sub.link.hint": "It is the very address from the address bar: open it in a browser and "
+                         "you get this page; paste it into the app (v2rayN, v2rayNG, Hiddify…) and "
                          "every available host is imported at once. The link carries your personal "
                          "token — do not hand it around.",
         "disabled.note": "Account disabled: the subscription is off, hosts are hidden",
@@ -375,14 +377,38 @@ def sub_link_section(token: str, links_url: str, strings: dict) -> str:
             f'{icon("copy")}{strings["copy"]}</button>'
             f'<button class="btn sm" type="button" data-qr="/sub/{token}/qr/subscribe" data-cap="{esc(strings["sub.link"])}">'
             f'{icon("qr")}{strings["qr.show"]}</button>'
-            f'<img class="qr" src="/sub/{token}/qr/subscribe" alt="QR">'
             f'</div><p class="hint">{strings["sub.link.hint"]}</p></div></section>')
+
+
+def wants_page(request: Request) -> bool:
+    """Кто стучится на `/sub/<токен>`: браузер хочет страницу (Accept: text/html
+    или Mozilla в user-agent), приложение — ссылки. Один адрес, два применения."""
+    accept = request.headers.get("accept", "").lower()
+    agent = request.headers.get("user-agent", "").lower()
+    return "text/html" in accept or "mozilla" in agent
+
+
+def links_response(request: Request, user: sqlite3.Row, conn: sqlite3.Connection) -> Response:
+    links = [subscription_link(user["token"], r) for r in fetch_hosts(conn)]
+    links += [subscription_link(user["token"], r) for r in fetch_chains(conn)]
+    plain = "\n".join(links)
+    body = plain if request.query_params.get("raw", "") in ("1", "true") else base64.b64encode(plain.encode("utf-8")).decode("ascii")
+    return Response(content=body.encode("utf-8"), media_type="text/plain; charset=utf-8",
+                    headers={"Cache-Control": "no-store"})
 
 
 @router.get("/{token}")
 def subscription_page(token: str, request: Request,
-                      conn: sqlite3.Connection = Depends(get_conn)) -> HTMLResponse:
+                      conn: sqlite3.Connection = Depends(get_conn)) -> Response:
     st = conn.execute("SELECT panelName,subTitle,subInterval,theme,subUrl FROM settings WHERE id = 1").fetchone()
+
+    # одно и то же адрес: браузеру — страница, приложению — все ссылки сразу
+    if not wants_page(request):
+        user = active_user(conn, token)
+        if user is None:
+            return Response(content=b"", media_type="text/plain; charset=utf-8", status_code=404)
+        return links_response(request, user, conn)
+
     lang = pick_lang(request)
     s = STRINGS[lang]
     user = conn.execute("SELECT * FROM users WHERE token = ?", (token,)).fetchone()
@@ -406,7 +432,9 @@ def subscription_page(token: str, request: Request,
     </div>"""
 
     if alive:
-        links_url = f"{sub_base(request, st)}/{token}/links"
+        # ссылка подписки — тот же адрес, по которому открыта эта страница:
+        # приложение получит вместо страницы все ссылки разом
+        links_url = f"{sub_base(request, st)}/{token}"
         lists = (sub_link_section(token, links_url, s)
                  + f'<section class="grp"><div class="sect"><h3>{icon("globe")}{s["hosts"]}'
                  f'<span class="count">{len(hosts)}</span></h3></div>{hosts_table(hosts, user, s)}</section>'
@@ -426,27 +454,21 @@ def subscription_page(token: str, request: Request,
 @router.get("/{token}/links")
 def subscription_links(token: str, request: Request,
                        conn: sqlite3.Connection = Depends(get_conn)) -> Response:
-    """Все vless-ссылки подписки одним куском: base64 (ждут v2rayN/v2rayNG и большинство
-    клиентов), `?raw=1` — те же строки без base64."""
+    """Явный путь со ссылками, без переговоров по Accept: всегда отдаёт ссылки."""
     user = active_user(conn, token)
     if user is None:
         return Response(content=b"", media_type="text/plain; charset=utf-8", status_code=404)
-    links = [subscription_link(user["token"], r) for r in fetch_hosts(conn)]
-    links += [subscription_link(user["token"], r) for r in fetch_chains(conn)]
-    plain = "\n".join(links)
-    body = plain if request.query_params.get("raw", "") in ("1", "true") else base64.b64encode(plain.encode("utf-8")).decode("ascii")
-    return Response(content=body.encode("utf-8"), media_type="text/plain; charset=utf-8",
-                    headers={"Cache-Control": "no-store"})
+    return links_response(request, user, conn)
 
 
 @router.get("/{token}/qr/subscribe")
 def qr_subscribe(token: str, request: Request,
                  conn: sqlite3.Connection = Depends(get_conn)) -> Response:
-    """QR на машинную ссылку подписки: одно сканирование вместо ручного вставления."""
+    """QR на ссылку подписки: то же сканирование, что и вставление той же ссылки."""
     st = conn.execute("SELECT theme,subUrl FROM settings WHERE id = 1").fetchone()
     if active_user(conn, token) is None:
         return Response(content=b"", media_type="image/svg+xml", status_code=404)
-    return qr_svg(f"{sub_base(request, st)}/{token}/links")
+    return qr_svg(f"{sub_base(request, st)}/{token}")
 
 
 @router.get("/{token}/qr/host/{host_id}")

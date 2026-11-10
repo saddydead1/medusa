@@ -254,7 +254,7 @@ def main() -> int:
                                "tlsSettings": {"serverName": "localhost", "pinnedPeerCertSha256": pin}}})
 
         # то, что увидит подписчик: ссылки прямо со страницы подписки панели
-        page = api.get(f"/sub/{user['token']}").text
+        page = api.get(f"/sub/{user['token']}", headers={"Accept": "text/html"}).text
         links = list(dict.fromkeys(link.replace("&amp;", "&") for link in re.findall(r"vless://[^\s\"<]+", page)))
         ok(len(links) >= 1, f"страница подписки отдаёт vless://-ссылки: {len(links)}")
         print("\nссылки подписки petya (можно вставить в клиент и подключаться к этой машине):")
@@ -267,6 +267,11 @@ def main() -> int:
         machine = api.get(f"/sub/{user['token']}/links?raw=1").text.splitlines()
         ok(len(machine) == 5 and all(l.startswith("vless://") for l in machine),
            "ссылка подписки одним запросом отдаёт все пять хостов")
+        # та же ссылка без Accept: text/html — приложение получит ссылки, а не страницу
+        import base64 as b64
+        negotiated = b64.b64decode(api.get(f"/sub/{user['token']}", headers={"Accept": "*/*"}).text).decode("utf-8")
+        ok(negotiated.count("vless://") == 5,
+           "та же ссылка подписки: клиент без Accept: text/html получает ссылки вместо страницы")
         qr = api.get(f"/sub/{user['token']}/qr/subscribe")
         ok(qr.status_code == 200 and qr.headers["content-type"].startswith("image/svg"),
            "QR ссылки подписки рисуется прямо на странице")

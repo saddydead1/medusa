@@ -169,27 +169,41 @@ def main() -> int:
         sub_chain = client.post("/api/chains", json={"name": "SUB-ROUTE", "hops": [
             {"node": "vps-fi", "protocol": "vless", "network": "tcp", "security": "reality", "port": 3011},
             {"node": "home", "protocol": "vless", "network": "tcp", "security": "reality", "port": 3012}]}).json()
-        page = client.get(f"/sub/{brother['token']}")
+        page = client.get(f"/sub/{brother['token']}", headers={"Accept": "text/html"})
         ok(page.status_code == 200 and "text/html" in page.headers.get("content-type", ""),
-           "GET /sub/<токен>: HTML-страница без входа администратора")
+           "GET /sub/<токен> браузером: HTML-страница без входа администратора")
         ok("brother" in page.text and "активен" in page.text, "на странице подписки есть никнейм и живой статус")
         ok("langbtn" in page.text, "переключатель языка на месте")
         ok("themebtn" in page.text, "переключатель темы на месте")
         ok("FI Reality" in page.text and "SUB-ROUTE" in page.text, "хосты и цепочки доступны подписчику")
-        ok(client.get("/sub/nesushchestvuet").status_code == 404, "чужого токена подписки нет -> 404")
-        off_page = client.get(f"/sub/{masha['token']}")
+        ok(client.get("/sub/nesushchestvuet", headers={"Accept": "text/html"}).status_code == 404, "чужого токена подписки нет -> 404")
+        off_page = client.get(f"/sub/{masha['token']}", headers={"Accept": "text/html"})
         ok(off_page.status_code == 200 and "FI Reality" not in off_page.text,
            "отключённому пользователю подписка не раздаётся")
-        en_page = client.get(f"/sub/{brother['token']}?lang=en")
+        en_page = client.get(f"/sub/{brother['token']}?lang=en", headers={"Accept": "text/html"})
         ok("Hosts" in en_page.text and "Chains" in en_page.text, "страница подписки на английском по ?lang=en")
-        forced = client.get(f"/sub/{brother['token']}", headers={"Accept-Language": "en-US,en;q=0.9"})
+        forced = client.get(f"/sub/{brother['token']}", headers={"Accept-Language": "en-US,en;q=0.9", "Accept": "text/html"})
         ok("Хосты" in forced.text, "английский браузер видит русский: язык переключается только кнопкой")
         ok("vless://" in page.text and page.text.count('data-copy="') == 3,
            "кнопка копирования есть у хоста, у входа цепочки и у ссылки подписки")
         ok(page.text.count('data-qr="') == 3, "кнопка QR — у хоста, у входа цепочки и у ссылки подписки")
-        ok(f'/sub/{brother["token"]}/qr/subscribe' in page.text, "QR ссылки подписки живёт прямо на странице")
+        ok('<img class="qr"' not in page.text, "QR подписки показывается только по кнопке, а не на странице")
+        ok(f'/sub/{brother["token"]}/qr/subscribe' in page.text, "кнопка QR ссылки подписки ведёт на свой эндпоинт")
+        import re as _re
+        url_box = _re.search(r'class="url" readonly value="([^"]+)"', page.text)
+        ok(url_box and url_box.group(1).endswith(f"/sub/{brother['token']}") and not url_box.group(1).endswith("/links"),
+           "ссылка подписки на странице — тот же адрес, по которому открыта страница")
         # --- машинный вид подписки: все ссылки одним запросом + QR ---
         import base64 as b64
+        as_app = client.get(f"/sub/{brother['token']}", headers={"Accept": "*/*"})
+        decoded_app = b64.b64decode(as_app.text).decode("utf-8")
+        ok(as_app.status_code == 200 and "text/plain" in as_app.headers["content-type"]
+           and decoded_app.count("vless://") == 2,
+           "та же ссылка подписки: приложение получает ссылки вместо страницы")
+        ok(client.get(f"/sub/{brother['token']}?raw=1", headers={"Accept": "*/*"}).text.startswith("vless://"),
+           "та же ссылка с ?raw=1 — без base64")
+        as_moz = client.get(f"/sub/{brother['token']}", headers={"User-Agent": "Mozilla/5.0 (Linux; Android)"})
+        ok("text/html" in as_moz.headers["content-type"], "приложение с Mozilla-UA получит страницу — у okhttp его нет")
         links = client.get(f"/sub/{brother['token']}/links")
         decoded = b64.b64decode(links.text).decode("utf-8")
         ok(links.status_code == 200 and "text/plain" in links.headers["content-type"]
