@@ -75,13 +75,22 @@ STRINGS = {
 # кнопочки копирования живёт своим крошечным скриптом: страница отдаётся без всего
 # фронтенда панели, а просить весь script.js ради одной кнопки — лишнее
 COPY_JS = """<script>
+function legacyCopy(v){
+  var ta = document.createElement('textarea');
+  ta.value = v; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+  document.body.appendChild(ta); ta.focus(); ta.setSelectionRange(0, ta.value.length);
+  var ok = false;
+  try{ ok = document.execCommand('copy'); }catch(e){}
+  document.body.removeChild(ta); return ok;
+}
 document.querySelectorAll('[data-copy]').forEach(function(b){
   b.addEventListener('click', function(){
     var v = b.getAttribute('data-copy'), old = b.innerHTML;
     var done = function(){ b.innerHTML = '\\u2713 ' + b.getAttribute('data-done');
       setTimeout(function(){ b.innerHTML = old; }, 1400); };
-    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(v).then(done, function(){ prompt(v); });
-    else prompt(v);
+    var fail = function(){ prompt(v); };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(v).then(done, function(){ legacyCopy(v) ? done() : fail(); });
+    else legacyCopy(v) ? done() : fail();
   });
 });
 </script>"""

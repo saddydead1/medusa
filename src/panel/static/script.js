@@ -35,6 +35,23 @@
    приходить позже, когда займёмся нодовым агентом вплотную. */
 let USE_MOCK = new URLSearchParams(location.search).has('mock');const API_BASE = '';
 let SUB_BASE = location.origin + '/sub/';
+
+/* Копирование, которое живёт и на https, и на голом http из локальной сети:
+   clipboard API браудеры разрешают только в безопасном контексте, поэтому на http
+   (а панель из LAN — всегда http) fallback через временный textarea + execCommand.
+   Safari на чужом http иначе вообще ничего не копирует. */
+async function copyText(v){
+  if(navigator.clipboard && window.isSecureContext){
+    try{ await navigator.clipboard.writeText(v); return true; }catch(e){}
+  }
+  const ta = document.createElement('textarea');
+  ta.value = v; ta.style.position='fixed'; ta.style.left='-9999px';
+  document.body.appendChild(ta); ta.focus(); ta.setSelectionRange(0, ta.value.length);
+  let ok = false;
+  try{ ok = document.execCommand('copy'); }catch(e){}
+  document.body.removeChild(ta);
+  return ok;
+}
 let PANEL_VERSION = 'dev';
 
 /* ---------- Хранилище настроек панели ----------
@@ -982,7 +999,9 @@ $('#view').addEventListener('click', async e=>{
     if(a==='cdel'){ if(!confirm(t('confirm.delChain'))) return; await call('DELETE','/api/chains/'+id); toast(t('toast.chainDeleted')); return show(); }
     if(a==='copy'){
       const u = (await call('GET','/api/users')).find(x=>x.id===id);
-      await navigator.clipboard.writeText(SUB_BASE + u.token); return toast(t('toast.subCopied'));
+      if(await copyText(SUB_BASE + u.token)) toast(t('toast.subCopied'));
+      else prompt(SUB_BASE + u.token);
+      return;
     }
     if(a==='toggle'){
       const u = (await call('GET','/api/users')).find(x=>x.id===id);
