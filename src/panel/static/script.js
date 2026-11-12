@@ -1365,9 +1365,13 @@ function chainShell(){
   $('#cdlg [value=ok]').textContent = t('btn.create');
 }
 function fillHop(row, hop){
+  // hop-ряды не пользуются окном хоста (#hcfg), поэтому значения ставятся напрямую,
+  // а уже потом syncCfg приводит защиту/транспорт к выбранному протоколу
   K(row,'node').value = hop.node;
-  setCfg(row,'protocol',hop.protocol); setCfg(row,'network',hop.network);
-  setCfg(row,'security',hop.security); syncCfg(row);
+  K(row,'protocol').value = hop.protocol;
+  K(row,'network').value = hop.network;
+  K(row,'security').value = hop.security;
+  syncCfg(row);
   K(row,'port').value = hop.port;
 }
 async function openChain(chain){

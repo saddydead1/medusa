@@ -388,6 +388,68 @@ await go('hosts');
 ok((await text()).includes('FI-DE'), 'хост цепочки в списке хостов — взят из цепочки, а не отдельной записью');
 ok(await page.locator('#view [data-a=hdel]').count() === 1, 'хост цепочки поодиночке не удаляется (кнопки нет)');
 
+/* ---------- правка цепочки: тот же диалог хопов, но предзаполнен и сохраняет хопа ---------- */
+await go('chains');
+await page.click('#view [data-a=cedit]');
+await openDlg('#cdlg');
+const prefill = await page.evaluate(() => ({
+  title: document.querySelector('#cdlg h3').textContent,
+  save: document.querySelector('#cdlg [value=ok]').textContent,
+  name: document.querySelector('#cform [name=name]').value,
+  hops: [...document.querySelectorAll('#hops .hopbox')].map(row => ({
+    node: row.querySelector('[data-k="node"]').value,
+    protocol: row.querySelector('[data-k="protocol"]').value,
+    security: row.querySelector('[data-k="security"]').value,
+    port: row.querySelector('[data-k="port"]').value,
+  })),
+}));
+ok(prefill.title.includes('изменение') && prefill.save.includes('Сохранить') && prefill.name === 'FI-DE'
+   && prefill.hops.length === 2 && prefill.hops[0].node === 'vps-fi' && prefill.hops[1].node === 'home',
+   `окно правки цепочки предзаполнено её же хопами: ${JSON.stringify(prefill.hops)} («${prefill.title}»)`);
+
+// хопа местами: те же ноды и те же порты, но вход переезжает на другую ноду.
+// Свои порты своей же цепочки конфликтом быть не должны.
+await page.evaluate(() => {
+  const rows = [...document.querySelectorAll('#hops .hopbox')];
+  for(const k of ['node', 'port']){
+    const a = rows[0].querySelector(`[data-k="${k}"]`), b = rows[1].querySelector(`[data-k="${k}"]`);
+    [a.value, b.value] = [b.value, a.value];
+    a.dispatchEvent(new Event('change', {bubbles: true}));
+    b.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+});
+await page.fill('#cform [name=name]', 'FI-DE-2');
+await clearToast();
+await submit('#cform');
+await wait(() => [...document.querySelectorAll('#view .chain')].some(c => c.textContent.includes('FI-DE-2')));
+const bodyAfterEdit = await text();
+ok(!/занят/i.test(bodyAfterEdit),
+   'перестановка хопов на те же порты своих же нод портом «уже занятым» не считается');
+
+const chainsApi = await (await api('/api/chains')).json();
+const hopsApi = chainsApi[0].hops;
+ok(chainsApi.length === 1 && chainsApi[0].name === 'FI-DE-2'
+   && hopsApi[0].node === 'home' && hopsApi[1].node === 'vps-fi',
+   `правка цепочки сохранена через PATCH, хопа поменялись местами: ${hopsApi.map(h => `${h.node}:${h.port}`).join(' -> ')}`);
+
+const nodes = await (await api('/api/nodes')).json();
+const tagsOf = async (name) => {
+  const id = nodes.find(n => n.name === name).id;
+  const cfg = await (await api(`/api/nodes/${id}/config`)).json();
+  return cfg.config.inbounds.map(i => i.tag);
+};
+const tagsHome = await tagsOf('home'), tagsFi = await tagsOf('vps-fi');
+ok(tagsHome.includes('FI-DE-2') && !tagsFi.includes('FI-DE-2')
+   && tagsFi.some(tag => tag.startsWith('FI-DE-2 hop 2')) && !tagsHome.some(tag => tag.startsWith('FI-DE-2 hop 2')),
+   `вход цепочки переехал на другую ноду по-настоящему: инбаунды home ${JSON.stringify(tagsHome)}, vps-fi ${JSON.stringify(tagsFi)}`);
+
+await go('hosts');
+const hostNames = await page.evaluate(() => [...document.querySelectorAll('#view table tr')].map(r => r.textContent));
+ok(hostNames.some(row => row.includes('FI-DE-2')) && !hostNames.some(row => row.includes('hop 2')),
+   'список хостов: цепочка по-прежнему один хост (её вход с новым именем), промежуточные хопа не показываются');
+ok(await page.locator('#view [data-a=hdel]').count() === 1,
+   'и у правленой цепочки её вход поодиночке не удаляется');
+
 /* ---------- администраторы ---------- */
 await go('admins');
 await page.click('[data-a="anew"]');
