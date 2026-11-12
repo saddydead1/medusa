@@ -132,6 +132,25 @@ class Hop(BaseModel):
     # Пустая строка здесь разрешена: пусто значит «адрес ноды» (у обычного хоста пустого
     # адреса нет — там он либо назван, либо отсутствует)
     address: Annotated[str | None, Field(max_length=63, pattern=ADDR_OR_EMPTY)] = None
+    # детали защиты и перехода — те же поля и те же правила, что у обычного хоста
+    # (см. src/panel/field_rules.py). Своих файлов сертификатов здесь нет намеренно:
+    # сертификат хопа выпускает панель, потому что она обязана знать его отпечаток,
+    # чтобы закрепить его за соседней нодой.
+    dest: Annotated[str | None, Field(max_length=63, pattern=ADDR_OR_EMPTY)] = None
+    serverNames: Annotated[str | None, Field(max_length=255, pattern=SNI_LIST_PATTERN)] = None
+    sni: Annotated[str | None, Field(max_length=253, pattern=SNI_PATTERN)] = None
+    rejectUnknownSni: bool | None = None
+    fp: Literal["chrome", "edge", "safari", "firefox", "android", "ios"] | None = None
+    path: Annotated[str | None, Field(max_length=256)] = None
+    hostHeader: Annotated[str | None, Field(max_length=63, pattern=ADDR_OR_EMPTY)] = None
+    serviceName: Annotated[str | None, Field(max_length=64)] = None
+    grpcAuthority: Annotated[str | None, Field(max_length=63, pattern=ADDR_OR_EMPTY)] = None
+    # эти два поля здесь существуют только чтобы быть отвергнутыми: хопу цепочки нельзя дать
+    # свой файл сертификата — панель не знает его отпечаток, а закреплять за соседней нодой
+    # обязана именно его (Xray 26 принимает самоподписанный сертификат только по отпечатку).
+    # Промолчать о них было бы хуже, чем объяснить человеком, почему нельзя
+    certFile: Annotated[str | None, Field(max_length=255, pattern=FILE_PATH_PATTERN)] = None
+    keyFile: Annotated[str | None, Field(max_length=255, pattern=FILE_PATH_PATTERN)] = None
 
 
 class ChainCreate(BaseModel):

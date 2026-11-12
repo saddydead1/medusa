@@ -22,11 +22,14 @@ import sqlite3
 from fastapi import APIRouter, Depends
 
 from src.core.xray_config import security_issue, unsupported_protocol, UNSUPPORTED_HINT
+from src.core.xray_config import (is_ip, reality_client_sni, security_issue, unsupported_protocol,
+                                 UNSUPPORTED_HINT)
 from src.panel import config_push
 from src.panel import ports
 from src.panel.chain_hops import insert_hop
 from src.panel.db import get_conn, now_ms
 from src.panel.deps import bad_request, conflict, fetch_one, writer
+from src.panel.field_rules import fields_issue, meaningful
 from src.panel.schemas import ChainCreate
 
 router = APIRouter(prefix="/api/chains", tags=["chains"])
@@ -34,7 +37,12 @@ router = APIRouter(prefix="/api/chains", tags=["chains"])
 
 def check_hop(hop) -> None:
     """Хоп цепочки обязан быть тем же набором, что и хост: инбаунд цепочки — это
-    её первый хоп, а из него собираются и конфиг, и ссылка подписки."""
+    её первый хоп, а из него собираются и конфиг, и ссылка подписки.
+
+    Правила «поле чужой защиты» общие с хостами (field_rules): transition цепочки обязан
+    собираться из тех же деталей, что и обычный хост, иначе человек получил бы окно,
+    которое показывает одно, а на ноде работает другое.
+    """
     if unsupported_protocol(hop.protocol):
         raise bad_request(UNSUPPORTED_HINT)
     issue = security_issue(hop.protocol, hop.security)
@@ -44,6 +52,38 @@ def check_hop(hop) -> None:
         raise bad_request("reality не работает поверх ws")
     if hop.protocol == "ss" and hop.network != "tcp":
         raise bad_request("shadowsocks тут только через tcp")
+    issue = fields_issue(hop.security, hop.network, meaningful(hop), hop=True)
+    if issue:
+        raise bad_request(issue)
+
+
+def hop_settings(hop) -> dict:
+    """Детали хопа, которые переезжают в его же ряд hosts.
+
+    Пустое значение — «разумное по умолчанию», его пишет рендер; здесь сохраняем только
+    названное человеком, иначе правка адреса ноды не сможет подставить новое по умолчанию.
+    """
+    return {"dest": (hop.dest or "").strip(), "server_names": (hop.serverNames or "").strip(),
+            "sni": (hop.sni or "").strip(), "fp": (hop.fp or "").strip(),
+            "path": (hop.path or "").strip(), "host_header": (hop.hostHeader or "").strip(),
+            "service_name": (hop.serviceName or "").strip(),
+            "grpc_authority": (hop.grpcAuthority or "").strip(),
+            "reject_unknown_sni": 1 if hop.rejectUnknownSni else 0}
+
+
+def hop_settings_of(hop: dict) -> dict:
+    """Детали хопа наружу: их читает окно правки цепочки, чтобы предзаполнить поля.
+
+    Пустые строки — «не названо, действует разумное по умолчанию». Отпечаток при этом
+    возвращается `null`, а не пустой строкой: список допустимых отпечатков закрыт (Literal),
+    и `fp: ""` эхо GET -> PATCH ловил бы 422 вместо того, чтобы означать «не выбран».
+    """
+    return {"dest": hop.get("dest") or "", "serverNames": hop.get("server_names") or "",
+            "sni": hop.get("sni") or "", "fp": hop.get("fp") or None,
+            "path": hop.get("path") or "", "hostHeader": hop.get("host_header") or "",
+            "serviceName": hop.get("service_name") or "",
+            "grpcAuthority": hop.get("grpc_authority") or "",
+            "rejectUnknownSni": bool(hop.get("reject_unknown_sni"))}
 
 
 def hops_of(conn: sqlite3.Connection, raw: str) -> list[dict]:
@@ -58,6 +98,7 @@ def hops_of(conn: sqlite3.Connection, raw: str) -> list[dict]:
             "security": hop["security"],
             "port": hop["port"],
             "address": hop.get("address") or "",
+            **hop_settings_of(hop),
         })
     return out
 
@@ -92,7 +133,19 @@ def resolve_hops(conn: sqlite3.Connection, body: ChainCreate, skip_chain: int | 
 
     resolved = [{"node_id": nodes[h.node]["id"], "node": h.node, "protocol": h.protocol,
                  "network": h.network, "security": h.security, "port": h.port,
-                 "address": ports.norm(h.address)} for h in body.hops]
+                 "address": ports.norm(h.address), **hop_settings(h)} for h in body.hops]
+
+    # reality hop цепочки прячется за доменом: соседняя нода обязана назвать в SNI тот же
+    # сайт, за который притворяется нода-приёмник, а IP в SNI клиент подставить не умеет
+    for hop in resolved:
+        if hop["security"] == "reality":
+            node_address = conn.execute("SELECT address FROM nodes WHERE id = ?",
+                                        (hop["node_id"],)).fetchone()["address"]
+            target = {"server_names": hop["server_names"], "dest": hop["dest"], "sni": hop["sni"],
+                      "address": hop["address"]}
+            if not reality_client_sni(target, hop["address"] or node_address):
+                raise bad_request(f"reality hop «{hop['node']}»: маскированный адрес (или список "
+                                  "принимаемых SNI) обязан быть доменом, а не IP")
 
     # хопы одной цепочки могут попасть на одну машину (две ноды с одним адресом), и тогда
     # их порты обязаны различаться так же, как порты обычных хостов

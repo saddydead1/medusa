@@ -27,6 +27,12 @@ def hop_name(chain_name: str, index: int) -> str:
     return chain_name if index == ENTRY_HOP else f"{chain_name} hop {index + 1}"
 
 
+def settings(hop: dict, key: str) -> str:
+    """Деталь хопа строкой: пустое значит «разумное по умолчанию», его пишет рендер."""
+    value = hop.get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
 def hop_connect_address(hop: dict, node_address: str) -> str:
     """Куда придёт соседняя нода: свой адрес хопа, иначе адрес его ноды.
 
@@ -37,19 +43,31 @@ def hop_connect_address(hop: dict, node_address: str) -> str:
     return (hop.get("address") or "").strip() or (node_address or "").strip()
 
 
+def hop_server_name(hop: dict, node_address: str) -> str:
+    """Имя, которое соседняя нода назовёт в SNI этого хопа, и которое обязано быть в
+    сертификате хопа: названный человеком sni, иначе адрес хопа (а если его не назвал —
+    адрес ноды).
+
+    Рендер (`hop_outbound`) ставит в tlsSettings.serverName именно sni хопа, поэтому
+    сертификат нужно выпускать под него же: иначе сосед придёт с одним именем, а Xray
+    увидит другое и развернёт рукопожатие.
+    """
+    return (hop.get("sni") or "").strip() or hop_connect_address(hop, node_address)
+
+
 def hop_keys(conn: sqlite3.Connection, hop: dict, node_address: str) -> dict[str, str]:
     """Ключи защиты хопа: reality — пара x25519, tls — сертификат от панели.
 
-    Сертификат выпускается на адрес, по которому к этому hopу придут (свой адрес хопа или
-    адрес его ноды): клиентом для соседней ноды является она сама, а имя в сертификате обязано
-    совпасть с тем именем, которое она назовёт в SNI.
+    Сертификат выпускается на имя, по которому к этому hopу придут (свой sni хопа, иначе его
+    адрес, иначе адрес его ноды): клиентом для соседней ноды является она сама, а имя в
+    сертификате обязано совпасть с тем именем, которое она назовёт в SNI.
     """
     keys = {"private_key": "", "public_key": "", "cert_pem": "", "key_pem": "", "cert_sha256": ""}
     if hop["security"] == "reality":
         keys["private_key"], keys["public_key"] = new_reality_keys()
     elif hop["security"] == "tls":
         keys["cert_pem"], keys["key_pem"], keys["cert_sha256"] = new_hop_certificate(
-            hop_connect_address(hop, node_address))
+            hop_server_name(hop, node_address))
     return keys
 
 
@@ -64,13 +82,12 @@ def reissue_hop_certs(conn: sqlite3.Connection, node_id: int) -> list[int]:
     from src.panel.host_keys import new_hop_certificate
 
     address = conn.execute("SELECT address FROM nodes WHERE id = ?", (node_id,)).fetchone()["address"]
-    rows = conn.execute("""SELECT id, address, chain_id FROM hosts
+    rows = conn.execute("""SELECT id, address, sni, chain_id FROM hosts
                            WHERE node_id = ? AND chain_id IS NOT NULL AND security = 'tls'""",
                         (node_id,)).fetchall()
     chains = set()
     for row in rows:
-        target = (row["address"] or "").strip() or (address or "").strip()
-        cert, key, sha = new_hop_certificate(target)
+        cert, key, sha = new_hop_certificate(hop_server_name(dict(row), address))
         conn.execute("UPDATE hosts SET cert_pem = ?, key_pem = ?, cert_sha256 = ? WHERE id = ?",
                      (cert, key, sha, row["id"]))
         chains.add(int(row["chain_id"]))
@@ -80,11 +97,17 @@ def reissue_hop_certs(conn: sqlite3.Connection, node_id: int) -> list[int]:
 def insert_hop(conn: sqlite3.Connection, chain_id: int, chain_name: str, index: int,
                hop: dict, created_at: int) -> int:
     """Завести ряд хопа цепочки. `hop` — описание из цепочки: node_id, protocol, network,
-    security, port и его адрес (пусто — адрес ноды). Возвращает id строки hosts.
+    security, port, его адрес и детали защиты/транспорта. Возвращает id строки hosts.
 
     Адрес хопа пишется в ряд hosts как у обычного хоста: он попадает и в конфиг соседней ноды
     (её outbound), и в ссылку подписки, если это вход цепочки. Иначе «хост есть, адреса у
     него нет» — и цепочка едет по адресу ноды даже тогда, когда человек назвал другой.
+
+    Детали (`path`, `host_header`, `service_name`, `grpc_authority`, `dest`, `server_names`,
+    `sni`, `fp`, `reject_unknown_sni`) сохраняются теми же колонками, что и у обычного хоста:
+    рендер читает один и тот же ряд и для инбаунда хопа, и для перехода соседней ноды, поэтому
+    путь или маскированный адрес цепочки работают на обеих сторонах перехода сами.
+    Своих файлов сертификатов у хопа нет: их выпустила панель, чтобы знать отпечаток.
     """
     node = conn.execute("SELECT id, address FROM nodes WHERE id = ?", (hop["node_id"],)).fetchone()
     if node is None:
@@ -93,13 +116,19 @@ def insert_hop(conn: sqlite3.Connection, chain_id: int, chain_name: str, index: 
     conn.execute(
         """INSERT INTO hosts (name, node_id, protocol, port, network, security, chain_id, hop_index,
                               address, private_key, public_key, dest, fp, sni, server_names,
-                              cert_file, key_file, cert_pem, key_pem, cert_sha256, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                              cert_file, key_file, cert_pem, key_pem, cert_sha256,
+                              path, host_header, service_name, grpc_authority, reject_unknown_sni,
+                              created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (hop_name(chain_name, index), node["id"], hop["protocol"], hop["port"], hop["network"],
          # свой адрес хопа пишется только если его назвал человек: пусто остаётся пустым,
          # и рендер каждый раз берёт актуальный адрес ноды (нода может переехать)
          hop["security"], chain_id, index, (hop.get("address") or "").strip(),
-         keys["private_key"], keys["public_key"], "", "", "", "",
-         "", "", keys["cert_pem"], keys["key_pem"], keys["cert_sha256"], created_at),
+         keys["private_key"], keys["public_key"], settings(hop, "dest"), settings(hop, "fp"),
+         settings(hop, "sni"), settings(hop, "server_names"),
+         "", "", keys["cert_pem"], keys["key_pem"], keys["cert_sha256"],
+         settings(hop, "path"), settings(hop, "host_header"),
+         settings(hop, "service_name"), settings(hop, "grpc_authority"),
+         1 if hop.get("reject_unknown_sni") else 0, created_at),
     )
     return conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]

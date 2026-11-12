@@ -19,6 +19,7 @@ from src.panel import config_push, ports
 from src.panel.db import get_conn, now_ms
 from src.panel.host_keys import new_reality_keys
 from src.panel.deps import bad_request, conflict, fetch_one, node_by_name, writer
+from src.panel.field_rules import fields_issue, meaningful
 from src.panel.schemas import HostCreate, HostPatch
 
 router = APIRouter(prefix="/api/hosts", tags=["hosts"])
@@ -97,22 +98,14 @@ def check_combination(protocol: str, network: str, security: str, address: str, 
 
 def check_fields(body: HostCreate | HostPatch, security: str, network: str) -> None:
     """Поле чужой защиты или чужого транспорта — не «лишнее», а путаница:
-    панель отвергает сразу, чтобы потом не удивляться молча игнорируемому полю."""
-    if body.fp is not None and security == "none":
-        raise bad_request("отпечаток клиента работает только при шифровании (tls или reality)")
-    if body.dest is not None and security != "reality":
-        raise bad_request("маскированный адрес — настройка reality, а не другой защиты")
-    if body.serverNames is not None and security != "reality":
-        raise bad_request("список принимаемых sni — настройка reality, а не другой защиты")
-    tls_fields = (body.sni, body.certFile, body.keyFile)
-    if any(v is not None for v in tls_fields) and security != "tls":
-        raise bad_request("sni и файлы сертификатов — настройки tls, а не другой защиты")
-    if body.rejectUnknownSni is not None and security != "tls":
-        raise bad_request("отношение к чужому SNI — настройка tls, а не другой защиты")
-    if (body.path is not None or body.hostHeader is not None) and network != "ws":
-        raise bad_request("путь и Host-заголовок — настройки websocket, а не другого транспорта")
-    if (body.serviceName is not None or body.grpcAuthority is not None) and network != "grpc":
-        raise bad_request("имя сервиса и authority — настройки gRPC, а не другого транспорта")
+    панель отвергает сразу, чтобы потом не удивляться молча игнорируемому полю.
+
+    Сами правила живут в `src/panel/field_rules.py` — оттуда же их берут хопа цепочек,
+    чтобы «sni у reality» не означало одно для хоста и другое для цепочки.
+    """
+    issue = fields_issue(security, network, meaningful(body))
+    if issue:
+        raise bad_request(issue)
 
 
 def check_cert_pair(cert_file: str, key_file: str) -> None:

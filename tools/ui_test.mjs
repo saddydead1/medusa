@@ -515,6 +515,76 @@ ok(hostNames.some(row => row.includes('FI-DE-2')) && !hostNames.some(row => row.
 ok(await page.locator('#view [data-a=hdel]').count() === 1,
    'и у правленой цепочки её вход поодиночке не удаляется');
 
+/* ---------- детали хопа: у каждого хопа свои защита, транспорт и их настройки ----------
+   Окно цепочки обязано различать хопа: «websocket со своим путём» на втором хопе и
+   «reality со своей маской» на первом — это разные строки конфига на разных нодах. */
+await go('chains');
+await page.click('#view [data-a=cedit]');
+await openDlg('#cdlg');
+await page.evaluate(() => {
+  const rows = [...document.querySelectorAll('#hops .hopbox')];
+  const set = (row, k, v) => { const el = row.querySelector(`[data-k="${k}"]`); if(el){ el.value = v; el.dispatchEvent(new Event('change', {bubbles: true})); } };
+  // первый хоп — reality: маска и принимаемые имена; второй — websocket + tls: путь, Host и sni
+  set(rows[0], 'security', 'reality'); set(rows[0], 'network', 'tcp');
+  set(rows[1], 'security', 'tls'); set(rows[1], 'network', 'ws');
+});
+const hopFieldsShown = await page.evaluate(() => [...document.querySelectorAll('#hops .hopbox')].map(row => ({
+  node: row.querySelector('[data-k="node"]').value,
+  fields: [...row.querySelectorAll('[data-k]')].map(el => el.dataset.k).filter(k =>
+    ['dest', 'serverNames', 'sni', 'path', 'hostHeader', 'serviceName', 'grpcAuthority', 'fp', 'rejectUnknownSni'].includes(k)),
+})));
+ok(hopFieldsShown[0].fields.includes('dest') && hopFieldsShown[0].fields.includes('serverNames')
+   && !hopFieldsShown[0].fields.includes('path') && !hopFieldsShown[0].fields.includes('certFile'),
+   `reality-хоп показал свои поля (и не показал чужие): ${JSON.stringify(hopFieldsShown[0].fields)}`);
+ok(hopFieldsShown[1].fields.includes('path') && hopFieldsShown[1].fields.includes('sni')
+   && !hopFieldsShown[1].fields.includes('dest') && !hopFieldsShown[1].fields.includes('certFile'),
+   `websocket-хоп показал путь и sni, но не чужие поля и не файлы сертификата: ${JSON.stringify(hopFieldsShown[1].fields)}`);
+
+await page.evaluate(() => {
+  const rows = [...document.querySelectorAll('#hops .hopbox')];
+  const set = (row, k, v) => { const el = row.querySelector(`[data-k="${k}"]`); if(el){ el.value = v; el.dispatchEvent(new Event('input', {bubbles: true})); } };
+  set(rows[0], 'dest', 'mirror.example.org:443');
+  set(rows[0], 'serverNames', 'mirror.example.org, backup.example.org');
+  set(rows[1], 'path', '/ui-hop-path'); set(rows[1], 'hostHeader', 'cdn.ui.example');
+  set(rows[1], 'sni', 'ui-hop2.example.net');
+  const reject = rows[1].querySelector('[data-k="rejectUnknownSni"]'); if(reject) reject.checked = true;
+});
+await clearToast();
+await submit('#cform');
+await wait(() => /цепочка изменена/i.test(document.querySelector('#toast').textContent));
+const detailed = (await (await api('/api/chains')).json())[0].hops;
+ok(detailed[0].dest === 'mirror.example.org:443' && detailed[0].serverNames.includes('backup.example.org'),
+   `детали reality-хопа сохранены бэкендом: dest=${detailed[0].dest}, sni=${detailed[0].serverNames}`);
+ok(detailed[1].path === '/ui-hop-path' && detailed[1].hostHeader === 'cdn.ui.example'
+   && detailed[1].sni === 'ui-hop2.example.net' && detailed[1].rejectUnknownSni === true,
+   `детали websocket-хопа сохранены бэкендом: ${detailed[1].path}, ${detailed[1].sni}`);
+
+const cfgHome = await (await api(`/api/nodes/${nodes.find(n => n.name === 'home').id}/config`)).json();
+const entryOut = cfgHome.config.outbounds.find(o => o.tag.endsWith('-> hop 2')) || {};
+const hopIn = cfgHome.config.inbounds.find(i => i.tag.startsWith('FI-DE-2 hop 2'))
+  || (await (await api(`/api/nodes/${nodes.find(n => n.name === 'vps-fi').id}/config`)).json()).config.inbounds
+      .find(i => i.tag.startsWith('FI-DE-2 hop 2')) || {};
+ok((entryOut.streamSettings?.wsSettings?.path) === '/ui-hop-path'
+   && (hopIn.streamSettings?.wsSettings?.path) === '/ui-hop-path',
+   'названный путь хопа оказался и на ноде-приёмнике, и в переходе отправителя: обе стороны перехода совпали');
+ok((entryOut.streamSettings?.tlsSettings?.serverName) === 'ui-hop2.example.net',
+   'переход называет в SNI sni хопа, а не адрес его ноды');
+
+await page.click('#view [data-a=cedit]');
+await openDlg('#cdlg');
+const detailsPrefill = await page.evaluate(() => {
+  const rows = [...document.querySelectorAll('#hops .hopbox')];
+  const get = (row, k) => { const el = row.querySelector(`[data-k="${k}"]`); return el ? (el.type === 'checkbox' ? el.checked : el.value) : null; };
+  return {dest: get(rows[0], 'dest'), serverNames: get(rows[0], 'serverNames'),
+          path: get(rows[1], 'path'), hostHeader: get(rows[1], 'hostHeader'),
+          sni: get(rows[1], 'sni'), reject: get(rows[1], 'rejectUnknownSni')};
+});
+ok(detailsPrefill.dest === 'mirror.example.org:443' && detailsPrefill.path === '/ui-hop-path'
+   && detailsPrefill.sni === 'ui-hop2.example.net' && detailsPrefill.reject === true,
+   `окно правки предзаполняет детали каждого хопа: ${JSON.stringify(detailsPrefill)}`);
+await page.click('#cdlg [value=cancel]');
+await closed('#cdlg');
+
 /* ---------- администраторы ---------- */
 await go('admins');
 await page.click('[data-a="anew"]');

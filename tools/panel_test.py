@@ -363,6 +363,163 @@ def proxy_setting_checks(client: TestClient) -> None:
         client.delete(f"/api/nodes/{nid}")
 
 
+def hop_settings_checks(client: TestClient) -> None:
+    """Детали защиты и транспорта у хопа цепочки — свои на каждый хоп.
+
+    Смысл проверки не в том, что поля «сохраняются в json цепочки». Важное другое:
+    один и тот же ряд hosts читает и инбаунд самого хопа, и переход соседней ноды,
+    поэтому названный человеком путь или маскированный адрес обязан оказаться на обеих
+    сторонах перехода — иначе цепочка «настраивается» в окне, а на ноде работает по умолчанию.
+    """
+    import hashlib
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives.serialization import Encoding
+
+    from src.panel.config_push import collect
+    from src.panel.db import connect
+
+    for name, address in (("hop-a", "10.9.5.1"), ("hop-b", "10.9.5.2"), ("hop-c", "10.9.5.3")):
+        client.post("/api/nodes", json={"name": name, "address": address,
+                                       "apiKey": f"sk-api-{name}01234567890000"})
+    ids = {n["name"]: n["id"] for n in client.get("/api/nodes").json()}
+
+    created = client.post("/api/chains", json={"name": "hop-settings", "hops": [
+        {"node": "hop-a", "protocol": "vless", "network": "ws", "security": "none", "port": 8831,
+         "path": "/cdn-live", "hostHeader": "cdn.example.net"},
+        {"node": "hop-b", "protocol": "trojan", "network": "ws", "security": "tls", "port": 8832,
+         "sni": "named-hop.example.net", "rejectUnknownSni": True, "fp": "chrome",
+         "path": "/hop-b-live", "hostHeader": "hopb.example.net"},
+        {"node": "hop-c", "protocol": "vless", "network": "grpc", "security": "reality", "port": 8833,
+         "dest": "mirror.example.org:443", "serverNames": "mirror.example.org, backup.example.org",
+         "serviceName": "medusa-chain", "grpcAuthority": "grpc.example.net", "fp": "edge"},
+    ]}).json()
+    saved = {hop["node"]: hop for hop in created["hops"]}
+    ok(saved["hop-a"]["path"] == "/cdn-live" and saved["hop-a"]["hostHeader"] == "cdn.example.net",
+       f"websocket-детали хопа сохранены и вернулись в цепочку: {saved['hop-a']['path']}")
+    ok(saved["hop-b"]["sni"] == "named-hop.example.net" and saved["hop-b"]["rejectUnknownSni"] is True,
+       f"tls-хоп назвал свой sni и отношение к чужому SNI: {saved['hop-b']['sni']}")
+    ok(saved["hop-c"]["dest"] == "mirror.example.org:443"
+       and "backup.example.org" in saved["hop-c"]["serverNames"]
+       and saved["hop-c"]["serviceName"] == "medusa-chain",
+       f"reality-хоп назвал маску, принимаемые имена и имя сервиса gRPC")
+
+    probe = connect()
+    try:
+        cfg_a = collect(probe, ids["hop-a"])["config"]
+        cfg_b = collect(probe, ids["hop-b"])["config"]
+        cfg_c = collect(probe, ids["hop-c"])["config"]
+    finally:
+        probe.close()
+
+    in_a = next(i for i in cfg_a["inbounds"] if i["tag"] == "hop-settings")
+    out_a = next(o for o in cfg_a["outbounds"] if o["tag"].endswith("-> hop 2"))
+    ws_a = in_a.get("streamSettings", {}).get("wsSettings") or {}
+    ws_out = out_a.get("streamSettings", {}).get("wsSettings") or {}
+    ok(ws_a.get("path") == "/cdn-live" and ws_a.get("host") == "cdn.example.net",
+       f"инбаунд входа цепочки слушает на названных websocket-детях: {ws_a}")
+    # переход соседней ноды собирается из деталей Того хопа, куда идёт трафик: у перехода
+    # нет своего транспорта, есть только приёмник
+    ok(ws_out.get("path") == "/hop-b-live" and ws_out.get("host") == "hopb.example.net",
+       f"переход использует websocket-детали хопа-приёмника: {ws_out}")
+
+    tls_out = out_a.get("streamSettings", {}).get("tlsSettings") or {}
+    ok(tls_out.get("serverName") == "named-hop.example.net" and tls_out.get("pinnedPeerCertSha256"),
+       f"переход идёт на sni хопа и закрепляет его сертификат: {tls_out.get('serverName')}")
+
+    in_b = next(i for i in cfg_b["inbounds"] if i["tag"].endswith("hop 2"))
+    tls_in = in_b.get("streamSettings", {}).get("tlsSettings") or {}
+    ws_in_b = in_b.get("streamSettings", {}).get("wsSettings") or {}
+    ok(tls_in.get("rejectUnknownSni") is True,
+       "hoповый tls-инбаунд отвергает чужой SNI, человек просил именно это")
+    ok(ws_in_b.get("path") == "/hop-b-live",
+       f"hoповый инбаунд слушает тот же путь, по которому приходит сосед: {ws_in_b.get('path')}")
+    out_b = next(o for o in cfg_b["outbounds"] if o["tag"].endswith("-> hop 3"))
+    stream_b = out_b.get("streamSettings", {})
+    reality_b = stream_b.get("realitySettings") or {}
+    ok(stream_b.get("grpcSettings", {}).get("serviceName") == "medusa-chain",
+       f"переход в grpc-хоп использует имя сервиса этого хопа: {stream_b.get('grpcSettings')}")
+    ok(reality_b.get("serverName") == "mirror.example.org" and reality_b.get("fingerprint") == "edge",
+       f"переход называет маску reality-хопа и его отпечаток: {reality_b.get('serverName')}")
+
+    in_c = next(i for i in cfg_c["inbounds"] if i["tag"].endswith("hop 3"))
+    reality_c = in_c.get("streamSettings", {}).get("realitySettings") or {}
+    ok(reality_c.get("dest") == "mirror.example.org:443"
+       and reality_c.get("serverNames") == ["mirror.example.org", "backup.example.org"],
+       f"reality-хоп принимает названные имена и прячется за названной маской: {reality_c.get('serverNames')}")
+    ok(in_c.get("streamSettings", {}).get("grpcSettings", {}).get("serviceName") == "medusa-chain",
+       "grpc-хоп слушает на том же имени сервиса, на которое приходит сосед")
+
+    # tls-сертификат хопа обязан называться тем именем, которое назовёт сосед: Xray 26
+    # сверяет SNI с сертификатом, и «имя в окне ≠ имя в сертификате» = отказ рукопожатия
+    with sqlite3.connect(os.environ["MEDUSA_DB"]) as raw:
+        raw.row_factory = sqlite3.Row
+        hop_row = raw.execute("SELECT sni, cert_pem, cert_sha256 FROM hosts WHERE security = 'tls' "
+                              "AND chain_id IS NOT NULL").fetchone()
+    cert = x509.load_pem_x509_certificate(hop_row["cert_pem"].encode())
+    names = [c.value for c in cert.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)]
+    ok(names == ["named-hop.example.net"],
+       f"сертификат хопа выпущен на его же sni, а не на адрес ноды: CN={names[0]}")
+    ok(hop_row["cert_sha256"] == hashlib.sha256(cert.public_bytes(Encoding.DER)).hexdigest(),
+       "отпечаток в базе = отпечаток этого сертификата: сосед закрепляет ровно его")
+
+    patched = client.patch(f"/api/chains/{created['id']}", json={"name": "hop-settings", "hops": [
+        {"node": "hop-a", "protocol": "vless", "network": "ws", "security": "none", "port": 8831,
+         "path": "/changed"},
+        {"node": "hop-b", "protocol": "trojan", "network": "ws", "security": "tls", "port": 8832,
+         "sni": "renamed-hop.example.net", "path": "/changed-b"},
+        {"node": "hop-c", "protocol": "vless", "network": "grpc", "security": "reality", "port": 8833,
+         "dest": "other-mirror.example.org:443"},
+    ]})
+    ok(patched.status_code == 200, f"цепочка с деталями правится: {patched.status_code}")
+    with sqlite3.connect(os.environ["MEDUSA_DB"]) as raw:
+        cert2 = x509.load_pem_x509_certificate(raw.execute(
+            "SELECT cert_pem FROM hosts WHERE security = 'tls' AND chain_id IS NOT NULL").fetchone()[0].encode())
+    renamed = [c.value for c in cert2.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)]
+    ok(renamed == ["renamed-hop.example.net"],
+       f"сменили sni хопа — сертификат перевыпущен под новое имя: CN={renamed[0]}")
+    probe = connect()
+    try:
+        out_a2 = next(o for o in collect(probe, ids["hop-a"])["config"]["outbounds"]
+                      if o["tag"].endswith("-> hop 2"))
+        in_b2 = next(i for i in collect(probe, ids["hop-b"])["config"]["inbounds"]
+                     if i["tag"].endswith("hop 2"))
+    finally:
+        probe.close()
+    ok(out_a2["streamSettings"]["wsSettings"]["path"] == "/changed-b"
+       and out_a2["streamSettings"]["tlsSettings"]["serverName"] == "renamed-hop.example.net",
+       "правка деталей хопа дошла до перехода: сосед пересобрался под новый путь и новый sni")
+    ok(in_b2["streamSettings"]["wsSettings"]["path"] == "/changed-b",
+       "правка деталей хопа дошла и до его же инбаунда: путь на ноде тот же, что у соседа")
+
+    bad_cases = (
+        ("путь при tcp", {"protocol": "vless", "network": "tcp", "security": "none", "port": 8841,
+                          "path": "/x"}, "настройки websocket"),
+        ("маска reality = IP", {"protocol": "vless", "network": "tcp", "security": "reality",
+                                "port": 8842, "dest": "10.9.9.9:443"}, "обязан быть доменом"),
+        ("свой сертификат хопу", {"protocol": "vless", "network": "tcp", "security": "tls",
+                                  "port": 8843, "certFile": "/etc/ssl/x.crt", "keyFile": "/etc/ssl/x.key"},
+         "сертификат хопа цепочки выпускает панель"),
+        ("отпечаток без шифрования", {"protocol": "vless", "network": "tcp", "security": "none",
+                                      "port": 8844, "fp": "chrome"}, "только при шифровании"),
+        ("sni у reality-хопа", {"protocol": "vless", "network": "tcp", "security": "reality",
+                                "port": 8845, "sni": "x.example.net"}, "настройки tls"),
+        ("имя сервиса при tcp", {"protocol": "vless", "network": "tcp", "security": "none",
+                                 "port": 8846, "serviceName": "medusa"}, "настройки gRPC"),
+    )
+    tail = {"node": "hop-b", "protocol": "vless", "network": "tcp", "security": "none", "port": 8847}
+    for label, hop, expected in bad_cases:
+        response = client.post("/api/chains", json={"name": "hop-bad", "hops": [
+            {"node": "hop-a", **hop}, tail]})
+        detail = response.json().get("detail", "")
+        ok(response.status_code == 400 and expected in detail,
+           f"{label}: {response.status_code} {detail}")
+
+    client.delete(f"/api/chains/{created['id']}")
+    for name in ("hop-a", "hop-b", "hop-c"):
+        client.delete(f"/api/nodes/{ids[name]}")
+
+
 def main() -> int:
     with TestClient(app) as client:
         session = client.post("/api/login", json={"username": "admin", "password": "supersecret1"}).json()
@@ -1065,6 +1222,7 @@ def main() -> int:
     chain_migration_checks()
     port_and_hop_checks(client)
     proxy_setting_checks(client)
+    hop_settings_checks(client)
     traffic_checks(client)
 
     print(f"\nпровалов: {FAILS}")

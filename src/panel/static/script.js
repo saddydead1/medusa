@@ -115,6 +115,7 @@ const I18N = {
     'cfg.sec.tls.sni':'SNI','cfg.sec.tls.cert':'Файл сертификата (путь на ноде)','cfg.sec.tls.key':'Файл закрытого ключа (путь на ноде)',
     'cfg.sec.tls.rejectSni':'Отвергать чужой SNI',
     'cfg.sec.tls.hint':'Оставьте сертификаты пустыми — нода сама выпустит self-signed на sni. Есть настоящий сертификат (например, от certbot) — впишите пути к обоим файлам. Строгому клиенту нужно назвать отпечаток сертификата pinnedPeerCertSha256.',
+    'cfg.sec.tls.hopHint':'Хопу цепочки сертификат выпускает панель: она обязана знать его отпечаток, чтобы закрепить его за соседней нодой. SNI здесь — имя, которое назовёт соседняя нода; пусто — адрес хопа (или адрес её ноды).',
     'cfg.protocol.short':'Протокол','cfg.port.short':'Порт',
     'th.address':'Адрес','th.node':'Нода','th.users':'Пользователей','th.traffic':'Трафик',
     'th.name':'Имя','th.title':'Название','th.status':'Статус','th.login':'Логин','th.role':'Роль',
@@ -232,6 +233,7 @@ const I18N = {
     'cfg.sec.tls.sni':'SNI','cfg.sec.tls.cert':'Certificate file (path on the node)','cfg.sec.tls.key':'Private key file (path on the node)',
     'cfg.sec.tls.rejectSni':'Reject unknown SNI',
     'cfg.sec.tls.hint':'Leave the certificate fields empty and the node issues a self-signed cert for the sni. Have a real certificate (e.g. from certbot) — give both file paths. Strict clients must pin it via pinnedPeerCertSha256.',
+    'cfg.sec.tls.hopHint':'The panel issues the certificate for a chain hop: it has to know its fingerprint to pin it on the neighbouring node. SNI here is the name that neighbour will use; empty means the hop address (or its node address).',
     'cfg.protocol.short':'Protocol','cfg.port.short':'Port',
     'th.address':'Address','th.node':'Node','th.users':'Users','th.traffic':'Traffic',
     'th.name':'Name','th.title':'Name','th.status':'Status','th.login':'Username','th.role':'Role',
@@ -1093,6 +1095,40 @@ function initCfg(root, onChange){
 }
 const readCfg = root => ({protocol:K(root,'protocol').value, network:K(root,'network').value, security:K(root,'security').value, port:+K(root,'port').value});
 
+/* ----- детали хопа цепочки: те же поля защиты и транспорта, что у хоста, но свои
+   на каждый хоп. Своих файлов сертификатов здесь нет: сертификат хопа выпускает
+   панель, потому что её отпечаток закрепляется за соседней нодой ---- */
+const HOP_DETAIL = ['dest','serverNames','sni','rejectUnknownSni','fp','path','hostHeader','serviceName','grpcAuthority'];
+function hopCfgValues(row){
+  const values = {};
+  HOP_DETAIL.forEach(k => {
+    const el = K(row,k); if(!el) return;
+    values[k] = el.type === 'checkbox' ? el.checked : el.value;
+  });
+  return values;
+}
+function renderHopCfg(row){
+  const values = hopCfgValues(row);
+  const sec = K(row,'security').value, net = K(row,'network').value;
+  const secBox = row.querySelector('.hopsec'), advBox = row.querySelector('.hopadv');
+  if(!secBox || !advBox) return;
+  /* пустое значение при правке — «сбросить к разумному по умолчанию»: рендер сам знает,
+     что поставить вместо пустого пути или пустой маскировки */
+  secBox.innerHTML = secHTML(sec, values, true);
+  advBox.innerHTML = advHTML(net, values, sec);
+  if(K(advBox,'fp')) K(advBox,'fp').value = values.fp || 'chrome';
+}
+function hopCfgBody(row){
+  const sec = K(row,'security').value, net = K(row,'network').value, body = {};
+  const val = k => K(row,k) ? K(row,k).value.trim() : '';
+  if(sec === 'reality'){ body.dest = val('dest'); body.serverNames = val('serverNames'); }
+  else if(sec === 'tls'){ body.sni = val('sni'); body.rejectUnknownSni = !!(K(row,'rejectUnknownSni') && K(row,'rejectUnknownSni').checked); }
+  if(net === 'ws'){ body.path = val('path'); body.hostHeader = val('hostHeader'); }
+  else if(net === 'grpc'){ body.serviceName = val('serviceName'); body.grpcAuthority = val('grpcAuthority'); }
+  if((sec === 'tls' || sec === 'reality') && K(row,'fp')) body.fp = K(row,'fp').value;
+  return body;
+}
+
 /* ----- поля защиты: они появляются только тогда, когда защита выбрана -----
    reality: маскированный dest (куда нода «притворяется» сайтом) и список sni,
    которые она принимает; tls: sni, свои сертификаты и отношение к чужому SNI.
@@ -1105,16 +1141,16 @@ const SEC_FIELDS = {
       <label><span>${t('cfg.sec.reality.serverNames')}</span><input data-k="serverNames" maxlength="255" placeholder="vpn.example.net, backup.example.net" value="${esc(h.serverNames||'')}"></label>
       <p class="hint">${esc(t('cfg.sec.reality.hint'))}</p></div>`;
   },
-  tls(h){
+  tls(h, hop){
     return `<div class="secbox">
       <label><span>${t('cfg.sec.tls.sni')}</span><input data-k="sni" maxlength="253" placeholder="vpn.example.net" value="${esc(h.sni||'')}"></label>
-      <label><span>${t('cfg.sec.tls.cert')}</span><input data-k="certFile" maxlength="255" placeholder="/etc/ssl/medusa.crt" value="${esc(h.certFile||'')}"></label>
-      <label><span>${t('cfg.sec.tls.key')}</span><input data-k="keyFile" maxlength="255" placeholder="/etc/ssl/medusa.key" value="${esc(h.keyFile||'')}"></label>
+      ${hop ? '' : `<label><span>${t('cfg.sec.tls.cert')}</span><input data-k="certFile" maxlength="255" placeholder="/etc/ssl/medusa.crt" value="${esc(h.certFile||'')}"></label>
+      <label><span>${t('cfg.sec.tls.key')}</span><input data-k="keyFile" maxlength="255" placeholder="/etc/ssl/medusa.key" value="${esc(h.keyFile||'')}"></label>`}
       <label class="chk"><input type="checkbox" data-k="rejectUnknownSni" ${h.rejectUnknownSni?'checked':''}><span>${esc(t('cfg.sec.tls.rejectSni'))}</span></label>
-      <p class="hint">${esc(t('cfg.sec.tls.hint'))}</p></div>`;
+      <p class="hint">${esc(t(hop ? 'cfg.sec.tls.hopHint' : 'cfg.sec.tls.hint'))}</p></div>`;
   },
 };
-const secHTML = (sec, h = {}) => (SEC_FIELDS[sec] || (()=>''))(h);
+const secHTML = (sec, h = {}, hop = false) => (SEC_FIELDS[sec] || (()=>''))(h, hop);
 function secBody(cfg, root){
   const sec = K(cfg,'security').value, body = {};
   const val = k => K(root,k) ? K(root,k).value.trim() : '';
@@ -1412,12 +1448,15 @@ function addHop(){
   if(box.children.length>=6) return toast(t('chain.maxHops',{n:6}));
   const prev = box.lastElementChild ? rowNode(box.lastElementChild) : null;
   const row = document.createElement('div'); row.className = 'hopbox';
+  // детали защиты/транспорта — свои на каждый хоп: переход «ws с путём /cdn» на второй ноде
+  // и «grpc» на третьей — это разные настройки, и окно цепочки обязано их различать
   row.innerHTML = `<div class="hop"><span></span><select data-k="node" aria-label="${t('th.node')}">${nodeOptions()}</select>
     <input data-k="address" class="hopaddr" maxlength="63" spellcheck="false" aria-label="${t('chain.hopAddress')}"
            placeholder="${t('chain.hopAddressPh')}" title="${t('chain.hopAddressHint')}">
-    <button type="button" class="btn sm">${t('btn.remove')}</button></div>${cfgHTML()}`;
+    <button type="button" class="btn sm">${t('btn.remove')}</button></div>${cfgHTML()}
+    <div class="hopsec"></div><div class="hopadv"></div>`;
   const other = ctx.nodes.find(n=>n.name!==prev); if(other) K(row,'node').value = other.name;
-  initCfg(row); setHopPort(row);
+  initCfg(row, ()=>renderHopCfg(row)); renderHopCfg(row); setHopPort(row);
   K(row,'node').onchange = ()=>setHopPort(row);
   row.querySelector('.hop button').onclick = ()=>{ row.remove(); renumber(); };
   box.append(row); renumber();
@@ -1440,6 +1479,13 @@ function fillHop(row, hop){
   K(row,'port').value = hop.port;
   // адрес хопа рендер подставляет и в outbound соседней ноды, и в ссылку входа цепочки
   K(row,'address').value = hop.address || '';
+  renderHopCfg(row);
+  HOP_DETAIL.forEach(k => {
+    const el = K(row, k); if(!el) return;
+    if(el.type === 'checkbox') el.checked = !!hop[k];
+    else if(k === 'fp') el.value = hop.fp || 'chrome';
+    else el.value = hop[k] || '';
+  });
 }
 async function openChain(chain){
   await loadCtx();
@@ -1480,7 +1526,7 @@ $('#cform').addEventListener('submit', e=>{
 });
 $('#cdlg').addEventListener('close', async ()=>{
   if($('#cdlg').returnValue!=='ok') return;
-  const hops = hopRows().map(r=>({node:rowNode(r), ...readCfg(r),
+  const hops = hopRows().map(r=>({node:rowNode(r), ...readCfg(r), ...hopCfgBody(r),
     address: (K(r,'address').value || '').trim() || null}));
   const id = chainEditing, name = $('#cform [name=name]').value;
   try{

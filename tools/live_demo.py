@@ -508,22 +508,33 @@ def main() -> int:
         chain_hops = {
             # вход reality на demo -> trojan tls на demo2. Второму hopу назван свой адрес
             # ("localhost" вместо 127.0.0.1): соседняя нода обязана прийти именно туда, а
-            # сертификат хопа панель выпускает на это же имя
+            # сертификат хопа панель выпускает на его же sni — имя, отличное от адреса
             "LIVE-2H": [("demo", "vless", "tcp", "reality", ""),
                         ("demo2", "trojan", "tcp", "tls", "localhost")],
             # вход websocket на demo -> shadowsocks на demo2 -> выход reality обратно на demo
             "LIVE-3H": [("demo", "vless", "ws", "none", ""), ("demo2", "ss", "tcp", "none", ""),
                         ("demo", "vless", "tcp", "reality", "")],
         }
+        # у каждого хопа — свои настройки защиты и транспорта: они едут и в инбаунд этого
+        # хопа, и в переход предыдущей ноды, и в ссылку подписчика (для входа цепочки)
+        chain_details = {
+            "LIVE-2H": [{"dest": "www.bing.com:443", "serverNames": "www.bing.com, live-reality.example.net",
+                         "fp": "chrome"},
+                        {"sni": "hop2.live.example.net", "rejectUnknownSni": True, "fp": "edge"}],
+            # у входа LIVE-3H защиты нет — значит и отпечатывать нечего: панель это отвергает
+            "LIVE-3H": [{"path": "/live-ws-hop", "hostHeader": "cdn.live.example"}, {}, {}],
+        }
         chain_ports: dict[str, list[int]] = {}
         for chain_name, hops in chain_hops.items():
             ports = [free_port() for _ in hops]
             chain_ports[chain_name] = ports
+            details = chain_details[chain_name]
             created = api.post("/api/chains", json={"name": chain_name, "hops": [
                 {"node": h[0], "protocol": h[1], "network": h[2], "security": h[3], "port": ports[i],
-                 "address": h[4] or None}
+                 "address": h[4] or None, **details[i]}
                 for i, h in enumerate(hops)]}).json()
-            ok("id" in created, f"цепочка {chain_name} заведена: {len(hops)} хопа, порты {ports}")
+            ok("id" in created, f"цепочка {chain_name} заведена: {len(hops)} хопа, порты {ports}"
+               + ("" if "id" in created else f", панель отвергла: {created}"))
 
         def settled_node(name: str, seconds: float = 120.0) -> dict | None:
             stable, deadline, row = None, time.time() + seconds, None
@@ -592,11 +603,39 @@ def main() -> int:
         ok(not dead, f"все порты хопа обеих нод слушаются ({sorted(sum(chain_ports.values(), []))})"
            + ("" if not dead else f", мёртвые: {dead}"))
 
+        # настройки хопа доезжают до обеих сторон перехода: хопа-приёмник слушает на них,
+        # отправитель собирает переход по ним же — иначе туннель бы не сложился
+        hop2_in = tags2["LIVE-2H hop 2"]
+        hop1_out = out1["LIVE-2H -> hop 2"]
+        ok(hop2_in["streamSettings"]["tlsSettings"].get("rejectUnknownSni") is True
+           and hop1_out["streamSettings"].get("fingerprint") == "edge",
+           "hoповый tls отвергает чужой SNI, а переход в него идёт с отпечатком клиента этого же хопа")
+        hop2_cert = hop2_in["streamSettings"]["tlsSettings"]["certificates"][0]["certificateFile"]
+        from cryptography import x509
+        cn = [c.value for c in x509.load_pem_x509_certificate(Path(hop2_cert).read_bytes()).subject]
+        ok("hop2.live.example.net" in cn and hop1_out["streamSettings"]["tlsSettings"]["serverName"] == "hop2.live.example.net",
+           f"сертификат хопа выпущен на его sni ({cn}), и переход называет то же имя: адрес, куда идут "
+           f"({hop2_target.get('address')}), и имя, которое называют, — разные вещи хопа")
+        hop1_in = tags1["LIVE-2H"]
+        ok(hop1_in["streamSettings"]["realitySettings"]["dest"] == "www.bing.com:443"
+           and "live-reality.example.net" in hop1_in["streamSettings"]["realitySettings"]["serverNames"],
+           "reality-хоп назвал свою маску и список принимаемых имён — они в его инбаунде")
+        ws_hop_in = tags1["LIVE-3H"]
+        ok(ws_hop_in["streamSettings"].get("wsSettings", {}).get("path") == "/live-ws-hop"
+           and ws_hop_in["streamSettings"]["wsSettings"].get("host") == "cdn.live.example",
+           f"websocket-вход цепочки слушает на пути и Host-заголовке этого хопа: {ws_hop_in['streamSettings']['wsSettings']}")
+
         petya_chain, masha_chain = links_of(petya), links_of(masha)
         ok({"LIVE-2H", "LIVE-3H"} <= set(petya_chain),
            f"вход цепочки — такой же хост подписки: {sorted(k for k in petya_chain if k.startswith('LIVE-'))}")
         ok("pbk=" in petya_chain["LIVE-2H"] and "sid=" in petya_chain["LIVE-2H"],
            "reality-вход цепочки дал подписчику его публичный ключ и короткий id, как обычный reality-хост")
+        ok("sni=www.bing.com" in petya_chain["LIVE-2H"],
+           "reality-вход цепочки назвал подписчику маску хопа: клиент притворяется тем же адресом, "
+           "за который прячется нода (иначе handshake не сойдётся)")
+        ok("path=%2Flive-ws-hop" in petya_chain["LIVE-3H"] and "host=cdn.live.example" in petya_chain["LIVE-3H"],
+           "websocket-вход цепочки отдал подписчику свой путь и Host-заголовок: тот же клиент, "
+           "что слушает нода")
         # туннель через цепочку: если бы демо2 не приняла трафик своего хопа, переход бы не
         # соединился — 204 наружу возможен только через обе ноды
         through("LIVE-2H", free_port(), outbound_from_link(petya_chain["LIVE-2H"]))

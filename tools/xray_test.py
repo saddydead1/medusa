@@ -434,9 +434,12 @@ def main() -> int:
             cfg2_path = STATE2.parent / "xray" / "config.json"
             h1, h2, h3 = free_port(), free_port(), free_port()
             route = client.post("/api/chains", json={"name": "XRAY-CHAIN", "hops": [
-                {"node": "stub", "protocol": "vless", "network": "tcp", "security": "reality", "port": h1},
+                {"node": "stub", "protocol": "vless", "network": "tcp", "security": "reality", "port": h1,
+                 "dest": "mirror.example.org:443", "serverNames": "mirror.example.org, backup.example.org"},
                 {"node": "stub2", "protocol": "trojan", "network": "ws", "security": "tls", "port": h2,
-                 "address": "hop2.internal.example"},
+                 "address": "hop2.internal.example", "sni": "hop2-tls.internal.example",
+                 "path": "/xray-hop2", "hostHeader": "cdn.hop2.example", "rejectUnknownSni": True,
+                 "fp": "edge"},
                 {"node": "stub", "protocol": "vmess", "network": "tcp", "security": "none", "port": h3},
             ]}).json()
             cfg = wait_cfg(cfg_path, lambda c: any(i["tag"] == "XRAY-CHAIN" for i in c["inbounds"])
@@ -478,9 +481,30 @@ def main() -> int:
                "отпечаток сертификата хопа совпал с тем, что закреплено на отправляющей ноде: "
                "tls-хоп цепочки собирается без allowInsecure")
             hop_cert_name = x509.load_pem_x509_certificate(hop_cert.read_bytes()).subject
-            ok(any(name.value.lower() == "hop2.internal.example" for name in hop_cert_name),
-               f"сертификат хопа выпущен на его собственный адрес, а не на адрес ноды: {hop_cert_name} — "
+            ok(any(name.value.lower() == "hop2-tls.internal.example" for name in hop_cert_name),
+               f"сертификат хопа выпущен на его же sni, а не на адрес ноды: {hop_cert_name} — "
                "соседняя нода называет в SNI то же имя, что стоит в сертификате")
+            ok(out12["streamSettings"]["tlsSettings"]["serverName"] == "hop2-tls.internal.example",
+               "переход в SNI ставит sni хопа-приёмника: адрес, на который идут, и имя, которое"
+              " называют, — разные вещи и обе берутся у хопа")
+
+            # детали транспорта и защиты хопа доезжают до обеих сторон перехода:
+            # инбаунд хопа слушает на них, соседний переход собирается по ним же
+            ws_in = hop2["streamSettings"].get("wsSettings") or {}
+            ws_out = out12["streamSettings"].get("wsSettings") or {}
+            ok(ws_in.get("path") == "/xray-hop2" and ws_in.get("host") == "cdn.hop2.example",
+               f"hoповый инбаунд поднялся на названном пути и Host-заголовке: {ws_in}")
+            ok(ws_out.get("path") == "/xray-hop2" and ws_out.get("host") == "cdn.hop2.example",
+               f"переход соседней ноды использует тот же путь и Host: {ws_out}")
+            ok(hop2["streamSettings"]["tlsSettings"].get("rejectUnknownSni") is True,
+               "hoповый tls-инбаунд отвергает чужой SNI — человек именно это просил")
+            ok(out12["streamSettings"].get("fingerprint") == "edge",
+               "отпечаток хопа достался переходу: обе стороны выглядят одинаково")
+            reality1 = hop1["streamSettings"].get("realitySettings") or {}
+            ok(reality1.get("dest") == "mirror.example.org:443"
+               and reality1.get("serverNames") == ["mirror.example.org", "backup.example.org"],
+               f"reality-хоп прячется за названной маской и принимает названные имена: "
+               f"{reality1.get('serverNames')}")
 
             client.delete(f"/api/chains/{route['id']}")
             cfg = wait_cfg(cfg_path, lambda c: all(not i["tag"].startswith("XRAY-CHAIN") for i in c["inbounds"]))
