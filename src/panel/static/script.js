@@ -120,6 +120,8 @@ const I18N = {
     'overview.title':'Обзор','stat.activeUsers':'Активных пользователей','stat.nodesOnline':'Нод онлайн',
     'stat.traffic':'Трафик за месяц','stat.chains':'Цепочек',
     'overview.nodesTraffic':'Трафик по нодам','overview.share':'{p}% от общего',
+    'overview.trafficStale':'не обновляется','node.traffic':'Трафик ноды',
+    'node.trafficSilent':'счётчики молчат: {why}',
     'overview.clients':'Приложения клиентов','overview.clientsAria':'Распределение подписок по приложениям клиентов',
     'subs.one':'подписка','subs.few':'подписки','subs.many':'подписок',
     'clients.activeTitle':'активных подписок','client.unknown':'прочие',
@@ -229,6 +231,8 @@ const I18N = {
     'overview.title':'Overview','stat.activeUsers':'Active users','stat.nodesOnline':'Nodes online',
     'stat.traffic':'Traffic this month','stat.chains':'Chains',
     'overview.nodesTraffic':'Traffic per node','overview.share':'{p}% of total',
+    'overview.trafficStale':'not updating','node.traffic':'Node traffic',
+    'node.trafficSilent':'counters are silent: {why}',
     'overview.clients':'Client apps','overview.clientsAria':'Subscription split by client app',
     'subs.one':'subscription','subs.few':'subscriptions','subs.many':'subscriptions',
     'clients.activeTitle':'active subscriptions','client.unknown':'other',
@@ -438,7 +442,7 @@ const mock = {
   nodes: [
     {id:1,name:'home',address:'10.8.0.1',online:true,users:4,traffic:88*GB,xray:'25.8.3',apiPort:9443,apiPath:'/node/health',keySet:true,keyMasked:'sk-api…3f9c2-81b7a',fingerprint:'3f9c2-81b7a',agent:'0.1.0',seenAt:Date.now()-4*60*1000,configRev:4,configDirty:false,appliedRev:4,appliedAt:Date.now()-4*60*1000,applyError:null},
     {id:2,name:'vps-fi',address:'10.8.0.2',online:true,users:5,traffic:107*GB,xray:'25.8.3',apiPort:9443,apiPath:'/node/health',keySet:true,keyMasked:'sk-api…c40b9-1de75',fingerprint:'c40b9-1de75',agent:'0.1.0',seenAt:Date.now()-90*1000,configRev:2,configDirty:true,appliedRev:1,appliedAt:Date.now()-30*60e3,applyError:null},
-    {id:3,name:'vps-de',address:'10.8.0.3',online:false,users:3,traffic:14*GB,xray:null,apiPort:9443,apiPath:'/node/health',keySet:true,keyMasked:'sk-api…7d301-90cb2',fingerprint:'7d301-90cb2',agent:null,seenAt:0,configRev:1,configDirty:false,appliedRev:0,appliedAt:null,applyError:'нода не ответила: ConnectError'},
+    {id:3,name:'vps-de',address:'10.8.0.3',online:false,users:3,traffic:14*GB,trafficError:'на ноде нет бинарника xray — счётчики снять нечем',xray:null,apiPort:9443,apiPath:'/node/health',keySet:true,keyMasked:'sk-api…7d301-90cb2',fingerprint:'7d301-90cb2',agent:null,seenAt:0,configRev:1,configDirty:false,appliedRev:0,appliedAt:null,applyError:'нода не ответила: ConnectError'},
   ],
   hosts: [
     {id:1,name:'FI Reality',node:'vps-fi',address:'fi.example.com',protocol:'vless',port:443,network:'tcp',security:'reality',chain:null},
@@ -712,7 +716,7 @@ function nodesBlock(nodes, total){
       <span class="fdot"></span>
       <div class="fmeta"><b>${esc(n.name)}</b><span class="mono">${esc(n.address)}</span></div>
       <div class="fbar"><i style="width:${Math.max(2, n.traffic / max * 100)}%"></i></div>
-      <div class="fnums"><b>${fmt(n.traffic)}</b><span>${t('overview.share',{p:share})}</span></div>
+      <div class="fnums"><b${n.trafficError?` class="fstale" title="${esc(n.trafficError)}"`:''}>${fmt(n.traffic)}</b><span${n.trafficError?' class="fstale"':''}>${n.trafficError?t('overview.trafficStale'):t('overview.share',{p:share})}</span></div>
       <div class="fusers" title="${t('th.users')}">${ic('users')}<b>${n.users}</b></div>
       <span class="badge ${n.online?'b-ok':'b-bad'}">${n.online?t('node.online'):t('node.offline')}</span>
     </div>`;
@@ -1168,6 +1172,21 @@ function nodeStatusLine(text, good){
   const box = $('#ne_status');
   box.textContent = text; box.classList.toggle('bad', !good); box.hidden = false;
 }
+/* Строка трафика в окне ноды: цифра, а вместо неё — причина, по которой счётчики
+   молчали. Нода обязана называть её, а не молча показывать ноль. */
+function trafficLine(n){
+  const dd = $('#ne_traffic');
+  if (!dd) return;
+  if (n.trafficError) {
+    /* байты, которые нода успела насчитать, остаются: они настоящие. Не хватает только
+       свежести — и об этом нода сказала сама */
+    dd.innerHTML = `${fmt(n.traffic || 0)} · <span class="warn">${esc(t('node.trafficSilent',
+      {why: esc(n.trafficError)}))}</span>`;
+    return;
+  }
+  dd.textContent = fmt(n.traffic || 0);
+}
+
 async function openNodeEdit(id){
   const n = (await call('GET','/api/nodes')).find(x => x.id === id);
   if(!n) return toast(t('toast.stale'));
@@ -1187,6 +1206,7 @@ async function openNodeEdit(id){
   $('#ne_agent').innerHTML = missing(n.agent);
   $('#ne_xray').innerHTML = missing(n.xray);
   $('#ne_seen').textContent = n.seenAt ? ago(n.seenAt) : t('node.neverChecked');
+  trafficLine(n);
   /* конфиг — свёрнутый просмотр: разворачиваешь, панель показывает то, что сама
      собрала и уже отправила (или собирается отправить). Правок здесь нет: конфиг
      рождается из хостов и пользователей, а не из текстового поля */
@@ -1213,6 +1233,7 @@ $('#nedlg').addEventListener('click', async e=>{
       $('#ne_agent').innerHTML = missing(row.agent);
       $('#ne_xray').innerHTML = missing(row.xray);
       $('#ne_seen').textContent = row.seenAt ? ago(row.seenAt) : t('node.neverChecked');
+      trafficLine(row);
       nodeBadge(row.online);
       if(r.ok) nodeStatusLine(t('node.checkOk',{fp:r.node.fingerprint}), true);
       else nodeStatusLine(t('node.checkBad',{msg:r.error}), false);

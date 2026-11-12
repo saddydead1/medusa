@@ -88,9 +88,22 @@ class NodeApplyReport(BaseModel):
     error: str | None = None
 
 
+class UserTraffic(BaseModel):
+    """Трафик одной метки Xray на этой ноде.
+
+    Метку придумала панель (`u<id пользователя` — подписчик, `hop<цепочка>-<номер>` —
+    переход цепочки): по ней панель и узнаёт, чей это трафик. Нода, которая видит метку
+    в своём конфиге, не узнаёт из неё ничего лишнего — uuid и пароли ей выдаются, чтобы
+    поднять инбаунд.
+    """
+
+    email: str = Field(description="метка Xray: u<id> подписчика или hop<цепочка>-<номер>")
+    bytes: int = Field(ge=0, description="накоплено на этой ноде (uplink + downlink)")
+
+
 class NodeStatus(BaseModel):
-    """Состояние ноды. Применения конфига ещё нет — отсюда поля-заглушки,
-    но уже честные: нода сообщает то, что знает про себя на самом деле."""
+    """Состояние ноды: ревизии конфига, её собственный счётчик трафика и всё, что нода
+    знает о себе на самом деле."""
 
     role: Literal["medusa-node"] = NODE_ROLE
     fingerprint: str
@@ -102,3 +115,11 @@ class NodeStatus(BaseModel):
     lastApplyAt: int | None = None
     lastError: str | None = None
     uptimeMs: int
+    # --- трафик, который нода насчитала сама (см. src/node/traffic.py) -------------
+    # trafficBytes — всё, что провела эта нода: и подписчиков, и транзит цепочек.
+    # Трафик перехода цепочки считается на ноде и ни одному человеку не приписывается.
+    trafficBytes: int = Field(ge=0, default=0)
+    userTraffic: list[UserTraffic] = Field(default_factory=list)
+    statsAt: int = 0
+    statsPort: int | None = None
+    statsError: str | None = None

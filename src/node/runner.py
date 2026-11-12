@@ -20,6 +20,7 @@ import datetime
 import ipaddress
 import json
 import os
+import socket
 import subprocess
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 from src.core.contract import NodeApplyReport
+from src.core.xray_config import STATS_TAG, apply_stats_port, stats_port_of, used_ports
 from src.node.config import NodeConfig
 from src.node.identity import NodeIdentity, now_ms, save_identity
 from src.node.xray import resolve_xray_bin, xray_version
@@ -37,6 +39,27 @@ CONFIG_FILE = "config.json"
 PENDING_FILE = "config.new.json"
 TEST_TIMEOUT_SECONDS = 25
 STOP_GRACE_SECONDS = 5
+
+# Панель пишет порт сервиса счётчиков нулём: она не знает, что свободно на чужой машине.
+# Порт подбирает нода — и только петлюбочный: счётчики не должны торчать наружу даже на
+# ноде с публичным адресом. Диапазон заведомо не пересекается с портами хостов, которые
+# выбирает человек, и не начинается с 0 (много ephemeral-портов вокруг).
+STATS_PORT_BASE = 39113
+STATS_PORT_TRIES = 64
+
+
+def _loopback_free(port: int) -> bool:
+    """Свободен ли этот порт на петлебочном адресе именно сейчас.
+
+    Только 127.0.0.1: порт счётчиков не должен перекрывать что-то, что уже слушается
+    на внешнем адресе машины, — и сам не должен становиться внешним.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
 
 
 def _self_signed(host_value: str, crt_path: Path, key_path: Path) -> None:
@@ -76,6 +99,24 @@ class XrayRunner:
         self.config_path = self.dir / CONFIG_FILE
         self.log_path = self.dir / "xray.log"
         self.proc: subprocess.Popen | None = None
+        # ledger ставится при сборке ноды: без него раннер не знает, куда складывать
+        # счётчики, и тогда остановка Xray честно означала бы потерю насчитанного
+        self.ledger = None
+
+    def harvest(self) -> None:
+        """Снять счётчики трафика, пока Xray ещё жив.
+
+        Счётчики Xray живут в памяти его процесса: перезапуск (новое применение конфига,
+        остановка ноды, смерть процесса) обнуляет их. Поэтому нода снимает их не только
+        когда панель пришла за ответом, но и перед каждой остановкой Xray — иначе байты,
+        наработанные между опросами панели, пропадали бы молча.
+        """
+        if self.ledger is None or self.proc is None or self.proc.poll() is not None:
+            return
+        try:
+            self.ledger.read()
+        except Exception as err:  # noqa: BLE001 — счётчики не должны ронять остановку сервиса
+            print(f"[medusa-node] счётчики трафика перед остановкой снять не вышло: {err}", flush=True)
 
     # ---------- файлы ----------
 
@@ -203,19 +244,66 @@ class XrayRunner:
             save_identity(self.identity)
             return
         problem = self._start()
+        self._remember_stats_port()
+        if self.identity.stats_port:
+            save_identity(self.identity)
         print(f"[medusa-node] автоподъём Xray: {problem or f'рабочий конфиг rev {self.identity.applied_rev}'}", flush=True)
 
     def shutdown(self) -> None:
+        self.harvest()
         self._stop()
 
     def note_process_state(self) -> None:
         """Перед ответом о статусе проверяем, жив ли процесс: мёртвый Xray не должен
         прятаться за «применено»."""
         if self.proc is not None and self.proc.poll() is not None:
+            # процесс уже умер: снимем хотя бы то, что успели прочитать раньше, и зафиксируем причину
             code = self.proc.poll()
             self.proc = None
             self.identity.last_error = f"Xray завершился с кодом {code}: детали в {self.log_path}"
             save_identity(self.identity)
+
+    # ---------- порт счётчиков трафика ----------
+
+    def _reserve_stats_port(self, payload: dict) -> dict | None:
+        """Ставит в конфиг конкретный петлюбочный порт сервиса счётчиков.
+
+        Возвращает None, когда счётчиков в этом конфиге нет вовсе (хостов нет — Xray
+        не поднимается). Порт подбирается так: сначала прежний (он уже известен панели
+        и ноде, и менять его без нужды незачем), потом первый свободный из обычного
+        диапазона. Ни на один порт хоста из этого же конфига нода не наступает.
+        """
+        if not any(inbound.get("tag") == STATS_TAG for inbound in payload.get("inbounds", [])):
+            return None
+        taken = used_ports(payload) | {self.config.port}
+        candidates: list[int] = []
+        if self.identity.stats_port:
+            candidates.append(self.identity.stats_port)
+        candidates += [STATS_PORT_BASE + offset for offset in range(STATS_PORT_TRIES)]
+        for port in candidates:
+            if port in taken or not _loopback_free(port):
+                continue
+            self.identity.stats_port = port
+            return apply_stats_port(payload, port)
+        return None
+
+    @property
+    def stats_port(self) -> int | None:
+        """Порт, на котором Xray этой ноды слушает сервис счётчиков (None — не подобран)."""
+        return self.identity.stats_port
+
+    def _remember_stats_port(self) -> None:
+        """После автоподъёма порт берётся из рабочего конфига: нода перезапустилась,
+        а Xray поднялся с тем же конфигом и тем же портом."""
+        if self.identity.stats_port is not None:
+            return
+        try:
+            applied = json.loads(self.config_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        port = stats_port_of(applied)
+        if port:
+            self.identity.stats_port = port
 
     # ---------- применение ----------
 
@@ -226,15 +314,20 @@ class XrayRunner:
             return self._finish(revision, ok=False, error="на ноде нет бинарника xray (MEDUSA_XRAY_BIN или PATH)")
 
         self._ensure_dir()
-        pending = self.dir / PENDING_FILE
-        self._write(pending, self._absolutize_certs(payload))
-
         cert_problem = self._ensure_certs(cert_hints)
         if cert_problem:
-            pending.unlink(missing_ok=True)
             return self._finish(revision, ok=False, error=cert_problem)
 
+        # прежний процесс останавливается до подбора порта: иначе старый Xray держал бы
+        # прежний порт счётчиков и он оказался бы «занятым». Перед остановкой — снимем
+        # счётчики: вместе с прежним процессом они бы исчезли
+        self.harvest()
         self._stop()
+        fixed = self._reserve_stats_port(payload)
+        if fixed is not None:
+            payload = fixed
+        pending = self.dir / PENDING_FILE
+        self._write(pending, self._absolutize_certs(payload))
 
         if not payload.get("inbounds"):
             # хостов нет — Xray нечему слушать; это не ошибка, сервис просто не нужен

@@ -12,6 +12,7 @@ from src.core.contract import (
     NodeHealth,
     NodeIdentity as IdentityPayload,
     NodeStatus,
+    UserTraffic,
 )
 from src.core.version import project_version
 from src.node.deps import identity_of, require_node_key
@@ -51,14 +52,20 @@ def identity(request: Request, node: NodeIdentity = Depends(require_node_key)) -
 
 @router.get("/status", response_model=NodeStatus)
 def status(request: Request, node: NodeIdentity = Depends(require_node_key)) -> NodeStatus:
-    """Что нода помнит о себе. Ревизии настоящие: их двигает применение конфига.
-    Перед ответом раннер проверяет, жив ли процесс Xray: мёртвый процесс не должен
-    прятаться за «применено».
+    """Что нода помнит о себе. Ревизии настоящие: их двигает применение конфига, а
+    трафик нода снимает с Xray прямо перед ответом. Перед ответом раннер проверяет, жив ли
+    процесс Xray: мёртвый процесс не должен прятаться за «применено».
     """
     config = request.app.state.node_config
     runner = getattr(request.app.state, "xray_runner", None)
     if runner is not None:
         runner.note_process_state()
+    # Здесь счётчики снимаются ради панели (`/node/status` — единственный путь, которым она
+    # узнаёт про трафик). Кроме этого нода делает то же самое сама по кругу и перед всякой
+    # остановкой Xray: счётчики живут в памяти процесса Xray и сами по себе не переживают
+    # перезапуск, см. `src/node/traffic.py`.
+    ledger = getattr(request.app.state, "traffic_ledger", None)
+    traffic = ledger.read() if ledger is not None else None
     return NodeStatus(
         fingerprint=node.fingerprint,
         agentVersion=project_version(),
@@ -69,6 +76,12 @@ def status(request: Request, node: NodeIdentity = Depends(require_node_key)) -> 
         lastApplyAt=node.last_apply_at,
         lastError=node.last_error,
         uptimeMs=node.uptime_ms,
+        trafficBytes=traffic.trafficBytes if traffic else 0,
+        userTraffic=[UserTraffic.model_validate(item) for item in
+                     (traffic.userTraffic if traffic else [])],
+        statsAt=traffic.statsAt if traffic else 0,
+        statsPort=runner.stats_port if runner is not None else None,
+        statsError=traffic.statsError if traffic else "нода ещё не подняла раннер xray",
     )
 
 

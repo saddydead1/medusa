@@ -182,6 +182,9 @@ if (nodePort && nodeKey) {
   ok((await page.textContent('#ne_status')).includes('API-ключ подходит'),
      `живая проверка связи: ${await page.textContent('#ne_status')}`);
   ok((await page.textContent('#ne_agent')).includes('0.1.0'), 'нода сообщила версию своего агента');
+  const trafficTxt = (await page.textContent('#ne_traffic')).trim();
+  ok(trafficTxt && /МБ|ГБ/.test(trafficTxt) && !trafficTxt.includes('node.traffic'),
+     `в окне ноды есть строка её трафика — панель уже забрала счётчики живой ноды: ${trafficTxt}`);
   await page.waitForFunction(() => !document.querySelector('#ne_seen').textContent.includes('ещё не проверялась'));
   await wait(x => document.querySelector('#ne_badge').textContent === 'Онлайн');
   const seen = (await page.textContent('#ne_seen')).toLowerCase();

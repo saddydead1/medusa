@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from src.core.api_keys import new_api_key
+from src.core.xray_config import hop_email
 from src.panel.chain_hops import insert_hop
 from src.panel.host_keys import new_reality_keys
 from src.panel.security import hash_password, new_session_token, new_user_token, temporary_password
@@ -79,7 +80,6 @@ CREATE TABLE IF NOT EXISTS users (
     name       TEXT    NOT NULL UNIQUE CHECK (length(name) BETWEEN 2 AND 32),
     token      TEXT    NOT NULL UNIQUE,
     status     TEXT    NOT NULL CHECK (status IN ('active','disabled')) DEFAULT 'active',
-    used_bytes INTEGER NOT NULL DEFAULT 0,
     client     TEXT,
     created_at INTEGER NOT NULL
 );
@@ -90,8 +90,10 @@ CREATE TABLE IF NOT EXISTS nodes (
     address          TEXT    NOT NULL,
     online           INTEGER NOT NULL DEFAULT 0,
     xray_version     TEXT,
-    users_count      INTEGER NOT NULL DEFAULT 0,
+    -- накопленный трафик этой ноды (сообщает сама нода, см. src/node/traffic.py):
+    -- и подписчиков, и транзит цепочек; traffic_error — почему счётчиков нет
     traffic_bytes    INTEGER NOT NULL DEFAULT 0,
+    traffic_error    TEXT,
     -- связь панели с нодой: отдельный порт API ноды и API-ключ, который создала сама нода
     api_port         INTEGER NOT NULL DEFAULT 9443 CHECK (api_port BETWEEN 1 AND 65535),
     api_key          TEXT    NOT NULL DEFAULT '',
@@ -106,6 +108,19 @@ CREATE TABLE IF NOT EXISTS chains (
     hops       TEXT    NOT NULL,            -- JSON: [{node_id, protocol, network, security, port}]
     created_at INTEGER NOT NULL
 );
+
+-- что нода насчитала по каждой метке Xray (`u<id>` подписчика или `hop<цепочка>-<номер>`).
+-- накопленные итоги конкретной ноды: трафик человека — сумма по всем его нодам,
+-- поэтому здесь нет ни общего счётчика, ни дублирования байтов между нодами.
+CREATE TABLE IF NOT EXISTS node_traffic (
+    node_id    INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    email      TEXT    NOT NULL,
+    user_id    INTEGER REFERENCES users(id) ON DELETE CASCADE,   -- NULL, если метка не подписьчик (хоп цепочки)
+    bytes      INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (node_id, email)
+);
+CREATE INDEX IF NOT EXISTS idx_node_traffic_user ON node_traffic(user_id);
 
 CREATE TABLE IF NOT EXISTS hosts (
     id         INTEGER PRIMARY KEY,
@@ -206,6 +221,9 @@ def ensure_owner(conn: sqlite3.Connection) -> str | None:
 
 
 # Новых колонок схема не знает: новую колонну приходится добавлять самим.
+# что в прежних базах было придумано и больше не нужно
+LEGACY_COLUMNS = {"users": ("used_bytes",), "nodes": ("users_count",)}
+
 COLUMNS = {
     "settings": {"passkeyEnabled": "INTEGER NOT NULL DEFAULT 0 CHECK (passkeyEnabled IN (0,1))"},
     "sessions": {"created_at": "INTEGER NOT NULL DEFAULT 0"},
@@ -214,6 +232,8 @@ COLUMNS = {
         "api_key": "TEXT NOT NULL DEFAULT ''",
         "agent_version": "TEXT",
         "seen_at": "INTEGER NOT NULL DEFAULT 0",
+        # почему счётчики трафика молчат (нет xray, Xray не поднят, порт не подобран)
+        "traffic_error": "TEXT",
         # применение конфига Xray: чего хочет панель (config_rev), что нода подтвердила
         # (applied_rev/applied_at), осталась ли несвежей после правок (config_dirty)
         "config_rev": "INTEGER NOT NULL DEFAULT 0",
@@ -282,6 +302,13 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
         for column, definition in columns.items():
             if column not in known:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    # прежние поля-заглушки: трафик и число подписчиков больше не выдумываются — их
+    # сообщает нода (node_traffic, traffic_bytes) или считает сама панель
+    for table, columns in LEGACY_COLUMNS.items():
+        known = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for column in columns:
+            if column in known:
+                conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
     # порт занят и хопом цепочки: в прежних базах хопа отдельными строками hosts не были,
     # поэтому индекс добавляется отдельно (создать его поверх уже существующего дубликата
     # sqlite не может — тогда держится только проверка слоя выше)
@@ -348,29 +375,20 @@ def seed_demo(conn: sqlite3.Connection) -> None:
         return
     now = now_ms()
     node_ids = {}
-    for name, address, online, traffic, users in [
-        ("home", "10.8.0.1", 1, 88 * GB, 4),
-        ("vps-fi", "10.8.0.2", 1, 107 * GB, 5),
-        ("vps-de", "10.8.0.3", 0, 14 * GB, 3),
-    ]:
+    for name, address, online in [("home", "10.8.0.1", 1), ("vps-fi", "10.8.0.2", 1),
+                                  ("vps-de", "10.8.0.3", 0)]:
         cur = conn.execute(
-            """INSERT INTO nodes (name, address, online, xray_version, users_count, traffic_bytes,
-                                   api_port, api_key, created_at)
-               VALUES (?,?,?,?,?,?,9443,?,?)""",
-            (name, address, online, "25.8.3", users, traffic, new_api_key(), now),
+            """INSERT INTO nodes (name, address, online, xray_version, api_port, api_key, created_at)
+               VALUES (?,?,?,?,9443,?,?)""",
+            (name, address, online, "25.8.3", new_api_key(), now),
         )
         node_ids[name] = cur.lastrowid
 
-    for name, used, client in [
-        ("vasya", 42.5 * GB, "happ"),
-        ("masha", 91 * GB, "clash-verge"),
-        ("brother", 50 * GB, "clash-meta"),
-        ("old-phone", 12 * GB, "clash-verge"),
-        ("tv", 0, "v2rayng"),
-    ]:
+    for name, client in [("vasya", "happ"), ("masha", "clash-verge"), ("brother", "clash-meta"),
+                         ("old-phone", "clash-verge"), ("tv", "v2rayng")]:
         conn.execute(
-            "INSERT INTO users (name, token, status, used_bytes, client, created_at) VALUES (?,?,?,?,?,?)",
-            (name, new_user_token(), "disabled" if name in {"old-phone", "tv"} else "active", int(used), client, now),
+            "INSERT INTO users (name, token, status, client, created_at) VALUES (?,?,?,?,?)",
+            (name, new_user_token(), "disabled" if name in {"old-phone", "tv"} else "active", client, now),
         )
 
     conn.execute("INSERT INTO admins (username, password_hash, role, status, last_login, created_at) VALUES (?,?,?,?,?,?)",
@@ -404,6 +422,57 @@ def seed_demo(conn: sqlite3.Connection) -> None:
         # рабочие инбаунды своих нод, и у каждого свои ключи (panel/chain_hops.py)
         for index, hop in enumerate(payload):
             insert_hop(conn, cur.lastrowid, name, index, hop, now)
+
+    seed_demo_traffic(conn, node_ids, now)
+
+
+def seed_demo_traffic(conn: sqlite3.Connection, node_ids: dict[str, int], moment: int) -> None:
+    """Демонстрационный трафик — той же формы, что сообщает настоящая нода.
+
+    Это не украшение: `node_traffic` — единственное место, откуда панель берёт байты,
+    поэтому демо обязано выглядеть как отчёт ноды (метки `u<id>` и `hop<цепочка>-<номер>`),
+    иначе интерфейс проверялся бы на данных, которых в жизни не бывает.
+
+    Разложены байты так, как их разложила бы真实 нода: часть подписчиков ходит через
+    несколько нод (их трафик — сумма по нодам), а цепочки приносят нодам ещё и транзит,
+    который человеку не приписывается. Поэтому сумма полос нод больше, чем сумма трафика
+    людей, — и это правильно.
+    """
+    user_ids = {row["name"]: row["id"] for row in conn.execute("SELECT id, name FROM users")}
+    per_user = {
+        "vasya": {"home": 16.0, "vps-fi": 26.5},
+        "masha": {"home": 38.0, "vps-fi": 45.0, "vps-de": 8.0},
+        "brother": {"home": 26.0, "vps-fi": 24.0},
+        # отключённый человек остаётся со своей историей: байты были, подписка больше не раздаётся
+        "old-phone": {"home": 8.0, "vps-fi": 3.5},
+        "tv": {},
+    }
+    for name, spread in per_user.items():
+        user_id = user_ids.get(name)
+        if user_id is None:
+            continue
+        for node, giga in spread.items():
+            conn.execute("INSERT INTO node_traffic (node_id, email, user_id, bytes, updated_at) VALUES (?,?,?,?,?)",
+                         (node_ids[node], f"u{user_id}", user_id, int(giga * GB), moment))
+
+    # транзит цепочек: метка перехода, а не человека (hop_email — та же функция, что в конфиге)
+    transit = {("FI-DE", 1): 4.0, ("Home-FI-DE", 1): 2.0, ("Home-FI", 1): 1.5, ("Home-FI-DE", 2): 6.0}
+    for chain_id, chain_name in [(r["id"], r["name"]) for r in conn.execute("SELECT id, name FROM chains")]:
+        hops = json.loads(conn.execute("SELECT hops FROM chains WHERE id = ?", (chain_id,)).fetchone()["hops"])
+        for index, hop in enumerate(hops):
+            if index == 0:
+                continue        # вход цепочки — трафик подписчика, он уже посчитан
+            giga = transit.get((chain_name, index))
+            if not giga:
+                continue
+            conn.execute("INSERT INTO node_traffic (node_id, email, user_id, bytes, updated_at) VALUES (?,?,?,?,?)",
+                         (hop["node_id"], hop_email(chain_id, index), None, int(giga * GB), moment))
+
+    # итог ноды = сумма её меток: панель не хранит трафик ноды отдельно от её же отчёта
+    for node_id in node_ids.values():
+        total = conn.execute("SELECT COALESCE(SUM(bytes), 0) t FROM node_traffic WHERE node_id = ?",
+                             (node_id,)).fetchone()["t"]
+        conn.execute("UPDATE nodes SET traffic_bytes = ? WHERE id = ?", (total, node_id))
 
 
 def json_column(value) -> str:

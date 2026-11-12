@@ -697,6 +697,57 @@ def main() -> int:
                         proc.wait(timeout=10)
                     except subprocess.TimeoutExpired:
                         proc.kill()
+        # ===== трафик: живой Xray считает подписчиков, панель раскладывает их по людям =====
+        def check_node(name: str) -> dict:
+            node_id = next(n["id"] for n in api.get("/api/nodes").json() if n["name"] == name)
+            return api.post(f"/api/nodes/{node_id}/check", json={}).json()
+
+        def node_named(name: str) -> dict:
+            return next(n for n in api.get("/api/nodes").json() if n["name"] == name)
+
+        report_demo = check_node("demo")
+        row_live = node_named("demo")
+        ok(row_live["traffic"] > 0 and not row_live["trafficError"] and report_demo["ok"],
+           f"живой Xray насчитал трафик, нода его скопила, панель забрала: demo {row_live['traffic']:,} байт "
+           f"({report_demo['traffic']['labels']} меток)")
+        check_node("demo2")
+        row_live2 = node_named("demo2")
+        ok(row_live2["traffic"] > 0 and not row_live2["trafficError"],
+           f"вторая нода посчитала свои хопа цепочек: demo2 {row_live2['traffic']:,} байт")
+
+        # что насчитала нода и что легло в панель — это должны быть одни и те же байты
+        node_states = {}
+        for label, key, port in (("demo", NODE_KEY, node_port), ("demo2", NODE_KEY2, node2_port)):
+            node_states[label] = httpx.get(f"http://127.0.0.1:{port}/node/status",
+                                           headers={"Authorization": f"Bearer {key}"}, timeout=8).json()
+        ok(all(node_states[name]["trafficBytes"] == node_named(name)["traffic"] for name in ("demo", "demo2")),
+           "цифры панели и цифры ноды — одни и те же: панель не хранит свою версию трафика")
+        live_users = {u["name"]: u for u in api.get("/api/users").json()}
+        spent = sum(u["used"] for u in live_users.values())
+        ok(all(live_users[name]["used"] > 0 for name in ("petya", "masha")),
+           "каждый подписчик опознан по своей метке в конфиге: "
+           + ", ".join(f"{name} {live_users[name]['used']:,}" for name in ("petya", "masha")))
+        carried = row_live["traffic"] + row_live2["traffic"]
+        ok(0 < spent <= carried,
+           f"трафика у людей не больше, чем у нод: люди {spent:,} ≤ ноды {carried:,} — "
+           f"разница {carried - spent:,} это транзит цепочек, который считается на ноде, а не у человека")
+
+        cfg_live = json.loads(CFG_PATH.read_text(encoding="utf-8"))
+        counters_in = next(i for i in cfg_live["inbounds"] if i["tag"] == "api")
+        host_ports = {i["port"] for i in cfg_live["inbounds"] if i["tag"] != "api"}
+        ok(counters_in["listen"] == "127.0.0.1" and counters_in["port"] > 0
+           and counters_in["port"] not in host_ports,
+           f"сервис счётчиков на живой ноде слушает только петлюбочный адрес и не наступил на порты хостов: "
+           f"{counters_in['listen']}:{counters_in['port']}")
+
+        # повторный поход без нового трафика: Xray обнулил счётчики после чтения, а цифры
+        # панели обязаны остаться — накопленное не теряется между опросами
+        time.sleep(2.0)
+        before = node_named("demo")["traffic"]
+        check_node("demo")
+        after = node_named("demo")["traffic"]
+        ok(after == before, f"повторная проверка без нового трафика ничего не удваивает: {before:,} -> {after:,}")
+
         qr = api.get(f"/sub/{petya['token']}/qr/subscribe")
         ok(qr.status_code == 200 and qr.headers["content-type"].startswith("image/svg"),
            "QR ссылки подписки рисуется прямо на странице")

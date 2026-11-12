@@ -53,6 +53,24 @@ REALITY_DEST = "www.microsoft.com:443"
 
 SUPPORTED_PROTOCOLS = ("vless", "vmess", "trojan", "ss")
 
+# --- счётчики трафика -----------------------------------------------------------------
+# Xray считает трафик по «почте» подписчика (email в клиентах инбаунда): без него
+# счётчик пользователя не появляется вовсе, и нода не может рассказать, кому сколько
+# ушло. Поэтому у каждого подписчика в конфиге есть свой email — не настоящая
+# почта, а метка: `u<id пользователя панели>`. По ней панель и опознаёт, чей это трафик.
+# Хопа цепочек получают свою метку (`hop<цепочка>-<номер>`): их трафик — транзит, он
+# считается на ноде, но не записывается ни одному человеку.
+USER_EMAIL_PREFIX = "u"
+HOP_EMAIL_PREFIX = "hop"
+
+# Сервис счётчиков Xray висит на внутреннем gRPC-инбаунде: `api.tag` обязан совпасть с
+# тегом этого инбаунда. Порт в конфиге панель пишет нулём — она не знает, что свободно
+# на чужой машине; конкретный петлюбочный порт подбирает нода (см. src/node/runner.py).
+STATS_TAG = "api"
+STATS_PORT_PLACEHOLDER = 0
+# куда ноде-читателю обращаться: только петлябочный адрес, счётчики наружу не торчат
+STATS_LISTEN = "127.0.0.1"
+
 # VMess: alterId у панели всегда 0 (устаревший режим клиенты выкинули), шифр — "auto":
 # Xray и клиент сами выбирают то, что понимают оба (aes-128-gcm у старых клиентов,
 # chacha20-ietf-poly1305 у новых)
@@ -146,6 +164,38 @@ def host_tag(host: dict) -> str:
     return name or f"medusa-host-{host['id']}"
 
 
+def user_email(user: dict) -> str:
+    """Метка подписчика в конфиге Xray: по ней счётчик трафика возвращается человеку.
+
+    Имя пользователя, токен и его ключи в метку не попадают — только порядковый id из
+    базы панели. Нода, которая видит этот конфиг, не узнаёт из метки ничего нового:
+    uuid и пароли ей и так выдают, чтобы она подняла инбаунд.
+    """
+    identifier = user.get("id")
+    if identifier is None:
+        # без id (рендер вне базы панели: тесты, превью) метка всё равно остаётся
+        # стабильной — её можно сопоставить человеку по его же uuid
+        return f"{USER_EMAIL_PREFIX}{user_uuid(user['token'])[:8]}"
+    return f"{USER_EMAIL_PREFIX}{identifier}"
+
+
+def user_id_of_email(email: str) -> int | None:
+    """Обратный ход: панель по метке из ответа ноды находит своего пользователя.
+
+    Метка, которую панель сама не придумывал (`u` + не цифры), остаётся нераспознанной:
+    выдумывать пользователя на чужой строке панель не будет.
+    """
+    if not email.startswith(USER_EMAIL_PREFIX):
+        return None
+    raw = email[len(USER_EMAIL_PREFIX):]
+    return int(raw) if raw.isdigit() else None
+
+
+def hop_email(chain_id: int, hop_number: int) -> str:
+    """Метка перехода цепочки: трафик этого хопа считается на ноде, но не человеку."""
+    return f"{HOP_EMAIL_PREFIX}{chain_id}-{hop_number}"
+
+
 def clients_for(users: list[dict], protocol: str, host: dict | None = None) -> list[dict]:
     """Клиенты инбаунда: чем протокол узнаёт человека, тем и описывает.
 
@@ -153,13 +203,14 @@ def clients_for(users: list[dict], protocol: str, host: dict | None = None) -> l
     и «не дёргать ноду при неизменном составе».
     """
     if protocol == "trojan":
-        return [{"password": user_password(u["token"])} for u in users]
+        return [{"password": user_password(u["token"]), "email": user_email(u)} for u in users]
     if protocol == "ss":
         salt = f"ss:{host['id']}" if host else "ss"
-        return [{"password": user_password(u["token"], salt), "method": SS_CIPHER} for u in users]
+        return [{"password": user_password(u["token"], salt), "method": SS_CIPHER,
+                 "email": user_email(u)} for u in users]
     clients = []
     for u in users:
-        client = {"id": user_uuid(u["token"])}
+        client = {"id": user_uuid(u["token"]), "email": user_email(u)}
         if protocol == "vmess":
             client["security"] = VMESS_CIPHER      # Xray: согласуемый шифр vmess-клиента
         clients.append(client)
@@ -213,11 +264,15 @@ def hop_clients(chain_id: int, hop_number_: int, protocol: str) -> list[dict]:
     (своим uuid, паролем или коротким id), а дальше трафик идёт общим переходом. Иначе
     на каждый хоп и на каждого подписчика нужен был бы отдельный outbound.
     """
+    # метка перехода нужна, чтобы Xray вообще завёл счётчик: без email трафик хопа
+    # повис бы неотнесённым, и нода не рассказала бы о нём ничего
+    label = hop_email(chain_id, hop_number_)
     if protocol == "trojan":
-        return [{"password": hop_password(chain_id, hop_number_)}]
+        return [{"password": hop_password(chain_id, hop_number_), "email": label}]
     if protocol == "ss":
-        return [{"password": hop_password(chain_id, hop_number_), "method": SS_CIPHER}]
-    client = {"id": hop_uuid(chain_id, hop_number_)}
+        return [{"password": hop_password(chain_id, hop_number_), "method": SS_CIPHER,
+                 "email": label}]
+    client = {"id": hop_uuid(chain_id, hop_number_), "email": label}
     if protocol == "vmess":
         client["security"] = VMESS_CIPHER
     return [client]
@@ -478,4 +533,56 @@ def render_node_config(node: dict, hosts: list[dict], users: list[dict],
     }
     if rules:
         config["routing"] = {"rules": rules}
+    if inbounds:
+        # счётчики заводятся только когда есть что считать: без хостов Xray не поднимается
+        # вовсе (это и есть «хостов нет»), и внутренний api-инбаунд был бы единственной
+        # причиной запустить процесс впустую
+        config["stats"] = {}
+        # Xray включает счётчик пользователя только если он разрешён в политике уровня,
+        # на котором живут клиенты инбаунда (у панели все на уровне 0)
+        config["policy"] = {"levels": {"0": {"statsUserUplink": True, "statsUserDownlink": True}}}
+        config["api"] = {"tag": STATS_TAG, "services": ["StatsService"]}
+        config["inbounds"] = inbounds + [stats_inbound()]
+        # ответ api-инбаунда не должен уйти наружу: для него есть отдельный blackhole
+        config["outbounds"] = outbounds + [{"protocol": "blackhole", "tag": STATS_TAG}]
+        config.setdefault("routing", {})["rules"] = [{"inboundTag": [STATS_TAG],
+                                                      "outboundTag": STATS_TAG}] + rules
     return config
+
+
+def stats_inbound() -> dict[str, Any]:
+    """Внутренний инбаунд сервиса счётчиков.
+
+    `listen` — петлябочный адрес обязательно: этот порт слушает Xray на машине ноды, и
+    наружу он не должен выходить даже при публичном адресе ноды. Порт — заглушка:
+    панель не знает, что свободно на чужой машине, его подбирает нода (`apply_stats_port`).
+    """
+    return {"tag": STATS_TAG, "port": STATS_PORT_PLACEHOLDER, "listen": STATS_LISTEN,
+            "protocol": "dokodemo-door", "settings": {"address": "127.0.0.1"}}
+
+
+def apply_stats_port(config: dict, port: int) -> dict:
+    """Скопировать конфиг с конкретным портом счётчиков (0 -> подобранный нодой)."""
+    fixed = dict(config)
+    inbounds = []
+    for inbound in fixed.get("inbounds", []):
+        if inbound.get("tag") == STATS_TAG:
+            inbound = dict(inbound, port=port)
+        inbounds.append(inbound)
+    fixed["inbounds"] = inbounds
+    return fixed
+
+
+def stats_port_of(config: dict) -> int | None:
+    """Какой порт счётчиков в этом конфиге (None — инбаунда счётчиков нет)."""
+    for inbound in config.get("inbounds", []):
+        if inbound.get("tag") == STATS_TAG:
+            port = int(inbound.get("port") or 0)
+            return port or None
+    return None
+
+
+def used_ports(config: dict) -> set[int]:
+    """Порты, которые этот конфиг уже занимает: подбирать место для счётчиков нужно,
+    не наступая ни на один из них."""
+    return {int(i["port"]) for i in config.get("inbounds", []) if i.get("port")}

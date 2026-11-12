@@ -44,10 +44,14 @@ os.environ["MEDUSA_NODE_AUTO"] = "0"     # фоновый опрос здесь 
 NODE_KEY = "sk-api-xraytest0000000000000"
 STUB_LOG = tmp / "stub.log"
 STATE = tmp / "node" / "state.json"
+COUNTERS = tmp / "counters.json"      # что «отдаёт» счётчики заглушка Xray
+API_LOG = tmp / "stub-api.log"
 # вторая нода нужна для цепочек: хоп живёт на своей ноде, и её конфиг обязан прийти на неё
 NODE_KEY2 = "sk-api-xraytest2000000000000"
 STUB_LOG2 = tmp / "stub2.log"
 STATE2 = tmp / "node2" / "state.json"
+COUNTERS2 = tmp / "counters2.json"
+API_LOG2 = tmp / "stub2-api.log"
 
 FAILS = 0
 
@@ -64,6 +68,14 @@ args=" $* "
 case "$args" in
   *" version "*) echo "Xray 25.8.3 (stub)"; exit 0 ;;
   *"-test"*)     echo "configuration accepted"; exit 0 ;;
+  *" api "*)
+    # вызов пишется в отдельный лог: проверка «сколько раз Xray стартовал» читает другой
+    echo "$args" >> "$XRAY_STUB_API_LOG"
+    if [ -f "$XRAY_STUB_COUNTERS" ]; then cat "$XRAY_STUB_COUNTERS"; else echo '{"stat": []}'; fi
+    # Xray по -reset обнуляет счётчики после чтения — заглушка делает так же, иначе
+    # проверка накопления трафика превратилась бы в подгонку цифр
+    case "$args" in *" -reset "*) echo '{"stat": []}' > "$XRAY_STUB_COUNTERS" ;; esac
+    exit 0 ;;
 esac
 echo "$args" >> "$XRAY_STUB_LOG"
 exec sleep 300
@@ -118,8 +130,12 @@ def main() -> int:
     stub.write_text(STUB, encoding="utf-8")
     stub.chmod(0o755)
     STUB_LOG.touch()
+    API_LOG.touch()
+    COUNTERS.write_text('{"stat": []}', encoding="utf-8")
 
     STUB_LOG2.touch()
+    API_LOG2.touch()
+    COUNTERS2.write_text('{"stat": []}', encoding="utf-8")
     node_port = free_port()
     node2_port = free_port()
     node_proc = subprocess.Popen(
@@ -127,7 +143,8 @@ def main() -> int:
          "--host", "127.0.0.1", "--port", str(node_port)],
         cwd=ROOT,
         env={**os.environ, "MEDUSA_NODE_STATE": str(STATE), "MEDUSA_NODE_API_KEY": NODE_KEY,
-             "MEDUSA_XRAY_BIN": str(stub), "XRAY_STUB_LOG": str(STUB_LOG)},
+             "MEDUSA_XRAY_BIN": str(stub), "XRAY_STUB_LOG": str(STUB_LOG), "XRAY_STUB_API_LOG": str(API_LOG),
+             "XRAY_STUB_COUNTERS": str(COUNTERS)},
     )
 
     node2_proc = subprocess.Popen(
@@ -135,7 +152,8 @@ def main() -> int:
          "--host", "127.0.0.1", "--port", str(node2_port)],
         cwd=ROOT,
         env={**os.environ, "MEDUSA_NODE_STATE": str(STATE2), "MEDUSA_NODE_API_KEY": NODE_KEY2,
-             "MEDUSA_XRAY_BIN": str(stub), "XRAY_STUB_LOG": str(STUB_LOG2)},
+             "MEDUSA_XRAY_BIN": str(stub), "XRAY_STUB_LOG": str(STUB_LOG2), "XRAY_STUB_API_LOG": str(API_LOG2),
+             "XRAY_STUB_COUNTERS": str(COUNTERS2)},
     )
 
     import httpx
@@ -265,12 +283,30 @@ def main() -> int:
             cfg_path = STATE.parent / "xray" / "config.json"
             ok(cfg_path.exists(), f"рабочий конфиг ноды записан: {cfg_path}")
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-            by_port = {i["port"]: i for i in cfg["inbounds"]}
-            ok({i["tag"] for i in cfg["inbounds"]} == {"R443", "T8443", "N3011", "G3077",
-                                                       "V2083", "TR2095", "TR2096", "S3055"},
-               f"теги инбаундов — имена хостов, как их видит человек: {sorted(i['tag'] for i in cfg['inbounds'])}")
+            # инбаунд сервиса счётчиков — не хост: его нет ни в списке хостов панели,
+            # ни в подписке; но он слушает на машине ноды, поэтому проверяем его отдельно
+            host_inbounds = [i for i in cfg["inbounds"] if i["tag"] != "api"]
+            stats_in = next(i for i in cfg["inbounds"] if i["tag"] == "api")
+            by_port = {i["port"]: i for i in host_inbounds}
+            ok({i["tag"] for i in host_inbounds} == {"R443", "T8443", "N3011", "G3077",
+                                                     "V2083", "TR2095", "TR2096", "S3055"},
+               f"теги инбаундов — имена хостов, как их видит человек: {sorted(i['tag'] for i in host_inbounds)}")
             ok(sorted(by_port) == [443, 2083, 2095, 2096, 3011, 3055, 3077, 8443],
                f"инбаунды по портам хостов: {sorted(by_port)}")
+            ok(stats_in["listen"] == "127.0.0.1" and stats_in["port"] > 0
+               and stats_in["port"] not in by_port and stats_in["protocol"] == "dokodemo-door",
+               f"сервис счётчиков — петлюбочный ({stats_in['listen']}:{stats_in['port']}) и не наступил "
+               "на порты хостов: панель писала туда 0, порт подобрала нода")
+            ok(cfg.get("stats") is not None and cfg.get("api", {}).get("tag") == "api"
+               and cfg["policy"]["levels"]["0"]["statsUserUplink"] and cfg["policy"]["levels"]["0"]["statsUserDownlink"],
+               "Xray разрешил считать трафик подписчиков: stats + policy счётчики + api сервис")
+            ok(any(o["tag"] == "api" and o["protocol"] == "blackhole" for o in cfg["outbounds"])
+               and any(r.get("outboundTag") == "api" for r in cfg["routing"]["rules"]),
+               "ответ сервиса счётчиков не уходит наружу: для него отдельный blackhole и правило")
+            labels = {c.get("email") for i in host_inbounds
+                      for c in (i["settings"].get("clients") or i["settings"].get("users") or [])}
+            ok(all(label and label.startswith("u") for label in labels) and len(labels) == 1,
+               f"у подписчика в конфиге есть метка, по которой и считается его трафик: {sorted(labels)}")
 
             r = by_port[443]
             ok(r["streamSettings"]["security"] == "reality" and r["streamSettings"]["realitySettings"]["privateKey"],
@@ -378,16 +414,17 @@ def main() -> int:
             ok(row["applyError"] and row["configDirty"] is True, "ошибка применения записана в строку ноды")
 
             client.delete(f"/api/hosts/{plain['id']}")
-            cfg = wait_cfg(cfg_path, lambda c: len(c["inbounds"]) == 7)
-            ok(len(cfg["inbounds"]) == 7, "удалённый хост исчез из конфига")
+            cfg = wait_cfg(cfg_path, lambda c: len([i for i in c["inbounds"] if i["tag"] != "api"]) == 7)
+            ok(len([i for i in cfg["inbounds"] if i["tag"] != "api"]) == 7,
+               "удалённый хост исчез из конфига (счётчики на месте — они не хост)")
 
             # два хоста с одним именем на одной ноде — порт уникален, а тег нет:
             # второй получает имя с id, теги в конфиге не должны сталкиваться
             dup = client.post("/api/hosts", json={"name": "R443", "node": "stub", "protocol": "vless",
                                                    "port": free_port(), "network": "tcp", "security": "none",
                                                    "address": "127.0.0.1"}).json()
-            cfg = wait_cfg(cfg_path, lambda c: len(c["inbounds"]) == 8)
-            tags = [i["tag"] for i in cfg["inbounds"]]
+            cfg = wait_cfg(cfg_path, lambda c: len([i for i in c["inbounds"] if i["tag"] != "api"]) == 8)
+            tags = [i["tag"] for i in cfg["inbounds"] if i["tag"] != "api"]
             ok(len(set(tags)) == 8 and "R443" in tags and any(tag == f"R443-{dup['id']}" for tag in tags),
                f"одноимённые хосты получили разные теги: {sorted(tags)}")
 
@@ -448,6 +485,66 @@ def main() -> int:
             started_lines = [x for x in STUB_LOG.read_text(encoding="utf-8").splitlines() if x.strip()]
             ok(len(started_lines) == final["appliedRev"],
                f"каждое настоящее применение перезапускало Xray: стартов {len(started_lines)}, ревизий {final['appliedRev']}")
+
+            # --- трафик: насчитал Xray -> нода скопила -> панель разложила по людям ---
+            # Заглушка отвечает ровно теми счётчиками, что ей подложили, и обнуляет их
+            # после чтения (`-reset`), как это делает настоящий Xray. Живой трафик на
+            # настоящем Xray проверяется в tools/live_demo.py.
+            def counters(stat: list[dict]) -> None:
+                COUNTERS.write_text(json.dumps({"stat": stat}), encoding="utf-8")
+
+            def node_row(node_id: int) -> dict:
+                return next(n for n in client.get("/api/nodes").json() if n["id"] == node_id)
+
+            def user_row(name: str) -> dict:
+                return next(u for u in client.get("/api/users").json() if u["name"] == name)
+
+            vasya = user_row("vasya")
+            counters([{"name": f"user>>>u{vasya['id']}>>>traffic>>>uplink", "value": 1000},
+                     {"name": f"user>>>u{vasya['id']}>>>traffic>>>downlink", "value": 2000},
+                     {"name": "user>>>hop77-1>>>traffic>>>downlink", "value": 500},
+                     {"name": "user>>>u999>>>traffic>>>uplink", "value": 10}])
+            report = client.post(f"/api/nodes/{node['id']}/check").json()
+            traffic = report.get("traffic") or {}
+            ok(report["ok"] and traffic.get("bytes") == 3510 and not traffic.get("error"),
+               f"панель забрала счётчики у ноды одним походом: {traffic}")
+            row = node_row(node["id"])
+            ok(row["traffic"] == 3510 and row["trafficError"] is None,
+               f"строка ноды показывает её накопленный трафик: {row['traffic']} байт")
+            users = client.get("/api/users").json()
+            ok(user_row("vasya")["used"] == 3000,
+               f"трафик подписчика опознан по метке u<id>: vasya {user_row('vasya')['used']}")
+            ok(sum(u["used"] for u in users) == 3000,
+               "транзит цепочки (hop77-1) и метка человека, которого в панели нет (u999), "
+               "остались трафиком ноды и не приписаны никому")
+
+            # повторный поход при пустых счётчиках: Xray обнулил их после чтения, а цифры
+            # панели обязаны остаться — накопленное не теряется между опросами
+            again = client.post(f"/api/nodes/{node['id']}/check").json()
+            ok(again["traffic"]["bytes"] == 3510 and node_row(node["id"])["traffic"] == 3510
+               and user_row("vasya")["used"] == 3000,
+               f"повторная проверка не удваивает байты: {again['traffic']['bytes']}")
+
+            counters([{"name": f"user>>>u{vasya['id']}>>>traffic>>>uplink", "value": 500}])
+            third = client.post(f"/api/nodes/{node['id']}/check").json()
+            ok(third["traffic"]["bytes"] == 4010 and user_row("vasya")["used"] == 3500,
+               f"новые байты прибавляются к прежним, а не заменяют их: "
+               f"{third['traffic']['bytes']} / vasya {user_row('vasya')['used']}")
+
+            quick = client.post(f"/api/nodes/{node['id']}/check").json()
+            ok(quick["traffic"]["bytes"] == 4010 and quick["traffic"]["labels"] == 3,
+               "второй поход подряд ничего не удваивает: Xray обнулил счётчики после чтения, "
+               "но накопленное нодой остаётся")
+            calls = API_LOG.read_text(encoding="utf-8").splitlines()
+            ok(calls and all("api statsquery" in line and "-pattern=user>>>" in line and "-reset" in line
+                             and f"--server=127.0.0.1:{stats_in['port']}" in line for line in calls),
+               f"нода звала Xray за счётчиками по его же CLI, на подобранный ею петлюбочный порт: {calls[-1].strip()}")
+            status = httpx.get(f"http://127.0.0.1:{node_port}/node/status",
+                               headers={"Authorization": f"Bearer {NODE_KEY}"}, timeout=5).json()
+            ok(status["trafficBytes"] == 4010 and status["statsPort"] == stats_in["port"]
+               and {item["email"] for item in status["userTraffic"]} == {f"u{vasya['id']}", "hop77-1", "u999"},
+               f"нода отдаёт панелью то, что посчитала сама: {status['trafficBytes']} байт, "
+               f"{len(status['userTraffic'])} меток")
     finally:
         node2_proc.terminate()
         try:

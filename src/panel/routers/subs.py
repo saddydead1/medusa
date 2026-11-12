@@ -38,6 +38,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, Response
 
 from src.panel.db import get_conn
+from src.panel.node_traffic import user_traffic_total
 from src.panel.routers.chains import hops_of
 from src.panel.subscription import (clash_document, clash_proxies, host_columns,
                                     host_link, links_document)
@@ -429,11 +430,14 @@ def subscription_page(token: str, request: Request,
     hosts, chains = fetch_hosts(conn), fetch_chains(conn)
 
     alive = user["status"] == "active"
+    # потраченное считается по отчётам нод, а не по полю в таблице людей: отключённому
+    # человеку история остаётся, но новых байтов уже не будет
+    used = user_traffic_total(conn, int(user["id"]))
     status_class = "badge b-ok live" if alive else "badge b-off"
     status_text = s["active"] if alive else s["disabled"]
 
     stats = f"""<div class="stats">
-      <div class="stat"><i class="chip">{icon("activity")}</i><b>{human(user["used_bytes"])}</b><span>{s["stat.used"]}</span></div>
+      <div class="stat"><i class="chip">{icon("activity")}</i><b>{human(used)}</b><span>{s["stat.used"]}</span></div>
       <div class="stat"><i class="chip">{icon("calendar")}</i><b>{since(user["created_at"])}</b><span>{s["stat.since"]}</span></div>
     </div>"""
 

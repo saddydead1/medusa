@@ -18,7 +18,7 @@ from pathlib import Path
 from src.core.api_keys import API_KEY_PREFIX, api_key_fingerprint, looks_like_api_key, new_api_key
 from src.node.config import NodeConfig
 
-STATE_VERSION = 2
+STATE_VERSION = 3
 
 # API-ключ при первом запуске должен бросаться в глаза: его нужно скопировать в панель,
 # а лог к тому моменту уже успевает закрыться служебными строками uvicorn.
@@ -51,6 +51,15 @@ class NodeIdentity:
     last_error: str | None = None
     started_at: int = field(default_factory=now_ms)
     key_source: str = "state"          # state | env | generated
+    # --- трафик, который нода посчитала сама -------------------------------------
+    # Счётчики Xray живут в памяти его процесса: перезапуск ноды или новое применение
+    # конфига обнуляют их. Поэтому нода снимает счётчики сброшенными (`-reset`: после
+    # чтения у Xray остаётся ноль) и копит байты у себя — так трафик не теряется при
+    # перезапуске и не считается дважды.
+    traffic_bytes: int = 0                                       # по всем меткам, включая транзит
+    user_traffic: dict[str, int] = field(default_factory=dict)   # метка -> накопленные байты
+    stats_at: int = 0                                            # когда счётчики снимались последний раз
+    stats_port: int | None = None                                # порт сервиса счётчиков (подбирает нода)
 
     @property
     def uptime_ms(self) -> int:
@@ -83,6 +92,10 @@ def save_identity(identity: NodeIdentity) -> None:
         "appliedRev": identity.applied_rev,
         "lastApplyAt": identity.last_apply_at,
         "lastError": identity.last_error,
+        "trafficBytes": identity.traffic_bytes,
+        "userTraffic": identity.user_traffic,
+        "statsAt": identity.stats_at,
+        "statsPort": identity.stats_port,
     }
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -112,6 +125,11 @@ def load_identity(config: NodeConfig) -> NodeIdentity:
         last_apply_at=stored.get("lastApplyAt"),
         last_error=stored.get("lastError"),
         key_source=source,
+        traffic_bytes=int(stored.get("trafficBytes") or 0),
+        user_traffic={str(k): int(v) for k, v in (stored.get("userTraffic") or {}).items()
+                      if isinstance(v, (int, float))},
+        stats_at=int(stored.get("statsAt") or 0),
+        stats_port=(int(stored["statsPort"]) if stored.get("statsPort") else None),
     )
 
     # env-ключ мог отличаться от записанного: фиксируем победителя, иначе после

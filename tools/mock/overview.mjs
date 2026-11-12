@@ -47,7 +47,13 @@ ok(sum > 99 && sum < 101, 'доли нод в общей полосе sums в ' 
 ok(new Set(segs.map(x=>x.c)).size === 3, 'каждая нода своего цвета: ' + segs.map(x=>x.c).join(', '));
 const rowsTxt = (await p.locator('.flowrow').allInnerTexts()).map(x=>x.toLowerCase().replace(/\s+/g,' '));
 ok(rowsTxt.every(x=>/гб/.test(x)), 'в строках есть трафик в ГБ');
-ok(rowsTxt.every(x=>/% от общего/.test(x)), 'в строках есть доля от общего трафика');
+const stale = rowsTxt.filter(x=>/не обновляется/.test(x));
+ok(stale.length === 1, 'одна нода честно помечена, что её счётчики молчат: ' + stale.join(' | '));
+ok(rowsTxt.filter(x=>!stale.includes(x)).every(x=>/% от общего/.test(x)),
+   'у нод, которые считают, есть доля от общего трафика');
+ok(stale.every(x=>/гб/.test(x)), 'молчавшая нода не превращается в ноль: насчитанное остаётся');
+const staleWhy = await p.locator('.flowrow b.fstale').first().getAttribute('title');
+ok(/бинарника xray/.test(staleWhy || ''), 'причина молчания счётчиков лежит в подсказке: ' + staleWhy);
 ok(!rowsTxt.every(x=>/xray/.test(x)), 'версии xray в строках обзора больше нет');
 ok(await p.locator('.flowrow .badge').count() === 3, 'у каждой ноды есть индикатор статуса');
 const badges = await p.locator('.flowrow .badge').allInnerTexts();

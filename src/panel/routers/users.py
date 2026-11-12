@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from src.panel import config_push
 from src.panel.db import get_conn, now_ms
+from src.panel.node_traffic import user_traffic_total
 from src.panel.deps import bad_request, conflict, fetch_one, writer
 from src.panel.schemas import UserCreate, UserPatch
 from src.panel.security import new_user_token
@@ -14,13 +15,13 @@ from src.panel.security import new_user_token
 router = APIRouter(prefix="/api/users", tags=["users"])
 
 
-def as_dict(row: sqlite3.Row) -> dict:
+def as_dict(row: sqlite3.Row, conn: sqlite3.Connection) -> dict:
     return {
         "id": row["id"],
         "name": row["name"],
         "token": row["token"],
         "status": row["status"],
-        "used": row["used_bytes"],
+        "used": user_traffic_total(conn, int(row["id"])),
         "client": row["client"],
     }
 
@@ -28,7 +29,8 @@ def as_dict(row: sqlite3.Row) -> dict:
 @router.get("")
 def list_users(conn: sqlite3.Connection = Depends(get_conn)) -> list[dict]:
     rows = conn.execute("SELECT * FROM users ORDER BY name").fetchall()
-    return [as_dict(r) for r in rows]
+    # `used` не хранится в таблице людей: это сумма того, что насчитала каждая нода
+    return [as_dict(r, conn) for r in rows]
 
 
 @router.post("", status_code=201)
@@ -39,15 +41,15 @@ def create_user(
 ) -> dict:
     try:
         conn.execute(
-            "INSERT INTO users (name, token, status, used_bytes, client, created_at) VALUES (?,?,?,?,?,?)",
-            (body.name, new_user_token(), "active", 0, body.client, now_ms()),
+            "INSERT INTO users (name, token, status, client, created_at) VALUES (?,?,?,?,?)",
+            (body.name, new_user_token(), "active", body.client, now_ms()),
         )
     except sqlite3.IntegrityError:
         raise conflict(f"пользователь «{body.name}» уже есть")
     conn.commit()
     config_push.mark_dirty(conn)      # список клиентов есть в конфиге каждой ноды
     config_push.schedule_push()
-    return as_dict(fetch_one(conn, "SELECT * FROM users WHERE name = ?", (body.name,)))
+    return as_dict(fetch_one(conn, "SELECT * FROM users WHERE name = ?", (body.name,)), conn)
 
 
 @router.patch("/{user_id}")
@@ -67,7 +69,7 @@ def patch_user(
     conn.commit()
     config_push.mark_dirty(conn)      # пользователь появился/исчез/отключился — конфиги устарели
     config_push.schedule_push()
-    return as_dict(fetch_one(conn, "SELECT * FROM users WHERE id = ?", (user_id,)))
+    return as_dict(fetch_one(conn, "SELECT * FROM users WHERE id = ?", (user_id,)), conn)
 
 
 @router.delete("/{user_id}", status_code=204)

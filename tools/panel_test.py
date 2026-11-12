@@ -50,6 +50,11 @@ def chain_migration_checks() -> None:
     path = Path(tempfile.mkdtemp(prefix="medusa-oldchain-")) / "old.db"
     init_db(path)
     conn = connect(path)
+    # добавляем то, что в прежних базах было придумано вместо настоящих счётчиков:
+    # миграция обязана это убрать, а не оставить мёртвыми колонками
+    conn.execute("ALTER TABLE users ADD COLUMN used_bytes INTEGER NOT NULL DEFAULT 0")
+    conn.execute("ALTER TABLE nodes ADD COLUMN users_count INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
     # ключи у нод есть: миграция помечает грязными только те ноды, которым что-то можно отправить
     node_fi = conn.execute("INSERT INTO nodes (name, address, api_key, created_at) VALUES ('fi','127.0.0.1','sk-api-fi',1)").lastrowid
     node_de = conn.execute("INSERT INTO nodes (name, address, api_key, created_at) VALUES ('de','127.0.0.2','sk-api-de',1)").lastrowid
@@ -89,6 +94,87 @@ def chain_migration_checks() -> None:
            f"порт хопа занял ноду и в прежней базе: {exc}")
     dirty = conn.execute("SELECT COUNT(*) c FROM nodes WHERE config_dirty = 1").fetchone()["c"]
     ok(dirty == 2, f"обе ноды прежней цепочки помечены грязными — их конфиги пересоберутся сами: {dirty}")
+    legacy = ({row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+              & {"used_bytes"}) | ({row["name"] for row in conn.execute("PRAGMA table_info(nodes)")}
+                                   & {"users_count"})
+    ok(not legacy, f"прежние поля-заглушки ({sorted(legacy) or 'users.used_bytes, nodes.users_count'}) "
+                   "из базы убраны: трафик и подписчиков теперь считают, а не хранят по-старому")
+    conn.close()
+
+
+def traffic_checks(client: TestClient) -> None:
+    """Как панель раскладывает отчёты нод по людям.
+
+    Отчёт ноды собирается вручную (`NodeStatus`): проверка касается того, что делает
+    панель — сопоставление меток, сумма по нодам, каскадные удаления и честное сообщение
+    о том, что счётчики не считались. Саму связку «нода сняла счётчики с Xray» проверяют
+    `node_test` и `xray_test`, живой трафик — `live_demo`.
+    """
+    from src.core.contract import NodeStatus, UserTraffic
+    from src.panel.db import connect, now_ms
+    from src.panel.node_traffic import apply_status, user_traffic_total
+
+    node_a = client.post("/api/nodes", json={"name": "tr-a", "address": "10.9.0.1",
+                                             "apiPort": 9501, "apiKey": "sk-api-tra0123456789000000"}).json()
+    node_b = client.post("/api/nodes", json={"name": "tr-b", "address": "10.9.0.2",
+                                             "apiPort": 9502, "apiKey": "sk-api-trb0123456789000000"}).json()
+    vasya = client.post("/api/users", json={"name": "tr-vasya"}).json()
+    masha = client.post("/api/users", json={"name": "tr-masha"}).json()
+    conn = connect()
+
+    def status(node: str, labels: list[tuple[str, int]], error: str | None = None) -> NodeStatus:
+        total = sum(amount for _, amount in labels)
+        return NodeStatus(fingerprint=node, agentVersion="0.1.0", uptimeMs=1000, trafficBytes=total,
+                          userTraffic=[UserTraffic(email=email, bytes=amount) for email, amount in labels],
+                          statsAt=now_ms(), statsPort=39113, statsError=error)
+
+    def node_row(node_id: int) -> dict:
+        return next(n for n in client.get("/api/nodes").json() if n["id"] == node_id)
+
+    def user_row(user_id: int) -> dict:
+        return next(u for u in client.get("/api/users").json() if u["id"] == user_id)
+
+    apply_status(conn, node_a["id"], status("a", [(f"u{vasya['id']}", 1000), (f"u{masha['id']}", 300),
+                                                   ("hop5-1", 200), ("u999", 10)]))
+    apply_status(conn, node_b["id"], status("b", [(f"u{vasya['id']}", 500)]))
+    ok(user_traffic_total(conn, vasya["id"]) == 1500,
+       f"трафик человека — сумма по всем его нодам: tr-vasya {user_traffic_total(conn, vasya['id'])}")
+    ok(node_row(node_a["id"])["traffic"] == 1510 and node_row(node_b["id"])["traffic"] == 500,
+       "строки нод показывают то, что насчитала каждая нода, включая транзит цепочек")
+    ok(user_row(vasya["id"])["used"] == 1500 and user_row(masha["id"])["used"] == 300,
+       "список пользователей отдаёт их настоящие байты, а не ноль")
+    ok(sum(u["used"] for u in client.get("/api/users").json()) == 1800,
+       "ни транзит цепочки (hop5-1), ни метка отсутствующего человека (u999) людям не приписаны")
+
+    apply_status(conn, node_a["id"], status("a", [(f"u{vasya['id']}", 1000), (f"u{masha['id']}", 300),
+                                                   ("hop5-1", 200), ("u999", 10)]))
+    ok(user_traffic_total(conn, vasya["id"]) == 1500,
+       "повтор того же отчёта ноды ничего не удваивает: значения накопленные, а не событийные")
+
+    labels = [(f"u{vasya['id']}", 1000), (f"u{masha['id']}", 300), ("hop5-1", 200), ("u999", 10)]
+    apply_status(conn, node_a["id"], status("a", labels, error="Xray не поднят — счётчики не сняты"))
+    ok(node_row(node_a["id"])["trafficError"] == "Xray не поднят — счётчики не сняты",
+       "причина, по которой счётчики в этом круге молчали, доходит до строки ноды")
+    ok(conn.execute("SELECT COUNT(*) c FROM node_traffic WHERE node_id = ?", (node_a["id"],)).fetchone()["c"] == 4,
+       "отчёт с ошибкой сохраняет прежние метки: нода рассказывает всё, что насчитала, а не только "
+       "то, что удалось снять сейчас")
+    apply_status(conn, node_a["id"], status("a", [(f"u{vasya['id']}", 1000)]))
+    ok(conn.execute("SELECT COUNT(*) c FROM node_traffic WHERE node_id = ?", (node_a["id"],)).fetchone()["c"] == 1,
+       "нода перестала рассказывать про метку — панель убирает её: подтверждать эту цифру нечем")
+
+    client.delete(f"/api/users/{masha['id']}")
+    ok(user_traffic_total(conn, vasya["id"]) == 1500 and conn.execute(
+        "SELECT COUNT(*) c FROM node_traffic WHERE email = ?", (f"u{masha['id']}",)).fetchone()["c"] == 0,
+       "удалённый пользователь уносит свою историю трафика, чужая остаётся")
+
+    client.delete(f"/api/nodes/{node_b['id']}")
+    ok(user_traffic_total(conn, vasya["id"]) == 1000,
+       f"удаление ноды убирает её часть трафика: tr-vasya снова {user_traffic_total(conn, vasya['id'])}")
+
+    conn.execute("UPDATE users SET status = 'disabled' WHERE id = ?", (vasya["id"],))
+    conn.commit()
+    ok(node_row(node_a["id"])["users"] == 0,
+       "отключённый подписчик перестает считаться обслуживаемым этой нодой")
     conn.close()
 
 
@@ -739,6 +825,7 @@ def main() -> int:
         ok(client.get("/api/chains").status_code == 200, "список цепочек работает")
 
     chain_migration_checks()
+    traffic_checks(client)
 
     print(f"\nпровалов: {FAILS}")
     return 1 if FAILS else 0

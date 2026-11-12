@@ -16,7 +16,9 @@ from typing import Any
 from src.core.api_keys import api_key_fingerprint
 from src.panel import config_push
 from src.panel.db import now_ms
-from src.panel.nodes_client import NodeError, NodeTarget, node_health, node_identity
+from src.panel.node_traffic import apply_status
+from src.panel.nodes_client import (NodeError, NodeTarget, node_health, node_identity,
+                                    node_status)
 from src.panel.nodes_rows import NODE_COLUMNS, as_dict
 
 NO_KEY = "нода отвечает, но API-ключа для неё в панели нет"
@@ -87,8 +89,28 @@ def check_node(conn: sqlite3.Connection, node_id: int) -> dict[str, Any]:
     # и второй раз стучаться незачем
     if report["ok"] and row["config_dirty"]:
         report["apply"] = config_push.push_node(conn, node_id)
+    if report["ok"]:
+        # трафик читается после применения: свежий конфиг перезапустил Xray, и его
+        # счётчики现在开始 с нуля — читать их до применения значит потерять байты
+        report["traffic"] = read_traffic(conn, node_id, target, timeout)
     report["node_row"] = as_dict(fetch_node(conn, node_id))
     return report
+
+
+def read_traffic(conn: sqlite3.Connection, node_id: int, target: NodeTarget,
+                 timeout: float) -> dict[str, object]:
+    """Счётчики трафика этой ноды. Их отдаёт `/node/status` — другого пути нет.
+
+    Отказ чтения не обнуляет прежние цифры: байты были настоящими, а причина, по которой
+    нода молчит сейчас, записывается отдельно (`nodes.traffic_error`) и видна человеку.
+    """
+    try:
+        status = node_status(target, timeout)
+    except NodeError as err:
+        conn.execute("UPDATE nodes SET traffic_error = ? WHERE id = ?", (str(err), node_id))
+        conn.commit()
+        return {"bytes": None, "labels": 0, "at": None, "error": str(err)}
+    return apply_status(conn, node_id, status)
 
 
 def store_report(conn: sqlite3.Connection, node_id: int, report: dict[str, Any]) -> None:

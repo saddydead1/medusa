@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -17,6 +18,7 @@ from src.node.api import router
 from src.node.config import NodeConfig
 from src.node.identity import load_identity
 from src.node.runner import XrayRunner
+from src.node.traffic import TrafficLedger, self_poll
 from src.node.xray import resolve_xray_bin
 
 
@@ -29,6 +31,14 @@ def create_app(config: NodeConfig | None = None) -> FastAPI:
         app.state.node_identity = identity
         runner = XrayRunner(settings, identity)
         app.state.xray_runner = runner
+        # ledger живёт рядом с раннером: он копит счётчики в том же файле состояния
+        ledger = TrafficLedger(settings, identity, runner)
+        runner.ledger = ledger
+        app.state.traffic_ledger = ledger
+        # нода снимает счётчики и сама, не дожидаясь панели: Xray хранит их в памяти
+        # своего процесса, и ждать панели, чтобы их не потерять, — плохая идея
+        stats_stop = asyncio.Event()
+        stats_task = asyncio.create_task(self_poll(ledger, stats_stop))
         xray_bin = resolve_xray_bin(settings)
         print(
             f"[medusa-node] API http://{settings.host}:{settings.port}{router.prefix}/health, "
@@ -41,8 +51,12 @@ def create_app(config: NodeConfig | None = None) -> FastAPI:
         )
         runner.autostart()
         yield
+        stats_stop.set()
+        stats_task.cancel()
+        runner.harvest()            # последний снимок: то, что наработало после последнего круга
         runner.shutdown()
         app.state.xray_runner = None
+        app.state.traffic_ledger = None
         app.state.node_identity = None
 
     app = FastAPI(

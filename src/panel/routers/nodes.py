@@ -30,9 +30,9 @@ def create_node(
 ) -> dict:
     try:
         conn.execute(
-            """INSERT INTO nodes (name, address, online, xray_version, users_count, traffic_bytes,
+            """INSERT INTO nodes (name, address, online, xray_version, traffic_bytes,
                                    api_port, api_key, created_at)
-               VALUES (?,?,0,?,0,0,?,?,?)""",
+               VALUES (?,?,0,?,0,?,?,?)""",        # трафик и подписчиков считает нода, не INSERT
             (body.name, body.address, body.xray, body.apiPort or 9443, body.apiKey, now_ms()),
         )
     except sqlite3.IntegrityError:

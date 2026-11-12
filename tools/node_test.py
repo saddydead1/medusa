@@ -105,6 +105,109 @@ def main() -> int:
         who = client.get("/node/identity", headers=bearer(state_key(missing_state)))
         ok(who.json()["xrayVersion"] is None, "без Xray нода не придумывает версию, а говорит null")
 
+    # --- трафик: нода снимает счётчики с Xray и копит их у себя ---
+    import time
+
+    from src.core.xray_config import render_node_config
+    from src.node.traffic import parse_counters
+
+    counters = tmp / "counters.json"
+    counters.write_text('{"stat": []}', encoding="utf-8")
+    xray2 = tmp / "fake-xray-stats"
+    xray2.write_text(f"""#!/usr/bin/env bash
+args=" $* "
+case "$args" in
+  *" version "*) echo "Xray 25.8.3 (Xray, Penetrates Everything.) abc"; exit 0 ;;
+  *"-test"*)     echo "configuration accepted"; exit 0 ;;
+  *" api "*)     cat {counters}; case "$args" in *" -reset "*) echo '{{"stat": []}}' > {counters} ;; esac; exit 0 ;;
+esac
+exec sleep 120
+""", encoding="utf-8")
+    xray2.chmod(0o755)
+
+    traffic_state = tmp / "traffic" / "state.json"
+    host = {"id": 1, "name": "plain", "protocol": "vless", "port": 33001, "network": "tcp",
+            "security": "none", "address": "127.0.0.1", "node_address": "127.0.0.1",
+            "hop_index": -1, "chain_id": None}
+    users = [{"id": 7, "name": "vasya", "token": "tok-vasya", "status": "active"}]
+    config = render_node_config({"id": 1, "name": "n", "address": "127.0.0.1"}, [host], users)
+    key_holder: dict[str, str] = {}
+
+    with TestClient(create_app(NodeConfig(state_path=traffic_state, xray_bin=str(xray2)))) as client:
+        key = state_key(traffic_state)
+        key_holder["key"] = key
+        applied = client.put("/node/config", headers=bearer(key),
+                             json={"revision": 1, "config": config, "certs": []}).json()
+        ok(applied["ok"], f"конфиг со счётчиками принят ({applied['error']})")
+        first = client.get("/node/status", headers=bearer(key)).json()
+        stats_port = first["statsPort"]
+        ok(stats_port and first["trafficBytes"] == 0 and first["statsError"] is None,
+           f"нода подобрала порт счётчиков и честно говорит 0 до всякого трафика: {first}")
+        written = json.loads((traffic_state.parent / "xray" / "config.json").read_text(encoding="utf-8"))
+        api_in = next(i for i in written["inbounds"] if i["tag"] == "api")
+        ok(api_in["port"] == stats_port and api_in["listen"] == "127.0.0.1",
+           f"в рабочий конфиг нода вписала тот же петлюбочный порт, что и называет панели: {api_in['port']}")
+
+        counters.write_text(json.dumps({"stat": [
+            {"name": "user>>>u7>>>traffic>>>uplink", "value": 1200},
+            {"name": "user>>>u7>>>traffic>>>downlink", "value": 3000},
+            {"name": "user>>>hop3-1>>>traffic>>>downlink", "value": 400},
+            {"name": "user>>>u7>>>traffic>>>uplink"},        # после -reset Xray отдаёт имена без значения
+        ]}), encoding="utf-8")
+        read = client.get("/node/status", headers=bearer(key)).json()
+        ok(read["trafficBytes"] == 4600 and read["statsError"] is None,
+           f"счётчики сняты и сложены (uplink+downlink, пустое значение = 0): {read['trafficBytes']}")
+        ok({(item["email"], item["bytes"]) for item in read["userTraffic"]}
+           == {("u7", 4200), ("hop3-1", 400)},
+           f"метки разложены по людям и переходам: {read['userTraffic']}")
+
+        counters.write_text(json.dumps({"stat": [
+            {"name": "user>>>u7>>>traffic>>>uplink", "value": 800}]}), encoding="utf-8")
+        again = client.get("/node/status", headers=bearer(key)).json()
+        ok(again["trafficBytes"] == 5400
+           and next(i for i in again["userTraffic"] if i["email"] == "u7")["bytes"] == 5000,
+           f"новые байты прибавляются к накопленным нодой, а не заменяют их: "
+           f"{again['trafficBytes']} / {again['userTraffic']}")
+
+    # перезапуск ноды: Xray поднялся с прежним конфигом, а накопленное взялось из состояния
+    with TestClient(create_app(NodeConfig(state_path=traffic_state, xray_bin=str(xray2)))) as second:
+        key = state_key(traffic_state)
+        status = second.get("/node/status", headers=bearer(key)).json()
+        ok(status["trafficBytes"] == 5400 and status["statsPort"] == stats_port,
+           f"после перезапуска ноды её трафик и порт счётчики на месте: {status['trafficBytes']} на {status['statsPort']}")
+        ok(json.loads(traffic_state.read_text(encoding="utf-8"))["userTraffic"]["u7"] == 5000,
+           "накопленные метки лежат в файле состояния ноды (0600), а не в памяти процесса")
+
+    # Xray без сервиса счётчиков: цифры не исчезают, но появляется честная причина
+    broken = tmp / "broken" / "state.json"
+    xray_broken = tmp / "fake-xray-broken"
+    xray_broken.write_text("""#!/bin/sh
+if [ "$1" = version ]; then echo "Xray 25.8.3 x"; exit 0; fi
+if [ "$1" = "-test" ]; then echo ok; exit 0; fi
+if [ "$1" = api ]; then echo "failed to dial 127.0.0.1:39113" >&2; exit 1; fi
+exec sleep 60
+""", encoding="utf-8")
+    xray_broken.chmod(0o755)
+    with TestClient(create_app(NodeConfig(state_path=broken, xray_bin=str(xray_broken)))) as client:
+        key = state_key(broken)
+        client.put("/node/config", headers=bearer(key),
+                   json={"revision": 1, "config": config, "certs": []})
+        status = client.get("/node/status", headers=bearer(key)).json()
+        ok(status["trafficBytes"] == 0 and "не ответили" in (status["statsError"] or ""),
+           f"если Xray не дал счётчики, нода не молчит: {status['statsError']}")
+
+    silent = tmp / "noxray-traffic" / "state.json"
+    with TestClient(create_app(NodeConfig(state_path=silent, xray_bin=str(tmp / "nope")))) as client:
+        status = client.get("/node/status", headers=bearer(state_key(silent))).json()
+        ok(status["trafficBytes"] == 0 and "нет бинарника xray" in (status["statsError"] or ""),
+           f"без Xray счётчиков нет, и панель узнаёт об этом: {status['statsError']}")
+
+    ok(parse_counters({"stat": [{"name": "user>>>u1>>>traffic>>>uplink", "value": 5},
+                                {"name": "inbound>>>x>>>traffic>>>uplink", "value": 9},
+                                {"name": "user>>>u1>>>online", "value": 1},
+                                {"name": "мусор"}]}) == {"u1": 5},
+       "из ответа Xray берутся только счётчики трафика пользователей: чужие имена и мусор отбрасываются")
+
     print()
     return 1 if FAILS else 0
 

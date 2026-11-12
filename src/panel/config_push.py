@@ -112,7 +112,9 @@ def collect(conn: sqlite3.Connection, node_id: int) -> dict[str, Any]:
         f"""SELECT {HOST_FIELDS}, n.address AS node_address
             FROM hosts h JOIN nodes n ON n.id = h.node_id
             WHERE h.node_id = ? ORDER BY h.port""", (node_id,)).fetchall()]
-    users = [dict(r) for r in conn.execute("SELECT name, token, status FROM users ORDER BY name").fetchall()]
+    # id пользователя нужен рендеру: его метка (`u<id>`) живёт в конфиге как email клиента
+    # и по ней же возвращается трафик конкретного человека
+    users = [dict(r) for r in conn.execute("SELECT id, name, token, status FROM users ORDER BY name").fetchall()]
 
     chain_ids = [r["chain_id"] for r in conn.execute(
         "SELECT DISTINCT chain_id FROM hosts WHERE node_id = ? AND chain_id IS NOT NULL", (node_id,)).fetchall()]
