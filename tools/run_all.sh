@@ -2,7 +2,8 @@
 # Полный прогон проверок Medusa: границ монолита, ноды, прав и сессий панели, панельного API,
 # фронтенда против живого API и моковых сценариев.
 #
-#   ./tools/run_all.sh
+#   ./tools/run_all.sh                # только то, что не требует скачанных бинарников
+#   MEDUSA_LIVE=1 ./tools/run_all.sh    # + живой прогон с настоящими Xray и Mihomo
 #
 # Тестовые серверы поднимаются сами на временной базе: панель, агент ноды на отдельном
 # порту, и живая связка «панель → нода по ключу». Ничего poza рабочей директорией не трогает.
@@ -81,6 +82,14 @@ for suite in live overview clients i18n keys; do
   echo "=== моковая проверка: $suite"
   node "tools/mock/$suite.mjs"
 done
+
+if [ "${MEDUSA_LIVE:-0}" = "1" ]; then
+  # живой прогон скачанными Xray и Mihomo (bin/ или MEDUSA_XRAY_BIN / MEDUSA_CLASH_BIN):
+  # туннели всех протоколов и подписка целиком через Clash
+  echo
+  echo "=== живая проверка: настоящая панель, нода, Xray и Mihomo"
+  .venv/bin/python tools/live_demo.py
+fi
 
 echo
 echo "все проверки пройдены"

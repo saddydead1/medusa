@@ -8,16 +8,21 @@
 * `user_uuid` — uuid5 от токена: один и тот же пользователь всегда получает один и
   тот же id в Xray, конфиг от этого стабилен; для vless/vmess (и для reality-подписчиков
   в Xray 26) пользователь — это именно uuid;
-* `user_password` — пароль trojan-подписчика;
+* `user_password` — пароль подписчика: у trojan он один на все хосты (так уже
+  подключённые люди не обязаны менять ссылку), у shadowsocks — свой на каждый хост:
+  пароль ss это и есть ключ шифрования конкретного порта, и на другом порту он обязан
+  быть другим;
 * `reality_short_id` — короткий id подписчика: внутри одного reality-инбаунда
   подписчиков различают по нему (Xray 26: список `shortIds` у инбаунда, у клиента —
-  его собственный `shortId`).
+  его собственный `shortId`); работает с любым протоколом, у которого есть reality.
 
 Адрес хоста (`hosts.address`) и адрес ноды — разные вещи: нодовый адрес панель
 использует, чтобы достучаться до самой ноды; клиент подключается к адресу хоста.
 Пустой адрес хоста означает «подключаться к адресу ноды».
 
-Пока рендерятся vless, vmess и trojan. ss (один пароль на инбаунд) и hy2 — в очереди.
+Рендерятся vless, vmess, trojan и shadowsocks. Hysteria2 (hy2) — в очереди: он требует
+TLS у инбаунда в обязательном порядке и собственного формата ссылки, которого у панели
+пока нет, поэтому хост hy2 панель не создаёт (400), а не создаёт «хост, который не поднимется».
 """
 from __future__ import annotations
 
@@ -39,21 +44,74 @@ SHORT_ID_HEX_CHARS = 8
 # если рукопожатие reality не прошло. Панель притворяется Microsoft: живая,
 # безобидная и не связана с нашей нодой.
 REALITY_DEST = "www.microsoft.com:443"
-# Xray 26 по умолчанию не пукает клиентов старше 26.3.27; панель разрешает всё,
-# что новее 24.0 — иначе старые клиенты (v2rayN на старом ядре) не подключатся
-REALITY_MIN_CLIENT = "24.0.0"
+# Порога версии клиента (realitySettings.minClientVer) панель не ставит, и это не
+# косметика. В reality версия клиента — первые три байта session id в ClientHello,
+# формальность рукопожатия: клиенты семейства Clash пишут туда «1.8.2» (столько весит
+# формат их ссылок), и любой порог вроде «24.0.0» просто отцепил бы их от ноды, ничего
+# не прибавив к защите. Настоящий ценз Xray >= 26.9.8 держит другое: обязательный гибрид
+# X25519MLKEM768 в ClientHello (о нём — в AGENTS.md).
 
-SUPPORTED_PROTOCOLS = ("vless", "vmess", "trojan")
+SUPPORTED_PROTOCOLS = ("vless", "vmess", "trojan", "ss")
+
+# VMess: alterId у панели всегда 0 (устаревший режим клиенты выкинули), шифр — "auto":
+# Xray и клиент сами выбирают то, что понимают оба (aes-128-gcm у старых клиентов,
+# chacha20-ietf-poly1305 у новых)
+VMESS_CIPHER = "auto"
+# Shadowsocks: AEAD-шифр на весь инбаунд. chacha20-ietf-poly1305 понимают v2rayN/v2rayNG,
+# Happ, Hiddify, Shadowrocket и Clash — и это разумный дефолт самого Xray
+SS_CIPHER = "chacha20-ietf-poly1305"
+
+# Какая защита бывает у какого протокола. Держится и фронтом (какие опции защиты
+# показать), и бэкендом (что принять): ссылка подписки обязана уметь описать то, что
+# панель собрала в конфиге, а vmess-ссылка reality описать не может.
+SECURITY_BY_PROTOCOL = {
+    "vless": ("none", "tls", "reality"),
+    "vmess": ("none", "tls"),
+    "trojan": ("none", "tls", "reality"),
+    "ss": ("none",),
+}
+
+# Hysteria2 панель пока не поднимает: у него TLS у инбаунда обязателен, нужен
+# отдельный hub-obfs и своя форма ссылки, которой у панели нет. Честный отказ лучше
+# хоста, который молча не доехал бы ни до конфига, ни до подписчика.
+UNSUPPORTED_PROTOCOLS = ("hy2",)
+UNSUPPORTED_HINT = ("Hysteria2 панель пока не поднимает: выберите vless, vmess, trojan "
+                    "или shadowsocks")
+
+
+def unsupported_protocol(protocol: str) -> bool:
+    return protocol in UNSUPPORTED_PROTOCOLS
+
+
+def security_issue(protocol: str, security: str) -> str | None:
+    """Почему эта защита у этого протокола не бывает — текстом для человека.
+    Один и тот же текст звучит и в окне хоста, и в отказе API."""
+    if protocol == "ss" and security in ("tls", "reality"):
+        return ("у shadowsocks свой шифр внутри протокола: tls или reality к нему панель "
+                "не добавляет — нужен tls? берите vless или trojan")
+    if protocol == "vmess" and security == "reality":
+        return ("vmess поверх reality панель не раздаёт: vmess-ссылка не умеет передавать "
+                "reality-ключ и короткий id — берите vless или trojan")
+    return None
 
 
 def user_uuid(token: str) -> str:
     return str(uuid.uuid5(USER_NAMESPACE, token))
 
 
-def user_password(token: str) -> str:
-    """Пароль подписчика (reality/trojan): base64url от токена, стабилен между рендерами."""
-    digest = hashlib.sha256(f"medusa-user:{token}".encode("utf-8")).digest()
+def user_password(token: str, salt: str = "") -> str:
+    """Пароль подписчика: base64url от токена, стабилен между рендерами.
+
+    `salt` делает пароль разным на разных хостах там, где это нужно (shadowsocks);
+    без соли пароль один и тот же — прежние подписки не рассинхронизируются."""
+    seed = f"medusa-user:{salt}:{token}" if salt else f"medusa-user:{token}"
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
     return base64.urlsafe_b64encode(digest[:REALITY_PASSWORD_BYTES]).decode("ascii").rstrip("=")
+
+
+def ss_password(token: str, host_id: int) -> str:
+    """Пароль shadowsocks-подписчика на конкретном хосте: он же AEAD-ключ этого порта."""
+    return user_password(token, f"ss:{host_id}")
 
 
 def reality_short_id(token: str) -> str:
@@ -88,25 +146,73 @@ def host_tag(host: dict) -> str:
     return name or f"medusa-host-{host['id']}"
 
 
-def clients_for(users: list[dict], protocol: str, security: str) -> list[dict]:
+def clients_for(users: list[dict], protocol: str, host: dict | None = None) -> list[dict]:
+    """Клиенты инбаунда: чем протокол узнаёт человека, тем и описывает.
+
+    Порядок ключей в словарях постоянный — от него зависит отпечаток конфига, а значит
+    и «не дёргать ноду при неизменном составе».
+    """
     if protocol == "trojan":
         return [{"password": user_password(u["token"])} for u in users]
-    return [{"id": user_uuid(u["token"])} for u in users]
+    if protocol == "ss":
+        salt = f"ss:{host['id']}" if host else "ss"
+        return [{"password": user_password(u["token"], salt), "method": SS_CIPHER} for u in users]
+    clients = []
+    for u in users:
+        client = {"id": user_uuid(u["token"])}
+        if protocol == "vmess":
+            client["security"] = VMESS_CIPHER      # Xray: согласуемый шифр vmess-клиента
+        clients.append(client)
+    return clients
 
 
 def connect_address(host: dict) -> str:
     return host["address"] or host["node_address"]
 
 
-def reality_server_names(host: dict) -> list[str]:
-    """Список sni, которые принимает reality: свои алиасы (serverNames через
-    запятую), иначе — sni хоста, иначе — адрес хоста (он обязан быть доменом)."""
-    raw = (host.get("server_names") or "").replace(",", " ").split()
-    names = [n.strip().lower() for n in raw if n.strip()]
+def field(host: object, key: str) -> str:
+    """Поле хоста строкой: одинаково для словаря рендера и для строки sqlite."""
+    try:
+        raw = host[key]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    if raw is None:
+        return ""
+    return raw if isinstance(raw, str) else str(raw)
+
+
+def reality_dest(host: object) -> str:
+    """Адрес-маска reality (`host:port`), за которую нода притворяется."""
+    return field(host, "dest").strip() or REALITY_DEST
+
+
+def reality_sni_list(host: object, address: str) -> list[str]:
+    """Имена, которые принимает reality и которые обязан назвать клиент.
+
+    Клиент в reality называет не адрес ноды, а тот домен, за который нода
+    притворяется: наружу уходит настоящий сертификат этого сайта, и строгие клиенты
+    (Mihomo/Clash) сверяют sni именно с ним. Поэтому по умолчанию это домен маскировки
+    (dest), а не адрес хоста.
+    """
+    names = [n.strip().lower() for n in field(host, "server_names").replace(",", " ").split() if n.strip()]
     if names:
         return names
-    sni = (host.get("sni") or "").strip()
-    return [sni or connect_address(host)]
+    mirror = reality_dest(host).split(":")[0].strip().lower()
+    return [mirror or address.lower()]
+
+
+def reality_client_sni(host: object, address: str) -> str:
+    """SNI клиента — первое из принимаемых reality имён. IP в SNI клиент подставить
+    не умеет, поэтому адрес-маска обязан быть доменом."""
+    for name in reality_sni_list(host, address):
+        if name and not is_ip(name):
+            return name
+    return ""
+
+
+def reality_server_names(host: dict) -> list[str]:
+    """Список sni для инбаунда: свои алиасы, иначе домен маскировки (dest)."""
+    return reality_sni_list(host, connect_address(host))
 
 
 def cert_files(host: dict) -> tuple[str, str]:
@@ -159,13 +265,13 @@ def stream_settings(host: dict) -> dict[str, Any]:
         stream["tlsSettings"] = tls
     elif host["security"] == "reality":
         # Xray 26: серверный reality — это serverNames/shortIds/dest/privateKey;
-        # адрес обязан быть доменом (панель это проверяет: IP в SNI не влезает)
+        # имена берутся из маскировки, потому что клиент сверяет их с настоящим
+        # сертификатом сайта-маски
         stream["realitySettings"] = {
             "show": False,
-            "dest": host.get("dest") or REALITY_DEST,
-            "serverNames": reality_server_names(host),
+            "dest": reality_dest(host),
+            "serverNames": reality_sni_list(host, address),
             "privateKey": host.get("private_key") or "",
-            "minClientVer": REALITY_MIN_CLIENT,
             "shortIds": [],
             "spiderX": "/",
         }
@@ -175,12 +281,15 @@ def stream_settings(host: dict) -> dict[str, Any]:
 def inbound(host: dict, users: list[dict], tag: str) -> dict[str, Any]:
     users = active_only(users)
     protocol, security = host["protocol"], host["security"]
-    clients = clients_for(users, protocol, security)
+    clients = clients_for(users, protocol, host)
+    # у shadowsocks клиенты живут в `users` (Xray зовёт это мультипользовательским ss:
+    # инбаунд различает людей по их ключам) и шифр называется у каждого клиента свой
+    settings: dict[str, Any] = {"users": clients} if protocol == "ss" else {"clients": clients}
     entry: dict[str, Any] = {
         "tag": tag,
         "port": host["port"],
-        "protocol": protocol,
-        "settings": {"clients": clients},
+        "protocol": protocol if protocol != "ss" else "shadowsocks",
+        "settings": settings,
         "streamSettings": stream_settings(host),
     }
     if protocol == "vless":

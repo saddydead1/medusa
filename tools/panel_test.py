@@ -128,7 +128,18 @@ def main() -> int:
            "reality-хост: адрес-домен, публичный ключ и отпечаток клиента есть, приватного нет")
         ip_reality = client.post("/api/hosts", json={"name": "по IP", "node": "vps-fi", "protocol": "vless",
                                                      "port": 444, "network": "tcp", "security": "reality"})
-        ok(ip_reality.status_code == 400, f"reality на IP-адресе отвергается: {ip_reality.json()['detail']}")
+        ok(ip_reality.status_code == 201,
+           "reality на ноде с IP-адресом допустим: клиент называет сайт-маску, а не адрес ноды")
+        ok(ip_reality.json()["dest"] == "", "маскированный адрес по умолчанию знает рендер, панель его не выдумывает")
+        mask_ip = client.post("/api/hosts", json={"name": "маска-IP", "node": "vps-fi", "protocol": "vless",
+                                                  "port": 445, "network": "tcp", "security": "reality",
+                                                  "dest": "1.2.3.4:443"})
+        ok(mask_ip.status_code == 400, f"reality, прячущийся за IP, отвергается: {mask_ip.json()['detail']}")
+        snis_ip = client.post("/api/hosts", json={"name": "sni-IP", "node": "vps-fi", "protocol": "vless",
+                                                  "port": 446, "network": "tcp", "security": "reality",
+                                                  "serverNames": "10.0.0.1"})
+        ok(snis_ip.status_code == 400, "список принимаемых SNI тоже обязан быть доменами")
+        client.delete(f"/api/hosts/{ip_reality.json()['id']}")
         dirty = next(n for n in client.get("/api/nodes").json() if n["name"] == "vps-fi")
         ok(dirty["configDirty"] is True, "новый хост сделал конфиг ноды несвежим")
         busy = client.post("/api/hosts", json={"name": "Другой", "node": "vps-fi", "protocol": "vmess",
@@ -166,6 +177,9 @@ def main() -> int:
         ok(all(h["chain"] != chain["id"] for h in client.get("/api/hosts").json()), "хост цепочки удалён вместе с ней")
 
         # --- подписка: страница /sub/<токен> ---
+        from src.core.xray_config import REALITY_DEST
+
+        REALITY_MIRROR = REALITY_DEST.split(":")[0]      # default sni reality: сайт-маска
         sub_chain = client.post("/api/chains", json={"name": "SUB-ROUTE", "hops": [
             {"node": "vps-fi", "protocol": "vless", "network": "tcp", "security": "reality", "port": 3011},
             {"node": "home", "protocol": "vless", "network": "tcp", "security": "reality", "port": 3012}]}).json()
@@ -212,9 +226,10 @@ def main() -> int:
         ok(clash_resp.status_code == 200 and clash_names == ["FI Reality", "SUB-ROUTE"],
            f"Clash-UA получает YAML, а не base64: {clash_names}")
         reality_proxy = next(p for p in clash_doc["proxies"] if p["name"] == "FI Reality")
-        ok(reality_proxy["type"] == "vless" and reality_proxy["servername"] == "fi.example.net"
+        ok(reality_proxy["type"] == "vless" and reality_proxy["servername"] == REALITY_MIRROR
            and reality_proxy["reality-opts"]["public-key"] and reality_proxy["reality-opts"]["short-id"],
-           "clash yaml: reality-ключ, short-id и servername на месте")
+           f"clash yaml: reality-ключ, short-id и servername на месте: sni = сайт-маска {REALITY_MIRROR}, "
+           "а не адрес ноды (Clash сверяет его с настоящим сертификатом маски)")
         ok(client.get(f"/sub/{brother['token']}/links?target=clash").text.startswith("# medusa"),
            "?target=clash отдаёт YAML и на явном /links пути")
         links = client.get(f"/sub/{brother['token']}/links")
@@ -235,6 +250,115 @@ def main() -> int:
            "отключённому пользователю машинные ссылки не раздаются")
         ok(client.get("/sub/nesushchestvuet/links").status_code == 404, "чужого токена на машинных путях тоже нет")
         client.delete(f"/api/chains/{sub_chain['id']}")
+
+        # --- подписка живёт не только с vless: vmess, trojan и shadowsocks ---
+        import base64 as _b64
+        import json as _json
+        from urllib.parse import parse_qs, urlparse
+
+        from src.core.xray_config import SS_CIPHER, ss_password, user_password, user_uuid
+
+        fi_link = next(l for l in client.get(f"/sub/{brother['token']}/links?raw=1").text.splitlines()
+                       if l.startswith("vless://"))
+        ok(f"sni={REALITY_MIRROR}" in fi_link,
+           f"reality-ссылка подписчика называет сайт-маску: {REALITY_MIRROR}")
+
+        vmess_h = client.post("/api/hosts", json={"name": "VMess WS", "node": "home", "protocol": "vmess",
+                                                   "port": 9431, "network": "ws", "security": "tls",
+                                                   "address": "vm.example.net", "path": "/vmess",
+                                                   "hostHeader": "cdn.example.net",
+                                                   "sni": "vm.example.net"}).json()
+        trojan_h = client.post("/api/hosts", json={"name": "Trojan TLS", "node": "home", "protocol": "trojan",
+                                                    "port": 9432, "network": "tcp", "security": "tls",
+                                                    "address": "tr.example.net",
+                                                    "sni": "tr.example.net"}).json()
+        ss_h = client.post("/api/hosts", json={"name": "SS первый", "node": "home", "protocol": "ss",
+                                               "port": 9433, "network": "tcp", "security": "none",
+                                               "address": "ss.example.net"}).json()
+        ss2_h = client.post("/api/hosts", json={"name": "SS второй", "node": "home", "protocol": "ss",
+                                                "port": 9434, "network": "tcp", "security": "none",
+                                                "address": "ss2.example.net"}).json()
+
+        lines = [l for l in client.get(f"/sub/{brother['token']}/links?raw=1").text.splitlines() if l]
+        schemes = {urlparse(l).scheme for l in lines}
+        ok({"vless", "vmess", "trojan", "ss"} <= schemes,
+           f"ссылка подписки отдаёт все протоколы, а не только vless: {sorted(schemes)}")
+
+        vmess_line = next(l for l in lines if l.startswith("vmess://"))
+        vmess_doc = _json.loads(_b64.b64decode(vmess_line.split("://", 1)[1].split("#", 1)[0]))
+        ok(vmess_doc["id"] == user_uuid(brother["token"]) and vmess_doc["add"] == "vm.example.net"
+           and vmess_doc["port"] == "9431" and vmess_doc["aid"] == "0"
+           and vmess_doc["net"] == "ws" and vmess_doc["path"] == "/vmess"
+           and vmess_doc["host"] == "cdn.example.net" and vmess_doc["tls"] == "tls"
+           and vmess_doc["sni"] == "vm.example.net"
+           and vmess_doc["scy"] == vmess_doc["cipher"] == "auto",
+           "vmess-ссылка: uuid, шифр, транспорт и sni лежат в её base64-JSON")
+
+        trojan_line = next(l for l in lines if l.startswith("trojan://"))
+        trojan_q = parse_qs(urlparse(trojan_line).query)
+        ok(trojan_line.startswith(f"trojan://{user_password(brother['token'])}@tr.example.net:9432")
+           and trojan_q["security"] == ["tls"] and trojan_q["sni"] == ["tr.example.net"],
+           "trojan-ссылка: пароль собран из токена, sni и защита названы явно")
+
+        ss_creds = []
+        for h in (ss_h, ss2_h):
+            ss_line = next(l for l in lines if l.startswith("ss://") and f"@{h['address']}:{h['port']}" in l)
+            cred = ss_line.split("://", 1)[1].split("@", 1)[0]
+            ok(cred == f"{SS_CIPHER}:{ss_password(brother['token'], h['id'])}",
+               f"ss-ссылка {h['port']}: шифр и пароль этого хоста, как в конфиге Xray")
+            ss_creds.append(cred)
+        ok(ss_creds[0] != ss_creds[1],
+           "на двух ss-хостах пароли разные: пароль shadowsocks — ключ конкретного порта")
+
+        all_links = _b64.b64decode(client.get(f"/sub/{brother['token']}/links").text).decode("utf-8")
+        kinds = [l.split("://", 1)[0] for l in all_links.splitlines() if l]
+        ok(kinds.count("vmess") == 1 and kinds.count("trojan") == 1 and kinds.count("ss") == 2
+           and kinds.count("vless") == 1,
+           f"base64-подписка одним вставлением даёт все хосты, как ждёт v2rayNG/Happ/Hiddify: {sorted(kinds)}")
+
+        page_all = client.get(f"/sub/{brother['token']}", headers={"Accept": "text/html"}).text
+        ok(page_all.count('data-copy="') == 6 and page_all.count('data-qr="') == 6,
+           "кнопки «скопировать» и QR есть у каждого хоста, независимо от протокола")
+        ok(client.get(f"/sub/{brother['token']}/qr/host/{ss_h['id']}").status_code == 200,
+           "QR собирается и на ss-хост, а не только на vless")
+
+        clash_all = _yaml.safe_load(client.get(
+            f"/sub/{brother['token']}",
+            headers={"Accept": "*/*", "User-Agent": "clash-verge/v2.4.0"}).text)
+        by_name = {p["name"]: p for p in clash_all["proxies"]}
+        ok(by_name["VMess WS"]["type"] == "vmess" and by_name["VMess WS"]["cipher"] == "auto"
+           and by_name["VMess WS"]["ws-opts"]["path"] == "/vmess"
+           and by_name["VMess WS"]["ws-opts"]["headers"]["Host"] == "cdn.example.net"
+           and by_name["VMess WS"]["skip-cert-verify"] is True,
+           "clash yaml: vmess-прокси со своим шифром и websocket-опциями")
+        ok(by_name["Trojan TLS"]["type"] == "trojan"
+           and by_name["Trojan TLS"]["password"] == user_password(brother["token"])
+           and by_name["Trojan TLS"]["servername"] == "tr.example.net",
+           "clash yaml: trojan-прокси с паролем из токена")
+        ok(by_name["SS первый"]["type"] == "ss" and by_name["SS первый"]["cipher"] == SS_CIPHER
+           and by_name["SS первый"]["password"] == ss_password(brother["token"], ss_h["id"]),
+           "clash yaml: shadowsocks-прокси с шифром и паролем этого хоста")
+        group = clash_all["proxy-groups"][0]
+        ok(group["type"] == "select" and set(group["proxies"]) == set(by_name)
+           and clash_all["rules"][0] == f"MATCH,{group['name']}",
+           f"clash yaml: группа выбора «{group['name']}» — одиночный Mihomo знает, куда класть трафик")
+        ok(len(clash_all["proxies"]) == 5,
+           f"clash yaml получает все протоколы: {sorted(by_name)}")
+
+        hy2 = client.post("/api/hosts", json={"name": "Гистерия", "node": "home", "protocol": "hy2",
+                                              "port": 9435, "network": "tcp", "security": "none"})
+        ok(hy2.status_code == 400 and "Hysteria2" in hy2.json()["detail"],
+           f"hy2 панель не заводит: {hy2.json()['detail']}")
+        ss_tls = client.post("/api/hosts", json={"name": "ss+tls", "node": "home", "protocol": "ss",
+                                                 "port": 9436, "network": "tcp", "security": "tls"})
+        ok(ss_tls.status_code == 400, f"ss с tls отвергается: {ss_tls.json()['detail']}")
+        vm_reality = client.post("/api/hosts", json={"name": "vmess+reality", "node": "vps-fi",
+                                                     "protocol": "vmess", "port": 9437, "network": "tcp",
+                                                     "security": "reality", "address": "vm.example.net"})
+        ok(vm_reality.status_code == 400,
+           f"vmess поверх reality отвергается: ссылка vmess не передаёт reality-ключ")
+        for h in (vmess_h, trojan_h, ss_h, ss2_h):
+            client.delete(f"/api/hosts/{h['id']}")
 
         # --- имя ноды можно менять: хосты и цепочки держатся за id, а не за имя ---
         probe = client.post("/api/hosts", json={"name": "проверка имени", "node": "home",
@@ -297,7 +421,9 @@ def main() -> int:
         bad_path = client.patch(f"/api/hosts/{fi_host['id']}", json={"path": "/x"})
         ok(bad_path.status_code == 400, f"путь без websocket отвергается: {bad_path.json()['detail']}")
         ip_addr = client.patch(f"/api/hosts/{fi_host['id']}", json={"address": "1.2.3.4"})
-        ok(ip_addr.status_code == 400, "reality-хосту нельзя подставить IP вместо домена")
+        ok(ip_addr.status_code == 200,
+           "reality-хост может иметь и IP-адрес: sni ему даёт сайт маскировки, а не адрес")
+        client.patch(f"/api/hosts/{fi_host['id']}", json={"address": "fi.example.net"})
         tls_ws = client.post("/api/hosts", json={"name": "TLS WS", "node": "vps-fi", "protocol": "vless",
                                                  "port": 9413, "network": "ws", "security": "tls",
                                                  "address": "ws.example.net", "path": "/tunnel",

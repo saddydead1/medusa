@@ -6,46 +6,53 @@
 
 Страница для людей: никнейм в заголовке, статус, трафик, переключатели языка и
 темы, «ссылка подписки» (её вставляют в приложение целиком или сканируют QR —
-и все хосты добавляются разом), хосты и цепочки (у vless — кнопка копирования
-ссылки `vless://...` и кнопка QR-кода этой же ссылки).
+и все хосты добавляются разом), хосты и цепочки (у хоста — кнопка копирования
+его ссылки `vless://`, `vmess://`, `trojan://`, `ss://` и кнопка QR-кода этой же ссылки).
 Язык по умолчанию русский, `?lang=en` переключает на английский.
 
 Машинные эндпоинты той же подписки:
-* `GET /sub/<token>` — один адрес на два применения: браузеру (Accept: text/html
-  или Mozilla-UA) — HTML-страница, остальным — список ссылок: Clash и его
-  производные (UA содержит «clash» или `?target=clash`) получают YAML со
-  `proxies:`, прочие — base64-строку vless-ссылок (как ждут v2rayN/v2rayNG);
+* `GET /sub/<token>` — один адрес на два применения: браузеру (Accept: text/html,
+  а если Accept пустой — Mozilla в User-Agent) — HTML-страница, остальным — список
+  ссылок: Clash и его производные (UA содержит «clash» или `?target=clash`) получают
+  YAML со `proxies:` и группой выбора, прочие — base64-строку ссылок
+  vless/vmess/trojan/ss (как ждут v2rayN, v2rayNG, Happ, Hiddify, Shadowrocket);
   `?raw=1` — ссылки без base64. Именно эту ссылку и вставляют в приложение;
 * `GET /sub/<token>/links` — то же без переговоров: всегда список ссылок
   (Clash-UA всё равно получает YAML);
 * `GET /sub/<token>/qr/subscribe` — QR на ссылку подписки (целая подписка
   одним сканированием);
 * `GET /sub/<token>/qr/host/<id>` — QR на ссылку одного хоста.
+Форматы ссылок и Clash YAML живут в `src/panel/subscription.py` — там же, где решение,
+какой протокол вообще способен попасть в ссылку.
 Раздача конфигов sing-box JSON — впереди.
 """
 from __future__ import annotations
 
-import base64
 import html
 import io
 import sqlite3
 from datetime import datetime, timezone
-from urllib.parse import quote, urlencode
 
 import segno
-import yaml
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, Response
 
-from src.core.xray_config import is_ip, reality_short_id, user_uuid
 from src.panel.db import get_conn
 from src.panel.routers.chains import hops_of
+from src.panel.subscription import (clash_document, clash_proxies, host_columns,
+                                    host_link, links_document)
 
 router = APIRouter(prefix="/sub", tags=["subscriptions"])
 
 GB = 1024 ** 3
 PROTO = {"vless": "VLESS", "vmess": "VMess", "trojan": "Trojan", "ss": "Shadowsocks", "hy2": "Hysteria2"}
 SEC_BADGE = {"none": "b-off", "tls": "b-ok", "reality": "b-ok"}
+
+# Кто стучится на машинные пути: Clash и его производные понимают только YAML,
+# остальные приложения — переводной список ссылок. «Mozilla» в User-Agent есть у
+# половины приложений, поэтому он решает только когда Accept ничего не сказал.
+CLIENT_HINTS = ("clash", "mihomo", "flclash", "v2ray", "happ", "hiddify", "sing-box", "singbox",
+                "shadowrocket", "nekobox", "stash", "quantumult", "surge", "streisand", "netch")
 
 ICONS = {
     "globe": '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/>',
@@ -76,8 +83,9 @@ STRINGS = {
         "qr.show": "QR-код", "qr.host": "Показать QR-код ссылки этого хоста",
         "sub.link": "Ссылка подписки",
         "sub.link.hint": "Это тот же адрес, что в адресной строке: откроешь в браузере — увидишь "
-                         "эту страницу; вставишь в приложение (v2rayN, v2rayNG, Hiddify, Clash Verge…) — все "
-                         "доступные хосты добавятся разом (Clash получит свой YAML автоматически). "
+                         "эту страницу; вставишь в приложение (v2rayN, v2rayNG, Happ, Hiddify, Clash Verge…) — все "
+                         "доступные хосты добавятся разом: Clash и Mihomo получат свой YAML с группой выбора, "
+                         "остальным — ссылки vless/vmess/trojan/shadowsocks, переводные и в base64. "
                          "Ссылка содержит ваш личный токен — не раздавайте её другим людям.",
         "disabled.note": "Учётка отключена: подписка не раздаётся, хосты скрыты",
         "404.title": "Ссылка не найдена",
@@ -98,10 +106,10 @@ STRINGS = {
         "qr.show": "QR code", "qr.host": "Show the QR code of this host's link",
         "sub.link": "Subscription link",
         "sub.link.hint": "It is the very address from the address bar: open it in a browser and "
-                         "you get this page; paste it into the app (v2rayN, v2rayNG, Hiddify, Clash Verge…) "
-                         "and every available host is imported at once (Clash clients get their YAML "
-                         "automatically). The link carries your personal "
-                         "token — do not hand it around.",
+                         "you get this page; paste it into the app (v2rayN, v2rayNG, Happ, Hiddify, Clash Verge…) "
+                         "and every available host is imported at once: Clash and Mihomo get their YAML with a "
+                         "select group, everyone else gets vless/vmess/trojan/shadowsocks links, plain and base64. "
+                         "The link carries your personal token — do not hand it around.",
         "disabled.note": "Account disabled: the subscription is off, hosts are hidden",
         "404.title": "Link not found",
         "404.text": "There is no such subscription token: the user may have been deleted or the link has a typo.",
@@ -230,54 +238,9 @@ def shell(title: str, lang: str, theme: str, body: str, status: int = 200) -> HT
     )
 
 
-def subscription_link(token: str, host: dict | sqlite3.Row) -> str:
-    """Ссылка для приложения: uuid пользователя (он же id в Xray-конфиге), адрес хоста,
-    порт и защита. Адрес хоста — тот, к которому подключается человек; адрес ноды —
-    только если своего адреса у хоста нет.
-
-    Пока только vless: остальные протоколы требуют своих полей (шифрование ss,
-    json vmess), которых в базе хоста нет.
-    """
-    address = host["address"] or host["node_address"]
-    params: dict[str, str] = {"type": host["network"], "encryption": "none"}
-    # транспортные детали ссылки: путь и Host у ws, имя сервиса у gRPC
-    if host["network"] == "ws":
-        if host["path"]:
-            params["path"] = host["path"]
-        if host["host_header"]:
-            params["host"] = host["host_header"]
-    elif host["network"] == "grpc" and host["service_name"]:
-        params["serviceName"] = host["service_name"]
-    security = host["security"]
-    if security == "tls":
-        params.update({"security": "tls", "sni": host["sni"] or address})
-        if host["fp"]:
-            params["fp"] = host["fp"]
-    elif security == "reality":
-        params["security"] = "reality"
-        if host["public_key"]:
-            params["pbk"] = host["public_key"]
-        params["fp"] = host["fp"] or "chrome"
-        # sni для клиента — первое имя из списка, который принимает reality
-        sni = host["sni"] or (host["server_names"].split(",")[0].strip() if host["server_names"] else "") or address
-        if not is_ip(sni):
-            params["sni"] = sni
-        params["sid"] = reality_short_id(token)
-        params["spx"] = "/"
-    else:
-        params["security"] = "none"
-    return (f"vless://{user_uuid(token)}@{address}:{host['port']}?{urlencode(params)}"
-            f"#{quote(host['name'], safe='')}")
-
-
-HOST_FIELDS = """h.id, h.name, h.address, h.public_key, h.fp, h.sni, h.server_names,
-                  h.path, h.host_header, h.service_name,
-                  h.protocol, h.port, h.network, h.security"""
-
-
 def fetch_hosts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
-        f"""SELECT {HOST_FIELDS}, n.address AS node_address
+        f"""SELECT {host_columns('h.name')}, n.address AS node_address
            FROM hosts h JOIN nodes n ON n.id = h.node_id
            WHERE h.chain_id IS NULL ORDER BY h.name""").fetchall()
 
@@ -286,9 +249,7 @@ def fetch_chains(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Для подписки цепочка — это её вход: адрес, порт и защита первой ноды,
     имя — имя цепочки (его подписчик и увидит в приложении)."""
     return conn.execute(
-        """SELECT h.id, c.name, c.hops, h.address, h.public_key, h.fp, h.sni, h.server_names,
-                  h.path, h.host_header, h.service_name,
-                  h.protocol, h.port, h.network, h.security,
+        f"""SELECT {host_columns('c.name')}, c.hops,
                   n.address AS node_address
            FROM chains c JOIN hosts h ON h.chain_id = c.id JOIN nodes n ON n.id = h.node_id
            ORDER BY c.name""").fetchall()
@@ -322,20 +283,28 @@ def qr_button(token: str, host_id: int, caption: str, strings: dict) -> str:
             f' data-cap="{esc(caption)}" title="{strings["qr.host"]}">{icon("qr")}{strings["qr.show"]}</button>')
 
 
+def host_actions(user: sqlite3.Row, row: sqlite3.Row, strings: dict) -> str:
+    """Кнопки хоста: скопировать его ссылку и показать QR этой же ссылки.
+
+    Кнопки есть только у тех хостов, чью ссылку панель умеет собрать: протокол,
+    описать который панель не может, подписчику не достался бы ни в каком виде.
+    """
+    link = host_link(user["token"], row)
+    if not link:
+        return ""
+    return (f'<button class="btn sm" type="button" data-copy="{esc(link)}" data-done="{strings["copied"]}"'
+            f' title="{esc(link)}">{icon("copy")}{strings["copy"]}</button>'
+            + qr_button(user["token"], row["id"], row["name"], strings))
+
+
 def hosts_table(hosts: list[sqlite3.Row], user: sqlite3.Row, strings: dict) -> str:
     rows = ""
     for h in hosts:
-        acts = ""
-        if h["protocol"] == "vless":
-            link = subscription_link(user["token"], h)
-            acts = (f'<button class="btn sm" type="button" data-copy="{esc(link)}" data-done="{strings["copied"]}"'
-                    f' title="{esc(link)}">{icon("copy")}{strings["copy"]}</button>'
-                    + qr_button(user["token"], h["id"], h["name"], strings))
         rows += (f"""<tr><td>{esc(h["name"])}</td>
         <td><span class="badge b-proto">{esc(PROTO.get(h["protocol"], h["protocol"]))}</span></td>
         <td>{h["port"]}</td><td>{esc(h["network"])}</td>
         <td><span class="badge {SEC_BADGE.get(h["security"], "b-off")}">{esc(h["security"])}</span></td>
-        <td><div class="acts">{acts}</div></td></tr>""")
+        <td><div class="acts">{host_actions(user, h, strings)}</div></td></tr>""")
     if not rows:
         return f'<div class="panel"><div class="empty">{strings["empty.hosts"]}</div></div>'
     heads = (strings["th.name"], strings["th.protocol"], strings["th.port"],
@@ -356,17 +325,11 @@ def chains_table(conn: sqlite3.Connection, chain_rows: list[sqlite3.Row],
     for r in chain_rows:
         hops = hops_of(conn, r["hops"])
         route = icon("chev").join(esc(h["node"]) for h in hops)
-        acts = ""
-        if r["protocol"] == "vless":
-            link = subscription_link(user["token"], r)
-            acts = (f'<button class="btn sm" type="button" data-copy="{esc(link)}" data-done="{strings["copied"]}"'
-                    f' title="{esc(link)}">{icon("copy")}{strings["copy"]}</button>'
-                    + qr_button(user["token"], r["id"], r["name"], strings))
         rows += (f"""<tr><td>{esc(r["name"])}</td><td><span class="route">{route}</span></td>
         <td><span class="badge b-proto">{esc(PROTO.get(r["protocol"], r["protocol"]))}</span></td>
         <td>{r["port"]}</td>
         <td><span class="badge {SEC_BADGE.get(r["security"], "b-off")}">{esc(r["security"])}</span></td>
-        <td><div class="acts">{acts}</div></td></tr>""")
+        <td><div class="acts">{host_actions(user, r, strings)}</div></td></tr>""")
     if not rows:
         return f'<div class="panel"><div class="empty">{strings["empty.chains"]}</div></div>'
     heads = (strings["th.name"], strings["th.route"], strings["th.protocol"],
@@ -388,82 +351,52 @@ def sub_link_section(token: str, links_url: str, strings: dict) -> str:
 
 
 def wants_page(request: Request) -> bool:
-    """Кто стучится на `/sub/<токен>`: браузер хочет страницу (Accept: text/html
-    или Mozilla в user-agent), приложение — ссылки. Один адрес, два применения."""
+    """Кто стучится на `/sub/<токен>`: браузер хочет страницу, приложение — ссылки.
+    Один адрес, два применения.
+
+    Порядок переговоров такой: явный `?target=` важнее всего; потом `Accept` (браузер
+    всегда называет text/html); и только если Accept пустой — User-Agent. «Mozilla»
+    в UA есть у половины приложений (окно WebView, Dart, Java-библиотеки), поэтому
+    один только он страницу решает лишь при пустом Accept.
+    """
+    if request.query_params.get("target", "").strip():
+        return False                      # человек сам назвал формат
     accept = request.headers.get("accept", "").lower()
     agent = request.headers.get("user-agent", "").lower()
-    return "text/html" in accept or "mozilla" in agent
+    if "text/html" in accept:
+        return True
+    if any(hint in agent for hint in CLIENT_HINTS):
+        return False                      # известное приложение: страницы ему не нужны
+    if not accept or accept.strip() in ("*/*", "*"):
+        return "mozilla" in agent
+    return False                          # Accept есть, но не html — значит приложение
 
 
 def wants_clash(request: Request) -> bool:
     """Clash и его производные (Clash Verge, flclash, Mihomo proxy-provider)
     понимают только YAML со `proxies:`. Узнаём по их UA или по явному ?target=clash."""
     agent = request.headers.get("user-agent", "").lower()
-    return request.query_params.get("target", "").lower() == "clash" or "clash" in agent
+    target = request.query_params.get("target", "").lower()
+    return target in ("clash", "yaml") or any(hint in agent for hint in ("clash", "mihomo", "flclash"))
 
 
-def clash_proxy(token: str, host: dict | sqlite3.Row) -> dict:
-    """Один хост подписки — один Clash-прокси (Mihomo-формат: vless + reality).
-
-    Сертификаты tls у нод self-signed — Clash не должен спотыкаться об них:
-    skip-cert-verify включён. reality от Clash Verge требует актуального Mihomo
-    (reality там живёт с 2023 года)."""
-    address = host["address"] or host["node_address"]
-    proxy: dict = {
-        "name": host["name"],
-        "type": host["protocol"],
-        "server": address,
-        "port": host["port"],
-        "uuid": user_uuid(token),
-        "network": host["network"],
-        "udp": True,
-    }
-    if host["network"] == "ws":
-        opts: dict = {}
-        if host["path"]:
-            opts["path"] = host["path"]
-        if host["host_header"]:
-            opts["headers"] = {"Host": host["host_header"]}
-        if opts:
-            proxy["ws-opts"] = opts
-    elif host["network"] == "grpc" and host["service_name"]:
-        proxy["grpc-opts"] = {"grpc-service-name": host["service_name"]}
-    security = host["security"]
-    if security == "tls":
-        proxy["tls"] = True
-        proxy["servername"] = host["sni"] or address
-        proxy["skip-cert-verify"] = True
-        if host["fp"]:
-            proxy["client-fingerprint"] = host["fp"]
-    elif security == "reality":
-        proxy["tls"] = True
-        names = [n.strip() for n in (host["server_names"] or "").replace(",", " ").split() if n.strip()]
-        proxy["servername"] = names[0] if names else address
-        reality_opts: dict = {"short-id": reality_short_id(token)}
-        if host["public_key"]:
-            reality_opts["public-key"] = host["public_key"]
-        proxy["reality-opts"] = reality_opts
-        proxy["client-fingerprint"] = host["fp"] or "chrome"
-    return proxy
+def subscription_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Всё, что подписчик получает в машинном виде: живые хосты плюс входы цепочек."""
+    return fetch_hosts(conn) + fetch_chains(conn)
 
 
-def clash_response(user: sqlite3.Row, conn: sqlite3.Connection) -> Response:
-    rows = [r for r in fetch_hosts(conn) if r["protocol"] == "vless"]
-    rows += [r for r in fetch_chains(conn) if r["protocol"] == "vless"]
-    body = "# medusa: подписка панели, сгенерировано — не правьте руками\n" + yaml.safe_dump(
-        {"proxies": [clash_proxy(user["token"], r) for r in rows]},
-        sort_keys=False, allow_unicode=True, default_flow_style=False)
+def clash_response(request: Request, user: sqlite3.Row, conn: sqlite3.Connection, panel: str) -> Response:
+    """YAML для Clash/Mihomo/Clash Verge: все хосты списком proxies плюс группа выбора."""
+    body = clash_document(panel, clash_proxies(user["token"], subscription_rows(conn)))
     return Response(content=body.encode("utf-8"), media_type="text/plain; charset=utf-8",
                     headers={"Cache-Control": "no-store"})
 
 
-def links_response(request: Request, user: sqlite3.Row, conn: sqlite3.Connection) -> Response:
+def links_response(request: Request, user: sqlite3.Row, conn: sqlite3.Connection, panel: str) -> Response:
     if wants_clash(request):
-        return clash_response(user, conn)
-    links = [subscription_link(user["token"], r) for r in fetch_hosts(conn)]
-    links += [subscription_link(user["token"], r) for r in fetch_chains(conn)]
-    plain = "\n".join(links)
-    body = plain if request.query_params.get("raw", "") in ("1", "true") else base64.b64encode(plain.encode("utf-8")).decode("ascii")
+        return clash_response(request, user, conn, panel)
+    raw = request.query_params.get("raw", "") in ("1", "true")
+    body = links_document(user["token"], subscription_rows(conn), raw)
     return Response(content=body.encode("utf-8"), media_type="text/plain; charset=utf-8",
                     headers={"Cache-Control": "no-store"})
 
@@ -478,7 +411,7 @@ def subscription_page(token: str, request: Request,
         user = active_user(conn, token)
         if user is None:
             return Response(content=b"", media_type="text/plain; charset=utf-8", status_code=404)
-        return links_response(request, user, conn)
+        return links_response(request, user, conn, st["subTitle"] or st["panelName"])
 
     lang = pick_lang(request)
     s = STRINGS[lang]
@@ -525,11 +458,13 @@ def subscription_page(token: str, request: Request,
 @router.get("/{token}/links")
 def subscription_links(token: str, request: Request,
                        conn: sqlite3.Connection = Depends(get_conn)) -> Response:
-    """Явный путь со ссылками, без переговоров по Accept: всегда отдаёт ссылки."""
+    """Явный путь со ссылками, без переговоров по Accept: всегда отдаёт ссылки
+    (Clash-UA всё равно получит YAML — ему нужен именно он)."""
     user = active_user(conn, token)
     if user is None:
         return Response(content=b"", media_type="text/plain; charset=utf-8", status_code=404)
-    return links_response(request, user, conn)
+    st = conn.execute("SELECT panelName,subTitle FROM settings WHERE id = 1").fetchone()
+    return links_response(request, user, conn, st["subTitle"] or st["panelName"])
 
 
 @router.get("/{token}/qr/subscribe")
@@ -550,9 +485,13 @@ def qr_host(token: str, host_id: int,
     if user is None:
         return Response(content=b"", media_type="image/svg+xml", status_code=404)
     row = conn.execute(
-        f"""SELECT {HOST_FIELDS}, COALESCE(c.name, h.name) AS name, n.address AS node_address
+        f"""SELECT {host_columns('COALESCE(c.name, h.name)')}, n.address AS node_address
            FROM hosts h JOIN nodes n ON n.id = h.node_id LEFT JOIN chains c ON c.id = h.chain_id
            WHERE h.id = ?""", (host_id,)).fetchone()
-    if row is None or row["protocol"] != "vless":
+    if row is None:
         return Response(content=b"", media_type="image/svg+xml", status_code=404)
-    return qr_svg(subscription_link(user["token"], row))
+    link = host_link(user["token"], row)
+    if not link:
+        # протокол, ссылки которого панель не умеет: QR было бы не из чего собирать
+        return Response(content=b"", media_type="image/svg+xml", status_code=404)
+    return qr_svg(link)

@@ -10,11 +10,26 @@ import sqlite3
 
 from fastapi import APIRouter, Depends
 
+from src.core.xray_config import security_issue, unsupported_protocol, UNSUPPORTED_HINT
 from src.panel.db import get_conn, now_ms
 from src.panel.deps import bad_request, conflict, fetch_one, writer
 from src.panel.schemas import ChainCreate
 
 router = APIRouter(prefix="/api/chains", tags=["chains"])
+
+
+def check_hop(hop) -> None:
+    """Хоп цепочки обязан быть тем же набором, что и хост: инбаунд цепочки — это
+    её первый хоп, а из него собираются и конфиг, и ссылка подписки."""
+    if unsupported_protocol(hop.protocol):
+        raise bad_request(UNSUPPORTED_HINT)
+    issue = security_issue(hop.protocol, hop.security)
+    if issue:
+        raise bad_request(issue)
+    if hop.security == "reality" and hop.network == "ws":
+        raise bad_request("reality не работает поверх ws")
+    if hop.protocol == "ss" and hop.network != "tcp":
+        raise bad_request("shadowsocks тут только через tcp")
 
 
 def hops_of(conn: sqlite3.Connection, raw: str) -> list[dict]:
@@ -61,6 +76,7 @@ def create_chain(
 ) -> dict:
     nodes = {}
     for hop in body.hops:
+        check_hop(hop)
         row = conn.execute("SELECT id, name FROM nodes WHERE name = ?", (hop.node,)).fetchone()
         if row is None:
             raise bad_request(f"ноды «{hop.node}» нет")

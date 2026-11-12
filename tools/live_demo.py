@@ -7,11 +7,16 @@
 запрос прошла через туннель — значит VPN работает по-настоящему.
 
 Что проверяется:
-* панель поднимает ноду и три хоста (vless без защиты, reality, vless+tls поверх ws);
+* панель поднимает ноду и хосты vless (plain/reality/tls+ws/ws/grpc), vmess, trojan
+  (tls и reality) и shadowsocks;
 * панель сама доставляет конфиг, настоящий `xray` его принимает и поднимает порты;
-* подписчик подключается по всем трём протоколам и ходит наружу через туннель;
-* наружу печатаются готовые vless://-ссылки со страницы подписки — их можно вставить
-  в любой клиент (v2rayN, nekobox, Shadowrocket) и подключаться к этой машине.
+* клиентский конфиг для каждой проверки собирается **из ссылки подписки**, а не из
+  внутреннего знания теста: если в ссылке чего-то не хватает (uuid, пароль, шифр, sni,
+  pbk, shortId, путь ws), туннель не поднимется и проверка это поймает;
+* два разных подписчика ходят через один и тот же порт vmess/trojan/shadowsocks —
+  то есть панель умеет различать людей на одном инбаунде;
+* наружу печатаются готовые ссылки со страницы подписки: их можно вставить в v2rayN,
+  v2rayNG, Happ, Hiddify, Clash Verge или Mihomo и подключаться к этой машине.
 
 Запуск:  .venv/bin/python tools/live_demo.py [--keep]
 Флаг --keep оставляет панель и ноду висеть: панель доступна в браузере по напечатанному
@@ -19,8 +24,9 @@
 """
 from __future__ import annotations
 
-import json
+import base64
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -31,6 +37,7 @@ import sys
 import tempfile
 import time
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,6 +94,112 @@ def wait_http(url: str, seconds: float = 30.0) -> bool:
     return False
 
 
+# ----- ссылки подписки обратно в клиентский конфиг Xray -----------------------
+# Тест намеренно разбирает именно ссылку: подписчик ведь получает только её, и
+# если ссылка неполная, проверка обязана провалиться, а не подменить её «знанием».
+
+def split_link(link: str) -> tuple[str, str, dict[str, str], str]:
+    """(схема, адрес пользователя@хост:порт, параметры запроса, имя из фрагмента).
+
+    Фрагмент (#имя) отсекается до разбора параметров: он только для показа,
+    а в query он попадает как хвост последнего значения и ломает его.
+    """
+    scheme, _, rest = link.partition("://")
+    body, _, frag = rest.partition("#")
+    target, sep, qs = body.partition("?")
+    params = dict(urllib.parse.parse_qsl(qs, keep_blank_values=True)) if sep else {}
+    return scheme, target, params, urllib.parse.unquote(frag)
+
+
+def netloc_of(target: str) -> tuple[str, int]:
+    """Хост и порт из `кред@хост:порт`: кред отрезается, иначе адрес испорчен.
+    IPv6 остаётся в скобках: `[::1]:443` -> (`[::1]`, 443)."""
+    netloc = target.rsplit("@", 1)[-1]
+    host, _, port = netloc.rpartition(":")
+    return host, int(port)
+
+
+def stream_of(params: dict[str, str], pin: str | None) -> dict:
+    stream: dict = {"network": params.get("type", "tcp")}
+    if stream["network"] == "ws":
+        ws: dict = {}
+        if params.get("path"):
+            ws["path"] = params["path"]
+        if params.get("host"):
+            ws["host"] = params["host"]
+        if ws:
+            stream["wsSettings"] = ws
+    elif stream["network"] == "grpc" and params.get("serviceName"):
+        stream["grpcSettings"] = {"serviceName": params["serviceName"]}
+    security = params.get("security", "none")
+    if security == "tls":
+        tls: dict = {"serverName": params.get("sni", "")}
+        if pin:
+            # Xray 26 выкинул allowInsecure: самозакрытый сертификат ноды клиенту
+            # называется отпечатком pinnedPeerCertSha256 (SHA-256 от DER)
+            tls["pinnedPeerCertSha256"] = pin
+        stream["security"] = "tls"
+        stream["tlsSettings"] = tls
+    elif security == "reality":
+        stream["security"] = "reality"
+        stream["realitySettings"] = {
+            "publicKey": params.get("pbk", ""),
+            "fingerprint": params.get("fp", "chrome"),
+            "serverName": params.get("sni", ""),
+            "shortId": params.get("sid", ""),
+            "spiderX": params.get("spx", "/"),
+        }
+    return stream
+
+
+def outbound_from_link(link: str, pin: str | None = None) -> dict:
+    """Outbound Xray-клиента, собранный из одной ссылки подписки."""
+    scheme, target, params, _ = split_link(link)
+    if scheme == "vmess":
+        doc = json.loads(base64.b64decode(target.split("#", 1)[0]))
+        address, port = doc["add"], int(doc["port"])
+        cipher = doc.get("scy") or doc.get("cipher") or "auto"
+        stream: dict = {"network": doc.get("net", "tcp")}
+        if stream["network"] == "ws":
+            ws: dict = {}
+            if doc.get("path"):
+                ws["path"] = doc["path"]
+            if doc.get("host"):
+                ws["host"] = doc["host"]
+            if ws:
+                stream["wsSettings"] = ws
+        if doc.get("tls") == "tls":
+            stream["security"] = "tls"
+            tls: dict = {"serverName": doc.get("sni", "")}
+            if pin:
+                tls["pinnedPeerCertSha256"] = pin
+            stream["tlsSettings"] = tls
+        return {"tag": "direct", "protocol": "vmess",
+                "settings": {"vnext": [{"address": address, "port": port,
+                                        "users": [{"id": doc["id"], "alterId": int(doc.get("aid", 0)),
+                                                  "security": cipher}]}]},
+                "streamSettings": stream}
+
+    address, port = netloc_of(target)
+    credential = urllib.parse.unquote(target.split("@", 1)[0])
+    if scheme == "vless":
+        return {"tag": "direct", "protocol": "vless",
+                "settings": {"vnext": [{"address": address, "port": port,
+                                        "users": [{"id": credential, "encryption": params.get("encryption", "none")}]}]},
+                "streamSettings": stream_of(params, pin)}
+    if scheme == "trojan":
+        return {"tag": "direct", "protocol": "trojan",
+                "settings": {"servers": [{"address": address, "port": port, "password": credential}]},
+                "streamSettings": stream_of(params, pin)}
+    if scheme == "ss":
+        method, _, password = credential.partition(":")
+        return {"tag": "direct", "protocol": "shadowsocks",
+                "settings": {"servers": [{"address": address, "port": port,
+                                          "method": method, "password": password}]},
+                "streamSettings": stream_of(params, pin)}
+    raise ValueError(f"неизвестная схема ссылки: {scheme}")
+
+
 def main() -> int:
     import httpx
 
@@ -98,7 +211,9 @@ def main() -> int:
     print(f"Xray: {XRAY_BIN}")
 
     panel_port, node_port = free_port(), free_port()
-    hosts_ports = {name: free_port() for name in ("plain", "reality", "tls", "ws", "grpc")}
+    host_names = ("plain", "reality", "wss", "ws", "grpc", "vmess", "trojan", "treal", "ss")
+    hosts_ports = {name: free_port() for name in host_names}
+    socks_ports = {name: free_port() for name in host_names}
 
     node_proc = spawn(
         [str(ROOT / ".venv/bin/python"), "-m", "uvicorn", "src.node.main:app",
@@ -128,39 +243,63 @@ def main() -> int:
         token = api.post("/api/login", json={"username": "medusa", "password": "livecheck123"}).json()["token"]
         api.headers["Authorization"] = f"Bearer {token}"
 
-        node = api.post("/api/nodes", json={"name": "demo", "address": "127.0.0.1",
-                                            "apiPort": node_port, "apiKey": NODE_KEY}).json()
-        plain = api.post("/api/hosts", json={"name": "plain", "node": "demo", "protocol": "vless",
-                                             "port": hosts_ports["plain"], "network": "tcp", "security": "none"}).json()
-        reality = api.post("/api/hosts", json={"name": "reality", "node": "demo", "protocol": "vless",
-                                               "port": hosts_ports["reality"], "network": "tcp", "security": "reality",
-                                               "address": "localhost"}).json()
-        tls = api.post("/api/hosts", json={"name": "wss", "node": "demo", "protocol": "vless",
-                                           "port": hosts_ports["tls"], "network": "ws", "security": "tls",
-                                           "address": "localhost"}).json()
-        ws = api.post("/api/hosts", json={"name": "ws", "node": "demo", "protocol": "vless",
-                                          "port": hosts_ports["ws"], "network": "ws", "security": "none",
-                                          "path": "/medusa-tunnel", "hostHeader": "cdn.example.net"}).json()
-        grpc = api.post("/api/hosts", json={"name": "grpc", "node": "demo", "protocol": "vless",
-                                            "port": hosts_ports["grpc"], "network": "grpc", "security": "none",
-                                            "serviceName": "medusa-live", "grpcAuthority": "grpc.example.net"}).json()
-        user = api.post("/api/users", json={"name": "petya"}).json()
-        print("заведены: нода demo, хосты plain/reality/wss/ws/grpc, пользователь petya")
+        api.post("/api/nodes", json={"name": "demo", "address": "127.0.0.1",
+                                     "apiPort": node_port, "apiKey": NODE_KEY})
+        made = {}
+        made["plain"] = api.post("/api/hosts", json={"name": "plain", "node": "demo", "protocol": "vless",
+                                                     "port": hosts_ports["plain"], "network": "tcp",
+                                                     "security": "none"}).json()
+        made["reality"] = api.post("/api/hosts", json={"name": "reality", "node": "demo", "protocol": "vless",
+                                                       "port": hosts_ports["reality"], "network": "tcp",
+                                                       "security": "reality", "address": "localhost"}).json()
+        made["wss"] = api.post("/api/hosts", json={"name": "wss", "node": "demo", "protocol": "vless",
+                                                   "port": hosts_ports["wss"], "network": "ws",
+                                                   "security": "tls", "address": "localhost"}).json()
+        made["ws"] = api.post("/api/hosts", json={"name": "ws", "node": "demo", "protocol": "vless",
+                                                  "port": hosts_ports["ws"], "network": "ws",
+                                                  "security": "none", "path": "/medusa-tunnel",
+                                                  "hostHeader": "cdn.example.net"}).json()
+        made["grpc"] = api.post("/api/hosts", json={"name": "grpc", "node": "demo", "protocol": "vless",
+                                                    "port": hosts_ports["grpc"], "network": "grpc",
+                                                    "security": "none", "serviceName": "medusa-live",
+                                                    "grpcAuthority": "grpc.example.net"}).json()
+        # --- прочие протоколы: vmess, trojan (tls и reality) и shadowsocks ---
+        made["vmess"] = api.post("/api/hosts", json={"name": "vmess", "node": "demo", "protocol": "vmess",
+                                                     "port": hosts_ports["vmess"], "network": "ws",
+                                                     "security": "tls", "address": "localhost",
+                                                     "path": "/vmess-live", "hostHeader": "cdn.example.net"}).json()
+        made["trojan"] = api.post("/api/hosts", json={"name": "trojan", "node": "demo", "protocol": "trojan",
+                                                      "port": hosts_ports["trojan"], "network": "tcp",
+                                                      "security": "tls", "address": "localhost"}).json()
+        made["treal"] = api.post("/api/hosts", json={"name": "trojan-reality", "node": "demo", "protocol": "trojan",
+                                                     "port": hosts_ports["treal"], "network": "tcp",
+                                                     "security": "reality", "address": "localhost"}).json()
+        made["ss"] = api.post("/api/hosts", json={"name": "ss", "node": "demo", "protocol": "ss",
+                                                  "port": hosts_ports["ss"], "network": "tcp",
+                                                  "security": "none"}).json()
+        petya = api.post("/api/users", json={"name": "petya"}).json()
+        masha = api.post("/api/users", json={"name": "masha", "client": "happ"}).json()
+        print("заведены: нода demo, девять хостов (vless×5, vmess, trojan×2, ss), два пользователя")
 
-        # панель применяет конфиг сама; ждём подтверждения от ноды
-        applied = None
-        deadline = time.time() + 40
-        while time.time() < deadline:
-            row = next(n for n in api.get("/api/nodes").json() if n["id"] == node["id"])
-            if not row["configDirty"] and row["appliedRev"] >= 1:
-                applied = row
-                break
-            time.sleep(0.4)
+        # панель применяет конфиг сама; ждём, пока доставка успокоится: каждое
+        # создание хоста — отдельная ревизия, и Xray на ноде перезапускается на каждую
+        def settled(seconds: float = 90.0) -> dict | None:
+            stable_rev, deadline = None, time.time() + seconds
+            row = None
+            while time.time() < deadline:
+                row = next(n for n in api.get("/api/nodes").json() if n["name"] == "demo")
+                clean = (not row["configDirty"] and row["appliedRev"] >= 1
+                         and row["configRev"] == row["appliedRev"] and not row["applyError"])
+                if clean and stable_rev == row["appliedRev"]:
+                    return row                      # две подряд одинаковые спокойные строки
+                stable_rev = row["appliedRev"] if clean else None
+                time.sleep(0.6)
+            return row
+
+        applied = settled()
         ok(applied is not None and not applied["applyError"],
            f"панель сама доставила конфиг настоящей ноде: ревизия {applied['appliedRev'] if applied else '—'}"
            + ("" if not applied or not applied["applyError"] else f" / {applied['applyError']}"))
-        if applied is None:
-            print("DEBUG row:", json.dumps(row, ensure_ascii=False))
         if applied is None or applied["applyError"]:
             print("panel.log:\n" + (tmp / "panel.log").read_text(encoding="utf-8")[-2500:])
             if XRAY_LOG.exists():
@@ -168,13 +307,30 @@ def main() -> int:
             return 2
 
         # порты хостов действительно слушают
-        for label in ("plain", "reality", "tls", "ws", "grpc"):
+        ports_dead = []
+        for label in host_names:
             port = hosts_ports[label]
-            with socket.socket() as probe:
-                probe.settimeout(5)
-                ok(probe.connect_ex(("127.0.0.1", port)) == 0, f"порт {label} ({port}) слушается Xray")
+            alive = False
+            for _ in range(30):        # последнее применение могло ещё не поднять порты
+                with socket.socket() as probe:
+                    probe.settimeout(3)
+                    alive = probe.connect_ex(("127.0.0.1", port)) == 0
+                if alive:
+                    break
+                time.sleep(0.5)
+            ok(alive, f"порт {label} ({port}) слушается Xray")
+            if not alive:
+                ports_dead.append(label)
+        if ports_dead:
+            # без лога Xray такая проверка — слепая: нода честно пишет, почему не поднялась
+            print("  node.log: " + (tmp / "node.log").read_text(encoding="utf-8")[-1500:])
+            if XRAY_LOG.exists():
+                print("  xray.log: " + XRAY_LOG.read_text(encoding="utf-8")[-2500:])
+            print("  конфиг ноды: " + json.dumps(json.loads(CFG_PATH.read_text(encoding="utf-8")),
+                                                 ensure_ascii=False)[:1500])
+            return 2
 
-        # транспортные детали доехали до живого конфига Xray дословно
+        # транспортные и протокольные детали доехали до живого конфига Xray дословно
         cfg = json.loads(CFG_PATH.read_text(encoding="utf-8"))
         by_port = {i["port"]: i for i in cfg["inbounds"]}
         wss = by_port[hosts_ports["ws"]]["streamSettings"]
@@ -183,17 +339,39 @@ def main() -> int:
         gr = by_port[hosts_ports["grpc"]]["streamSettings"]["grpcSettings"]
         ok(gr["serviceName"] == "medusa-live" and gr["authority"] == "grpc.example.net",
            "живой конфиг Xray: имя сервиса и authority gRPC")
+        vm = by_port[hosts_ports["vmess"]]
+        ok(vm["protocol"] == "vmess" and all(c["security"] == "auto" for c in vm["settings"]["clients"])
+           and len(vm["settings"]["clients"]) == 2,
+           "живой конфиг Xray: vmess-инбаунд с двумя подписчиками и согласуемым шифром")
+        tr = by_port[hosts_ports["trojan"]]
+        ok(tr["protocol"] == "trojan" and len(tr["settings"]["clients"]) == 2,
+           "живой конфиг Xray: trojan-инбаунд с паролями обоих подписчиков")
+        ss_in = by_port[hosts_ports["ss"]]
+        ok(ss_in["protocol"] == "shadowsocks" and len(ss_in["settings"]["users"]) == 2
+           and {u["method"] for u in ss_in["settings"]["users"]} == {"chacha20-ietf-poly1305"},
+           "живой конфиг Xray: shadowsocks держит двух подписчиков в users со своим шифром")
+
+        # самозакрытый сертификат ноды клиент называет отпечатком (Xray 26 без allowInsecure)
+        from cryptography import x509
+        from cryptography.hazmat.primitives.serialization import Encoding
+
+        def cert_pin(host_id: int) -> str:
+            crt = CFG_PATH.parent / "certs" / f"host-{host_id}.crt"
+            der = x509.load_pem_x509_certificate(crt.read_bytes()).public_bytes(Encoding.DER)
+            return hashlib.sha256(der).hexdigest()
+
+        pins = {name: cert_pin(made[name]["id"]) for name in ("wss", "vmess", "trojan")}
 
         # ---- настоящий клиент: SOCKS-туннель и внешний запрос наружу ----
         def client_json(proxy_port: int, outbound: dict) -> Path:
-            cfg = {"log": {"loglevel": "warning"},
+            doc = {"log": {"loglevel": "warning"},
                    "inbounds": [{"port": proxy_port, "protocol": "socks", "settings": {}}],
                    "outbounds": [outbound]}
             path = tmp / f"client-{proxy_port}.json"
-            path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+            path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
             return path
 
-        def through(label: str, proxy_port: int, outbound: dict) -> None:
+        def through(label: str, proxy_port: int, outbound: dict, who: str = "") -> bool:
             cfg_path = client_json(proxy_port, outbound)
             log = tmp / f"client-{label}.log"
             proc = spawn([XRAY_BIN, "-config", str(cfg_path)], os.environ, log)
@@ -210,11 +388,12 @@ def main() -> int:
                         break
                     time.sleep(1.0)
                 ok(code in (204, 200),
-                   f"{label}: внешний запрос прошёл через туннель (HTTP {code})")
+                   f"{label}{who}: внешний запрос прошёл через туннель (HTTP {code})")
                 if code == 0:
                     print(f"  клиент {label}: " + log.read_text(encoding="utf-8")[-1200:])
                     if XRAY_LOG.exists():
                         print(f"  сервер xray.log: " + XRAY_LOG.read_text(encoding="utf-8")[-1200:])
+                return code in (204, 200)
             finally:
                 proc.terminate()
                 try:
@@ -222,70 +401,179 @@ def main() -> int:
                 except subprocess.TimeoutExpired:
                     proc.kill()
 
-        short_id = reality_short_id(user["token"])
+        # --- проверка по ссылкам подписки: и ровно те поля, что видит подписчик ---
+        def links_of(user: dict) -> dict[str, str]:
+            """Ссылки подписки одного человека, разложенные по имени хоста."""
+            raw = api.get(f"/sub/{user['token']}/links?raw=1").text
+            out: dict[str, str] = {}
+            for line in raw.splitlines():
+                if not line:
+                    continue
+                name = urllib.parse.unquote(line.partition("#")[2]) or line.split("://", 1)[0]
+                out[name] = line
+            return out
 
-        through("plain", 12711, {
-            "tag": "direct", "protocol": "vless",
-            "settings": {"vnext": [{"address": "127.0.0.1", "port": hosts_ports["plain"],
-                                    "users": [{"id": user_uuid(user["token"]), "encryption": "none"}]}]},
-            "streamSettings": {"network": "tcp"}})
+        petya_links, masha_links = links_of(petya), links_of(masha)
+        ok(len(petya_links) == 9 and {"vmess", "trojan", "trojan-reality", "ss"} <= set(petya_links),
+           f"машинная ссылка подписки отдаёт все девять хостов: {sorted(petya_links)}")
 
-        through("reality", 12712, {
-            "tag": "direct", "protocol": "vless",
-            "settings": {"vnext": [{"address": "127.0.0.1", "port": hosts_ports["reality"],
-                                    "users": [{"id": user_uuid(user["token"]), "encryption": "none"}]}]},
-            "streamSettings": {"network": "tcp", "security": "reality",
-                               "realitySettings": {"publicKey": reality["publicKey"], "fingerprint": "chrome",
-                                                   "serverName": "localhost", "shortId": short_id, "spiderX": "/"}}})
+        short_id = reality_short_id(petya["token"])
+        through("plain", socks_ports["plain"], outbound_from_link(petya_links["plain"]))
+        through("reality", socks_ports["reality"], outbound_from_link(petya_links["reality"]))
+        through("wss", socks_ports["wss"], outbound_from_link(petya_links["wss"], pins["wss"]))
+        through("ws", socks_ports["ws"], outbound_from_link(petya_links["ws"]))
+        through("grpc", socks_ports["grpc"], outbound_from_link(petya_links["grpc"]))
+        through("vmess", socks_ports["vmess"], outbound_from_link(petya_links["vmess"], pins["vmess"]))
+        through("trojan", socks_ports["trojan"], outbound_from_link(petya_links["trojan"], pins["trojan"]))
+        through("trojan-reality", socks_ports["treal"], outbound_from_link(petya_links["trojan-reality"]))
+        through("ss", socks_ports["ss"], outbound_from_link(petya_links["ss"]))
 
-        # Xray 26 выкинул allowInsecure: самозакрытый сертификат ноды клиенту
-        # называется по отпечатку — pinnedPeerCertSha256 (SHA-256 от DER сертификата)
-        from cryptography import x509
-        from cryptography.hazmat.primitives.serialization import Encoding
-        cert_file = CFG_PATH.parent / f"certs/host-{tls['id']}.crt"
-        der = x509.load_pem_x509_certificate(cert_file.read_bytes()).public_bytes(Encoding.DER)
-        pin = hashlib.sha256(der).hexdigest()
-        through("tls", 12713, {
-            "tag": "direct", "protocol": "vless",
-            "settings": {"vnext": [{"address": "127.0.0.1", "port": hosts_ports["tls"],
-                                    "users": [{"id": user_uuid(user["token"]), "encryption": "none"}]}]},
-            "streamSettings": {"network": "ws", "security": "tls",
-                               "wsSettings": {"path": "/"},
-                               "tlsSettings": {"serverName": "localhost", "pinnedPeerCertSha256": pin}}})
+        # второй подписчик через те же порты vmess/trojan/shadowsocks: панель различает людей
+        for name in ("vmess", "trojan", "ss"):
+            through(name, free_port(), outbound_from_link(masha_links[name], pins.get(name)), " / masha")
+
+        reality_link = petya_links["reality"]
+        ok(f"sid={short_id}" in reality_link, "reality-ссылка подписчика несёт его короткий id")
 
         # то, что увидит подписчик: ссылки прямо со страницы подписки панели
-        page = api.get(f"/sub/{user['token']}", headers={"Accept": "text/html"}).text
-        links = list(dict.fromkeys(link.replace("&amp;", "&") for link in re.findall(r"vless://[^\s\"<]+", page)))
-        ok(len(links) >= 1, f"страница подписки отдаёт vless://-ссылки: {len(links)}")
+        page = api.get(f"/sub/{petya['token']}", headers={"Accept": "text/html"}).text
+        page_links = list(dict.fromkeys(l.replace("&amp;", "&") for l in
+                                        re.findall(r"(?:vless|vmess|trojan|ss)://[^\s\"<]+", page)))
+        ok(len(page_links) >= 9, f"страница подписки отдаёт ссылки всех хостов: {len(page_links)}")
         print("\nссылки подписки petya (можно вставить в клиент и подключаться к этой машине):")
-        for link in links:
+        for link in page_links:
             print("  " + link)
-        netloc = urllib.parse.urlparse(links[0]).netloc if links else "?"
-        print(f"  (внутри ссылки адрес подключения: {netloc})")
+        first = page_links[0] if page_links else ""
+        netloc = urllib.parse.urlparse(first).netloc.rsplit("@", 1)[-1] or "?"
+        print(f"  (внутри первой ссылки адрес подключения: {netloc})")
 
         # машинный вид: одно вставление ссылки в приложение — все хосты разом
-        machine = api.get(f"/sub/{user['token']}/links?raw=1").text.splitlines()
-        ok(len(machine) == 5 and all(l.startswith("vless://") for l in machine),
-           "ссылка подписки одним запросом отдаёт все пять хостов")
+        machine = api.get(f"/sub/{petya['token']}/links?raw=1").text.splitlines()
+        schemes = {l.split("://", 1)[0] for l in machine if l}
+        ok(len(machine) == 9 and schemes == {"vless", "vmess", "trojan", "ss"},
+           f"ссылка подписки одним запросом отдаёт все девять хостов: {sorted(schemes)}")
         # та же ссылка без Accept: text/html — приложение получит ссылки, а не страницу
-        import base64 as b64
-        negotiated = b64.b64decode(api.get(f"/sub/{user['token']}", headers={"Accept": "*/*"}).text).decode("utf-8")
-        ok(negotiated.count("vless://") == 5,
+        negotiated = base64.b64decode(api.get(f"/sub/{petya['token']}", headers={"Accept": "*/*"}).text).decode("utf-8")
+        ok(len([l for l in negotiated.splitlines() if l]) == 9,
            "та же ссылка подписки: клиент без Accept: text/html получает ссылки вместо страницы")
+        # Happ, v2rayNG и прочие читают base64 из переводных ссылок: проверим, что он собирается
+        ok(base64.b64decode(api.get(f"/sub/{masha['token']}/links").text).decode("utf-8")
+           .count("\n") == 8, "base64-подписка для Happ/v2rayNG: девять ссылок, переводные")
         # Clash и его производные понимают только YAML со списком proxies
         import yaml as _yaml
-        clash_doc = _yaml.safe_load(api.get(f"/sub/{user['token']}",
+        clash_doc = _yaml.safe_load(api.get(f"/sub/{petya['token']}",
                                             headers={"Accept": "*/*", "User-Agent": "clash-verge/v2.4.0"}).text)
-        ok(len(clash_doc["proxies"]) == 5 and all(p["type"] == "vless" for p in clash_doc["proxies"]),
-           "clash yaml: все пять хостов списком proxies")
-        reality_p = next(p for p in clash_doc["proxies"] if p["name"] == "reality")
-        w_p = next(p for p in clash_doc["proxies"] if p["name"] == "ws")
-        ok(reality_p["reality-opts"]["public-key"] and reality_p["client-fingerprint"] == "chrome"
-           and w_p["ws-opts"]["path"] == "/medusa-tunnel",
-           "clash yaml: reality-ключи и websocket-детали описаны по- clash-вому")
-        qr = api.get(f"/sub/{user['token']}/qr/subscribe")
+        kinds = sorted({p["type"] for p in clash_doc["proxies"]})
+        ok(len(clash_doc["proxies"]) == 9 and kinds == ["ss", "trojan", "vless", "vmess"],
+           f"clash yaml: все девять хостов и все протоколы списком proxies: "
+           f"{len(clash_doc['proxies'])} прокси {kinds}")
+        by_clash = {p["name"]: p for p in clash_doc["proxies"]}
+        ok(by_clash["reality"]["reality-opts"]["public-key"] and by_clash["reality"]["client-fingerprint"] == "chrome"
+           and by_clash["ws"]["ws-opts"]["path"] == "/medusa-tunnel",
+           "clash yaml: reality-ключи и websocket-детали описаны по-clash-вому")
+        ok(by_clash["vmess"]["cipher"] == "auto" and by_clash["vmess"]["ws-opts"]["path"] == "/vmess-live",
+           "clash yaml: vmess со своим шифром и путём websocket")
+        ok(by_clash["ss"]["cipher"] == "chacha20-ietf-poly1305" and by_clash["ss"]["password"],
+           "clash yaml: shadowsocks с шифром и паролем этого хоста")
+        ok(by_clash["trojan"]["password"] and by_clash["trojan-reality"]["reality-opts"]["short-id"],
+           "clash yaml: trojan с паролем и reality-хост с коротким id")
+        group = clash_doc["proxy-groups"][0]
+        ok(group["type"] == "select" and set(group["proxies"]) == set(by_clash)
+           and clash_doc["rules"][0] == f"MATCH,{group['name']}",
+           f"clash yaml: группа выбора «{group['name']}» — одиночный Mihomo знает, куда класть трафик")
+
+        # --- Clash/Mihomo берёт подписку целиком и ходит через неё наружу ---
+        # Mihomo — тот же движок, что стоит за Clash Verge: если подписку принимает он,
+        # её принимают Clash, Clash Verge, flclash и Mihomo proxy-provider.
+        clash_bin = os.getenv("MEDUSA_CLASH_BIN") or ""
+        if not clash_bin and (ROOT / "bin" / "mihomo").exists():
+            clash_bin = str(ROOT / "bin" / "mihomo")
+        clash_bin = clash_bin or (shutil.which("mihomo") or "")
+        if not clash_bin or not os.access(clash_bin, os.X_OK):
+            print("SKIP  mihomo не найден (bin/mihomo или MEDUSA_CLASH_BIN) — живую clash-проверку "
+                  "делать нечем, YAML проверен только текстом")
+        else:
+            mih_dir = tmp / "mihomo"
+            mih_dir.mkdir()
+            mixed, controller = free_port(), free_port()
+            yaml_text = api.get(f"/sub/{petya['token']}?target=clash").text
+            # port в тесте свой, чтобы не спорить с живым Clash на машине; всё остальное —
+            # дословно та подписка, что отдаёт панель
+            cfg_text = yaml_text.replace("mixed-port: 7890", f"mixed-port: {mixed}")
+            cfg_text += f"external-controller: 127.0.0.1:{controller}\n"
+            (mih_dir / "clash.yaml").write_text(cfg_text, encoding="utf-8")
+            tested = subprocess.run([clash_bin, "-t", "-d", str(mih_dir), "-f", str(mih_dir / "clash.yaml")],
+                                    capture_output=True, text=True, timeout=60)
+            note = (tested.stderr or tested.stdout).strip().splitlines()
+            ok(tested.returncode == 0,
+               f"mihomo принимает подписку панели как собственный конфиг: {note[-1] if note else 'ok'}")
+            if tested.returncode == 0:
+                # Reality-хосты Mihomo не пукает живой Xray 26: с версии 26.9.8
+                # сервер reality отвергает ClientHello без гибрида X25519MLKEM768,
+                # а Mihomo (1.19.34, и master) этого ключа не добавляет — оба фикса
+                # в Mihomo закрыты неслитыми. Поэтому здесь reality проверяется как
+                # конфиг (он принят и лежит в группе выбора), а его туннель проверяется
+                # настоящим Xray-клиентом выше по тексту. Остальные протоколы панель
+                # обязана провести через Clash целиком.
+                by_name = {p["name"]: p for p in clash_doc["proxies"]}
+                reality_names = [n for n, p in by_name.items() if "reality-opts" in p]
+                clash_names = [n for n in ("plain", "reality", "wss", "ws", "grpc", "vmess",
+                                           "trojan", "trojan-reality", "ss") if n in by_name]
+                ok(sorted(reality_names) == ["reality", "trojan-reality"]
+                   and all(by_name[n]["sni"] == by_name[n]["servername"] for n in reality_names),
+                   f"clash yaml: reality-хосты названы сайтом-маской обоими полями "
+                   f"({by_name['reality']['sni']}): {sorted(reality_names)}")
+                print(f"NOTE  через Clash проверяются {len(clash_names) - len(reality_names)} хоста: "
+                      f"reality ({', '.join(sorted(reality_names))}) Mihomo {clash_bin} не умеет "
+                      f"handshake Xray 26 — см. AGENTS.md, туннель reality проверен Xray-клиентом")
+                proc = spawn([clash_bin, "-d", str(mih_dir), "-f", str(mih_dir / "clash.yaml")],
+                             os.environ, tmp / "mihomo.log")
+                try:
+                    for _ in range(40):
+                        with socket.socket() as probe:
+                            probe.settimeout(2)
+                            if probe.connect_ex(("127.0.0.1", mixed)) == 0:
+                                break
+                        time.sleep(0.4)
+
+                    def select(name: str) -> None:
+                        req = urllib.request.Request(
+                            f"http://127.0.0.1:{controller}/proxies/"
+                            f"{urllib.parse.quote(group['name'])}",
+                            method="PUT", data=json.dumps({"name": name}).encode(),
+                            headers={"Content-Type": "application/json"})
+                        urllib.request.urlopen(req, timeout=5).read()
+
+                    for name in clash_names:
+                        if name in reality_names:
+                            continue
+                        select(name)
+                        code = 0
+                        deadline = time.time() + 25
+                        while time.time() < deadline:
+                            res = subprocess.run(["curl", "-sS", "-x", f"http://127.0.0.1:{mixed}",
+                                                  "--max-time", "8", "-o", os.devnull, "-w", "%{http_code}",
+                                                  "https://www.gstatic.com/generate_204"],
+                                                 capture_output=True, text=True)
+                            if res.stdout.strip() in ("204", "200"):
+                                code = int(res.stdout.strip())
+                                break
+                            time.sleep(0.8)
+                        ok(code in (204, 200),
+                           f"clash/mihomo {name}: трафик прошёл через подписку панели (HTTP {code})")
+                        if code == 0:
+                            print("  mihomo.log: " + (tmp / "mihomo.log").read_text(encoding="utf-8")[-700:])
+                finally:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+        qr = api.get(f"/sub/{petya['token']}/qr/subscribe")
         ok(qr.status_code == 200 and qr.headers["content-type"].startswith("image/svg"),
            "QR ссылки подписки рисуется прямо на странице")
+        ok(api.get(f"/sub/{petya['token']}/qr/host/{made['ss']['id']}").status_code == 200,
+           "QR отдельного хоста собирается и для shadowsocks")
 
         if "--keep" in sys.argv:
             print(f"\nпанель живёт: {panel_url}, вход medusa / livecheck123. Ctrl+C — остановить.")

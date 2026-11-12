@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, PublicFormat, NoEncryption
 from fastapi import APIRouter, Depends
 
-from src.core.xray_config import is_ip
+from src.core.xray_config import is_ip, reality_client_sni, security_issue, unsupported_protocol, UNSUPPORTED_HINT
 from src.panel import config_push
 from src.panel.db import get_conn, now_ms
 from src.panel.deps import bad_request, conflict, fetch_one, node_by_name, writer
@@ -78,15 +78,29 @@ def clean(value: object) -> str:
     return str(value or "").strip()
 
 
-def check_combination(protocol: str, network: str, security: str, address: str, node_address: str) -> None:
+def check_combination(protocol: str, network: str, security: str, address: str, node_address: str,
+                      server_names: str = "", dest: str = "") -> None:
     """Смысл combos один на create и patch: набор «reality поверх ws» или reality на IP
-    одинаково бессмысленен при создании и при правке."""
+    одинаково бессмысленен при создании и при правке.
+
+    Протокол, которого панель не умеет ни в конфиге, ни в ссылке (hy2), отвергается здесь
+    же: панель не заводит хост, о котором подписчик никогда не узнает.
+    """
+    if unsupported_protocol(protocol):
+        raise bad_request(UNSUPPORTED_HINT)
+    issue = security_issue(protocol, security)
+    if issue:
+        raise bad_request(issue)
     if security == "reality" and network == "ws":
         raise bad_request("reality не работает поверх ws")
     if protocol == "ss" and network != "tcp":
         raise bad_request("shadowsocks тут только через tcp")
-    if security == "reality" and is_ip(address or node_address):
-        raise bad_request("хосту reality нужен адрес-домен: клиент не умеет подставлять IP в SNI")
+    if security == "reality" and not reality_client_sni({"server_names": server_names, "dest": dest},
+                                                        address or node_address):
+        # адрес самой ноды может быть и IP: клиент в reality называет не его, а сайт-
+        # маску; вот она обязана быть доменом — IP в SNI клиент подставить не умеет
+        raise bad_request("reality прячется за доменом: маскированный адрес (или список "
+                          "принимаемых SNI) обязан быть доменом, а не IP")
 
 
 def check_fields(body: HostCreate | HostPatch, security: str, network: str) -> None:
@@ -143,7 +157,8 @@ def create_host(
 ) -> dict:
     node = node_by_name(conn, body.node)
     address = clean(body.address)
-    check_combination(body.protocol, body.network, body.security, address, node["address"])
+    check_combination(body.protocol, body.network, body.security, address, node["address"],
+                      clean(body.serverNames), clean(body.dest))
     check_fields(body, body.security, body.network)
     check_cert_pair(clean(body.certFile), clean(body.keyFile))
     check_port(conn, node["id"], body.node, body.port)
@@ -212,7 +227,8 @@ def patch_host(
         "server_names": clean(body.serverNames) if body.serverNames is not None else row["server_names"],
     }
 
-    check_combination(merged["protocol"], merged["network"], merged["security"], merged["address"], node["address"])
+    check_combination(merged["protocol"], merged["network"], merged["security"], merged["address"],
+                      node["address"], merged["server_names"], merged["dest"])
     check_fields(body, merged["security"], merged["network"])
     check_cert_pair(merged["cert_file"], merged["key_file"])
     check_port(conn, node_id, node["name"], merged["port"], own_id=host_id)

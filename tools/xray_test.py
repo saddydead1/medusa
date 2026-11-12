@@ -11,6 +11,9 @@
 * reality-хост получает пару x25519: приватный ключ едет в конфиг, публичный — наружу;
 * конфиг ноды собирается из её хостов и активных пользователей, reality-клиенты
   идут с паролем и коротким id, tls-хосты — с выпущенным сертификатом;
+* vmess, trojan и shadowsocks подымаются сами: у vmess согласуемый шифр, у trojan пароль
+  из токена, у shadowsocks подписчики лежат в `users` со своим шифром и своим на каждый
+  хост паролем; hy2 и бессмысленные комбинации (ss+tls, vmess+reality) не заводятся;
 * применение поднимает ревизию на обеих сторонах и не роняет панель при отказе ноды;
 * отключённый пользователь исчезает из клиентов конфига.
 """
@@ -95,7 +98,14 @@ def wait_cfg(cfg_path: Path, cond, seconds: float = 25) -> dict | None:
 
 
 def clients_at(cfg: dict, port: int) -> list:
-    return next(i for i in cfg["inbounds"] if i["port"] == port)["settings"]["clients"]
+    inbound = next(i for i in cfg["inbounds"] if i["port"] == port)
+    # у shadowsocks клиенты живут в users: так Xray различает нескольких подписчиков
+    # одного порта — по их ключам
+    return inbound["settings"].get("users") or inbound["settings"]["clients"]
+
+
+def inbound_at(cfg: dict, port: int) -> dict:
+    return next(i for i in cfg["inbounds"] if i["port"] == port)
 
 
 def main() -> int:
@@ -115,7 +125,8 @@ def main() -> int:
 
     import httpx
 
-    from src.core.xray_config import reality_short_id, user_password, user_uuid
+    from src.core.xray_config import (SS_CIPHER, VMESS_CIPHER, reality_short_id, ss_password,
+                                      user_password, user_uuid)
     from src.panel.main import app
     from fastapi.testclient import TestClient
 
@@ -179,12 +190,41 @@ def main() -> int:
                                                        "path": "/x"})
             ok(ws_cross.status_code == 400, f"путь без websocket отвергается: {ws_cross.json()['detail']}")
 
+            # --- прочие протоколы, которые панель обязана уметь поднимать сама ----
+            vmess = client.post("/api/hosts", json={"name": "V2083", "node": "stub", "protocol": "vmess",
+                                                    "port": 2083, "network": "ws", "security": "tls",
+                                                    "address": "vm.example.net", "sni": "vm.example.net",
+                                                    "path": "/vmess", "hostHeader": "cdn.example.net"}).json()
+            ok(vmess["protocol"] == "vmess", "vmess-хост заведён")
+            trojan = client.post("/api/hosts", json={"name": "TR2095", "node": "stub", "protocol": "trojan",
+                                                     "port": 2095, "network": "tcp", "security": "tls",
+                                                     "address": "tr.example.net", "sni": "tr.example.net"}).json()
+            trojan_reality = client.post("/api/hosts", json={"name": "TR2096", "node": "stub", "protocol": "trojan",
+                                                             "port": 2096, "network": "tcp", "security": "reality",
+                                                             "address": "tr-real.example.net"}).json()
+            sock = client.post("/api/hosts", json={"name": "S3055", "node": "stub", "protocol": "ss",
+                                                   "port": 3055, "network": "tcp", "security": "none",
+                                                   "address": "ss.example.net"}).json()
+            hy2 = client.post("/api/hosts", json={"name": "HY2", "node": "stub", "protocol": "hy2",
+                                                  "port": 3056, "network": "tcp", "security": "none"})
+            ok(hy2.status_code == 400, f"hy2 панель не заводит: {hy2.json()['detail']}")
+            ss_tls = client.post("/api/hosts", json={"name": "ss+tls", "node": "stub", "protocol": "ss",
+                                                     "port": 3057, "network": "tcp", "security": "tls"})
+            ok(ss_tls.status_code == 400, f"ss с чужой защитой отвергается: {ss_tls.json()['detail']}")
+            vm_reality = client.post("/api/hosts", json={"name": "vmess+reality", "node": "stub", "protocol": "vmess",
+                                                         "port": 3058, "network": "tcp", "security": "reality",
+                                                         "address": "vm.example.net"})
+            ok(vm_reality.status_code == 400, f"vmess+reality отвергается: {vm_reality.json()['detail']}")
+            ss_ws = client.post("/api/hosts", json={"name": "ss-ws", "node": "stub", "protocol": "ss",
+                                                    "port": 3059, "network": "ws", "security": "none"})
+            ok(ss_ws.status_code == 400, f"ss поверх ws отвергается: {ss_ws.json()['detail']}")
+
             vasya = client.post("/api/users", json={"name": "vasya"}).json()
 
             cfg_path = STATE.parent / "xray" / "config.json"
             # панель доставляет конфиг сама: ни одной кнопки «применить» в тесте нет.
-            # ждём именно конечного состояния: три хоста и один клиент в reality
-            wait_cfg(cfg_path, lambda c: len(c["inbounds"]) == 4 and len(clients_at(c, 443)) == 1)
+            # ждём именно конечного состояния: все восемь хостов и один клиент в reality
+            wait_cfg(cfg_path, lambda c: len(c["inbounds"]) == 8 and len(clients_at(c, 443)) == 1)
             row = wait_rows(client, node["id"], lambda r: not r["configDirty"] and r["appliedRev"] >= 1)
             ok(row is not None and row["applyError"] is None,
                f"панель сама доставила конфиг после правок: ревизия {row['appliedRev'] if row else '—'}")
@@ -202,17 +242,19 @@ def main() -> int:
             ok(cfg_path.exists(), f"рабочий конфиг ноды записан: {cfg_path}")
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
             by_port = {i["port"]: i for i in cfg["inbounds"]}
-            ok({i["tag"] for i in cfg["inbounds"]} == {"R443", "T8443", "N3011", "G3077"},
+            ok({i["tag"] for i in cfg["inbounds"]} == {"R443", "T8443", "N3011", "G3077",
+                                                       "V2083", "TR2095", "TR2096", "S3055"},
                f"теги инбаундов — имена хостов, как их видит человек: {sorted(i['tag'] for i in cfg['inbounds'])}")
-            ok(sorted(by_port) == [443, 3011, 3077, 8443], f"инбаунды по портам хостов: {sorted(by_port)}")
+            ok(sorted(by_port) == [443, 2083, 2095, 2096, 3011, 3055, 3077, 8443],
+               f"инбаунды по портам хостов: {sorted(by_port)}")
 
             r = by_port[443]
             ok(r["streamSettings"]["security"] == "reality" and r["streamSettings"]["realitySettings"]["privateKey"],
                "reality-инбаунд с приватным ключом из панели")
             ok(r["streamSettings"]["realitySettings"]["serverNames"] == ["vpn.example.net", "backup.example.net"],
                "serverNames — список sni хоста, а не только адрес подключения")
-            ok(r["streamSettings"]["realitySettings"]["minClientVer"] == "24.0.0",
-               "панель сама держит минимальную версию клиента (старые клиенты не отваливаются)")
+            ok("minClientVer" not in r["streamSettings"]["realitySettings"],
+               "версию клиента панель не цензурирует: это формальность рукопожатия, а не защита")
             ok(r["streamSettings"]["fingerprint"] == "firefox",
                "отпечаток клиента ушёл в конфиг и reality-инбаунда")
             ok(r["streamSettings"]["realitySettings"]["dest"] == "mask.example.net:443",
@@ -246,6 +288,37 @@ def main() -> int:
             p = by_port[3011]
             ok(uuid.UUID(p["settings"]["clients"][0]["id"]) == uuid.UUID(user_uuid(vasya["token"])),
                "vless без защиты получает uuid, собранный из токена пользователя")
+
+            # --- vmess, trojan и shadowsocks: панель поднимает их сама, без заглушек ---
+            v = by_port[2083]
+            ok(v["protocol"] == "vmess" and v["settings"]["clients"][0]["security"] == VMESS_CIPHER,
+               f"vmess-инбаунд с согласуемым шифром {VMESS_CIPHER} и alterId без устаревшего режима")
+            ok(uuid.UUID(v["settings"]["clients"][0]["id"]) == uuid.UUID(user_uuid(vasya["token"])),
+               "vmess-подписчик узнаётся по тому же uuid, что и vless")
+            ok(v["streamSettings"]["wsSettings"]["path"] == "/vmess"
+               and v["streamSettings"]["tlsSettings"]["serverName"] == "vm.example.net",
+               "vmess поверх websocket+tls доехал со своим путём и sni")
+
+            tr = by_port[2095]
+            ok(tr["protocol"] == "trojan"
+               and [c["password"] for c in tr["settings"]["clients"]] == [user_password(vasya["token"])],
+               "trojan-инбаунд: пароль подписчика собран из его токена")
+            ok(tr["streamSettings"]["tlsSettings"]["certificates"][0]["certificateFile"].endswith(
+                   f"host-{trojan['id']}.crt"),
+               "trojan-хост получил свой сертификат, а не чужой")
+
+            trr = by_port[2096]
+            ok(trr["protocol"] == "trojan" and trr["settings"]["clients"][0]["password"]
+               and trr["streamSettings"]["realitySettings"]["privateKey"]
+               and trr["streamSettings"]["realitySettings"]["shortIds"] == [reality_short_id(vasya["token"])],
+               "trojan поверх reality: пароль у клиента, короткий id — у инбаунда")
+
+            s = by_port[3055]
+            ok(s["protocol"] == "shadowsocks" and "clients" not in s["settings"],
+               "ss-хост панели — это shadowsocks-инбаунд Xray с подписчиками в users")
+            ok([c["password"] for c in clients_at(cfg, 3055)] == [ss_password(vasya["token"], sock["id"])]
+               and clients_at(cfg, 3055)[0]["method"] == SS_CIPHER,
+               f"ss-пароль выведен из токена и привязан к хосту, шифр {SS_CIPHER}")
 
             status = httpx.get(f"http://127.0.0.1:{node_port}/node/status",
                                headers={"Authorization": f"Bearer {NODE_KEY}"}, timeout=5).json()
@@ -281,17 +354,17 @@ def main() -> int:
             ok(row["applyError"] and row["configDirty"] is True, "ошибка применения записана в строку ноды")
 
             client.delete(f"/api/hosts/{plain['id']}")
-            cfg = wait_cfg(cfg_path, lambda c: len(c["inbounds"]) == 3)
-            ok(len(cfg["inbounds"]) == 3, "удалённый хост исчез из конфига")
+            cfg = wait_cfg(cfg_path, lambda c: len(c["inbounds"]) == 7)
+            ok(len(cfg["inbounds"]) == 7, "удалённый хост исчез из конфига")
 
             # два хоста с одним именем на одной ноде — порт уникален, а тег нет:
             # второй получает имя с id, теги в конфиге не должны сталкиваться
             dup = client.post("/api/hosts", json={"name": "R443", "node": "stub", "protocol": "vless",
                                                    "port": free_port(), "network": "tcp", "security": "none",
                                                    "address": "127.0.0.1"}).json()
-            cfg = wait_cfg(cfg_path, lambda c: len(c["inbounds"]) == 4)
+            cfg = wait_cfg(cfg_path, lambda c: len(c["inbounds"]) == 8)
             tags = [i["tag"] for i in cfg["inbounds"]]
-            ok(len(set(tags)) == 4 and "R443" in tags and any(tag == f"R443-{dup['id']}" for tag in tags),
+            ok(len(set(tags)) == 8 and "R443" in tags and any(tag == f"R443-{dup['id']}" for tag in tags),
                f"одноимённые хосты получили разные теги: {sorted(tags)}")
 
             # панель подтвердит ревизию чуть позже, чем файл конфига сменился: ждём оба факта
