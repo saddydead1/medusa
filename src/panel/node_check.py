@@ -110,7 +110,19 @@ def read_traffic(conn: sqlite3.Connection, node_id: int, target: NodeTarget,
         conn.execute("UPDATE nodes SET traffic_error = ? WHERE id = ?", (str(err), node_id))
         conn.commit()
         return {"bytes": None, "labels": 0, "at": None, "error": str(err)}
-    return apply_status(conn, node_id, status)
+    summary = apply_status(conn, node_id, status)
+    # беда самой ноды — её Xray умер (порт занят чужим слушателем, конфиг плохой, прав на
+    # порт не хватило) — важнее всего, что панель знает о применении конфига: показывать её
+    # надо в строке ноды, а не прятать за словом «применено». Когда нода отвечает чисто и
+    # её применённая ревизия совпадает с желаемой, прежнюю ошибку снимаем.
+    node_error = getattr(status, "lastError", None)
+    if node_error:
+        conn.execute("UPDATE nodes SET apply_error = ? WHERE id = ?", (node_error, node_id))
+    else:
+        conn.execute("""UPDATE nodes SET apply_error = NULL WHERE id = ?
+                        AND config_dirty = 0 AND applied_rev = config_rev""", (node_id,))
+    conn.commit()
+    return summary
 
 
 def store_report(conn: sqlite3.Connection, node_id: int, report: dict[str, Any]) -> None:

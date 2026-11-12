@@ -121,6 +121,12 @@ class Hop(BaseModel):
     network: NETWORKS = "tcp"
     security: SECURITY = "none"
     port: PORT
+    # адрес, на который соседняя нода цепочки придёт к этому hopу. Пусто — адрес ноды:
+    # у ноды он один и тот же для связи с панелью и для подписчиков, а на машине ноды
+    # хост может жить на другом имени (домен наружу, VLAN, несколько адресов).
+    # Пустая строка здесь разрешена: пусто значит «адрес ноды» (у обычного хоста пустого
+    # адреса нет — там он либо назван, либо отсутствует)
+    address: Annotated[str | None, Field(max_length=63, pattern=ADDR_OR_EMPTY)] = None
 
 
 class ChainCreate(BaseModel):

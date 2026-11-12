@@ -7,7 +7,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from src.core.api_keys import api_key_fingerprint
-from src.panel import config_push
+from src.panel import config_push, ports
+from src.panel.chain_hops import reissue_hop_certs
 from src.panel.db import get_conn, now_ms
 from src.panel.deps import bad_request, conflict, current_admin, fetch_one, writer
 from src.panel.node_check import check_node as run_check
@@ -22,12 +23,25 @@ def list_nodes(conn: sqlite3.Connection = Depends(get_conn)) -> list[dict]:
     return [as_dict(r) for r in conn.execute(f"SELECT {NODE_COLUMNS} FROM nodes ORDER BY name").fetchall()]
 
 
+def check_api_port(conn: sqlite3.Connection, node_id: int | None, address: str, port: int) -> None:
+    """API-порт ноды не должен наступать на чужой слушатель на той же машине.
+
+    Это не придирка: нода и её же хосты живут на одном адресе, и если API-порт совпадёт с
+    портом хоста (своего или чужой ноды на этой машине), Xray не поднимется — а панель будет
+    видеть живую ноду с мёртвыми хостами.
+    """
+    issue = ports.port_conflict(conn, address, port, skip_node=node_id)
+    if issue:
+        raise conflict(issue)
+
+
 @router.post("", status_code=201)
 def create_node(
     body: NodeCreate,
     conn: sqlite3.Connection = Depends(get_conn),
     _: sqlite3.Row | None = Depends(writer),
 ) -> dict:
+    check_api_port(conn, None, body.address, body.apiPort or 9443)
     try:
         conn.execute(
             """INSERT INTO nodes (name, address, online, xray_version, traffic_bytes,
@@ -69,13 +83,39 @@ def patch_node(
     same = {"address": before["address"], "apiPort": before["api_port"], "apiKey": before["api_key"]}
     if any(k in changes and changes[k] != same[k] for k in same):
         sets += ", seen_at = 0, agent_version = NULL, online = 0"
+    # чем нода станет после правки: адрес и API-порт проверяются уже новыми значениями,
+    # вместе с портами её хостов (они переезжают на новый адрес вместе с нодой)
+    address = changes.get("address", before["address"])
+    api_port = int(changes.get("apiPort", before["api_port"]))
+    check_api_port(conn, node_id, address, api_port)
+    for host in conn.execute("SELECT id, name, port FROM hosts WHERE node_id = ?", (node_id,)).fetchall():
+        issue = ports.port_conflict(conn, address, int(host["port"]),
+                                    skip_node=node_id, skip_host=int(host["id"]))
+        if issue:
+            raise conflict(f"хост «{host['name']}»: {issue}")
+
+    tls_chains: list[int] = []
+    if "address" in changes and changes["address"] != before["address"]:
+        # адрес ноды поехал — сертификаты её tls-хопов должны называть новое имя
+        tls_chains = reissue_hop_certs(conn, node_id)
+
     try:
         conn.execute(f"UPDATE nodes SET {sets} WHERE id = ?", (*values, node_id))
     except sqlite3.IntegrityError:
         raise conflict(f"нода «{changes.get('name')}» уже есть")
     conn.commit()
-    config_push.mark_dirty(conn, [node_id])
+    config_push.mark_dirty(conn, [node_id] + tls_chains_nodes(conn, tls_chains))
+    config_push.schedule_push([node_id] + tls_chains_nodes(conn, tls_chains))
     return as_dict(fetch_one(conn, f"SELECT {NODE_COLUMNS} FROM nodes WHERE id = ?", (node_id,)))
+
+
+def tls_chains_nodes(conn: sqlite3.Connection, chain_ids: list[int]) -> list[int]:
+    """Все ноды, которых касаются перевыпущенные сертификаты хопов (и отправитель, и приёмник)."""
+    if not chain_ids:
+        return []
+    marks = ",".join("?" * len(chain_ids))
+    return [int(row["node_id"]) for row in conn.execute(
+        f"SELECT DISTINCT node_id FROM hosts WHERE chain_id IN ({marks})", chain_ids).fetchall()]
 
 
 @router.delete("/{node_id}", status_code=204)

@@ -382,11 +382,14 @@ await page.evaluate(() => {
   document.querySelectorAll('#hops .hopbox').forEach((row, i) => {
     const set = (k, v) => { const el = row.querySelector(`[data-k="${k}"]`); if(el){ el.value = v; el.dispatchEvent(new Event('change', {bubbles: true})); } };
     set('node', i === 0 ? 'vps-fi' : 'home'); set('protocol', 'vless'); set('security', 'reality'); set('network', 'tcp'); set('port', 2053);
+    // у хопа может быть свой адрес: туда же придёт соседняя нода и туда же пойдёт ссылка входа
+    set('address', i === 0 ? 'fi.example.net' : '');
   });
 });
 await submit('#cform');
 await wait(() => document.querySelectorAll('#view .chain').length === 1);
 ok((await text()).includes('FI-DE') && (await text()).includes('2053'), 'цепочка из двух нод создана');
+ok((await text()).includes('fi.example.net'), 'на карточке цепочки виден адрес хопа, который назвал человек');
 await go('hosts');
 ok((await text()).includes('FI-DE'), 'хост цепочки в списке хостов — взят из цепочки, а не отдельной записью');
 ok(await page.locator('#view [data-a=hdel]').count() === 1, 'хост цепочки поодиночке не удаляется (кнопки нет)');
@@ -404,10 +407,12 @@ const prefill = await page.evaluate(() => ({
     protocol: row.querySelector('[data-k="protocol"]').value,
     security: row.querySelector('[data-k="security"]').value,
     port: row.querySelector('[data-k="port"]').value,
+    address: row.querySelector('[data-k="address"]').value,
   })),
 }));
 ok(prefill.title.includes('изменение') && prefill.save.includes('Сохранить') && prefill.name === 'FI-DE'
-   && prefill.hops.length === 2 && prefill.hops[0].node === 'vps-fi' && prefill.hops[1].node === 'home',
+   && prefill.hops.length === 2 && prefill.hops[0].node === 'vps-fi' && prefill.hops[1].node === 'home'
+   && prefill.hops[0].address === 'fi.example.net' && prefill.hops[1].address === '',
    `окно правки цепочки предзаполнено её же хопами: ${JSON.stringify(prefill.hops)} («${prefill.title}»)`);
 
 // хопа местами: те же ноды и те же порты, но вход переезжает на другую ноду.

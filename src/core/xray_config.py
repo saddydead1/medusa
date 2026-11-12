@@ -310,15 +310,18 @@ def hop_out_tag(chain_name: str, target: dict) -> str:
 def hop_outbound(chain: dict, target: dict) -> dict[str, Any]:
     """Outbound ноды в следующий хоп цепочки.
 
-    Адрес — адрес ноды этого хопа: у хопа нет своего адреса, это внутренняя связь нод.
-    Ключи те же, что положены в инбаунд ноды-приёмника (hop_clients, hop_short_id).
+    Адрес — адрес самого хопа (`hosts.address`), а если человек его не назвал — адрес ноды
+    этого хопа: соседняя нода обязана прийти туда же, куда панель отправляет человеку ссылку
+    на вход цепочки, иначе «человек подключается по одному адресу, а внутри цепочки трафик
+    идёт по другому». Ключи те же, что положены в инбаунд ноды-приёмника (hop_clients,
+    hop_short_id).
     Формат settings диктует Xray: у vless/vmess — vnext, у trojan и shadowsocks —
     servers (Xray 26 прямо отказывает trojan с vnext: "servers" should have one and
     only one member).
     """
     chain_id, number = chain["id"], hop_number(target)
     protocol = "shadowsocks" if target["protocol"] == "ss" else target["protocol"]
-    address = target.get("node_address") or target.get("address") or ""
+    address = connect_address(target)
     port = target["port"]
     if protocol in ("vless", "vmess"):
         user: dict[str, Any] = {"id": hop_uuid(chain_id, number)}
@@ -364,6 +367,11 @@ def hop_outbound(chain: dict, target: dict) -> dict[str, Any]:
 
 
 def connect_address(host: dict) -> str:
+    """Куда подключаются к этому хосту (или hopу): его собственный адрес, иначе адрес ноды.
+
+    Одно правило для подписчика, для соседней ноды цепочки и для имени в tls-сертификате:
+    адрес хоста и адрес ноды — разные вещи, и приоритет всегда у адреса хоста.
+    """
     return host["address"] or host["node_address"]
 
 

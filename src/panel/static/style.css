@@ -516,7 +516,12 @@ tbody tr:hover{background:var(--surface-2);box-shadow:inset 3px 0 0 var(--accent
 .cfg select,.cfg input{min-width:0;width:100%;padding:7px 9px;font-size:13px;border-radius:var(--r-sm)}
 .hop{display:flex;gap:9px;align-items:center;margin-bottom:8px}
 .hop span{width:58px;font-size:13px;color:var(--muted)}
+.node .nerr{margin:7px 0 2px;padding:6px 9px;border-radius:var(--r-sm);background:rgba(197,48,48,.1);
+  color:var(--bad);font-size:12px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .hop select{flex:1;min-width:0;padding:8px 11px;background:var(--surface)}
+.hop .hopaddr{flex:1;min-width:0;padding:8px 11px;background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-sm);color:var(--ink);font-family:var(--mono);font-size:13px}
+.hop .hopaddr::placeholder{color:var(--muted)}
 .hint{font-size:13px;color:var(--muted);margin:0 0 12px;line-height:1.5}
 
 /* ---------- 7. Настройки ---------- */

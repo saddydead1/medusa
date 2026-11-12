@@ -171,6 +171,8 @@ const I18N = {
     'toast.themeLocal':'Тема сохранена в браузере, сервер ответил ошибкой: {msg}',
     'toast.noNodes':'Сначала добавьте ноду',
     'toast.portTaken':'Порт {port} на ноде {node} уже занят','toast.portDup':'Порт {port} на ноде {node} повторяется в цепочке',
+    'chain.hopAddress':'Адрес хопа','chain.hopAddressPh':'адрес ноды','chain.hopAddressHint':
+      'Куда придёт соседняя нода: домен или IP этого хопа. Пусто — адрес ноды. У входа цепочки тот же адрес попадает в ссылку подписки.',
     'confirm.delAdmin':'Удалить администратора? Он больше не сможет войти в панель.',
     'confirm.delHost':'Удалить хост?','confirm.delChain':'Удалить цепочку? Её хост и инбаунды на нодах тоже удалятся.',
     'confirm.delUser':'Удалить пользователя? Это действие нельзя отменить.',
@@ -282,6 +284,8 @@ const I18N = {
     'toast.themeLocal':'Theme saved in the browser, the server answered with an error: {msg}',
     'toast.noNodes':'Add a node first',
     'toast.portTaken':'Port {port} on node {node} is already taken','toast.portDup':'Port {port} on node {node} repeats inside the chain',
+    'chain.hopAddress':'Hop address','chain.hopAddressPh':'node address','chain.hopAddressHint':
+      'Where the previous node connects: this hop\'s domain or IP. Empty means the node address. For the chain entry the same address goes into the subscription link.',
     'confirm.delAdmin':'Delete this administrator? They will no longer be able to sign in.',
     'confirm.delHost':'Delete this host?','confirm.delChain':'Delete this chain? Its host and the inbounds on the nodes will be removed too.',
     'confirm.delUser':'Delete this user? This cannot be undone.',
@@ -843,6 +847,7 @@ const pages = {
     const cards = nodes.map(n=>`<div class="node" data-a="nedit" data-id="${n.id}" role="button" tabindex="0">
       <h3>${esc(n.name)}<span class="badge ${n.online?'b-ok live':'b-bad'}">${n.online?t('node.online'):t('node.offline')}</span></h3>
       <div class="mono">${esc(n.address)}:${n.apiPort}</div>
+      ${n.applyError?`<div class="nerr" title="${esc(n.applyError)}">${esc(n.applyError)}</div>`:''}
       <dl>
         <dt>${t('node.version')}</dt><dd>${n.agent?esc(n.agent):`<span class="mono">${t('node.notReported')}</span>`}</dd>
         <dt>${t('node.xray')}</dt><dd>${n.xray?esc(n.xray):`<span class="mono">${t('node.notReported')}</span>`}</dd>
@@ -929,12 +934,15 @@ const pages = {
   async chains(){
     const [chains,nodes] = await Promise.all([call('GET','/api/chains'),call('GET','/api/nodes')]);
     const on = Object.fromEntries(nodes.map(n=>[n.name,n.online]));
+    const naddr = Object.fromEntries(nodes.map(n=>[n.name,n.address]));
     const word = n=>`${n} ${plural(n, t('hops.one'), t('hops.few'), t('hops.many'))}`;
-    const cfg = h=>[PROTO[h.protocol]||h.protocol, h.network!=='tcp'?h.network:'', h.security!=='none'?h.security:''].filter(Boolean).join(' ')+' :'+h.port;
+    const cfg = h=>[PROTO[h.protocol]||h.protocol, h.network!=='tcp'?h.network:'', h.security!=='none'?h.security:''].filter(Boolean).join(' ');
+    // адрес хопа показывается явно: свой адрес хоста или адрес его ноды, если своего нет
+    const where = h=>`${h.address || naddr[h.node] || ''}:${h.port}`;
     const items = chains.map(c=>{
       const problem = c.hops.some(h=>!(h.node in on)) ? t('chain.nodeRemoved') : c.hops.some(h=>!on[h.node]) ? t('chain.nodeDown') : null;
       const path = c.hops.map((h,k)=>(k?'<div class="link'+(problem?' dead':'')+'"></div>':'')+
-        `<div><div class="pill ${on[h.node]?'':'off'}"><b>${esc(h.node)}</b><div class="mono">${esc(cfg(h))}</div></div>
+        `<div><div class="pill ${on[h.node]?'':'off'}"><b>${esc(h.node)}</b><div class="mono">${esc(cfg(h))}</div><div class="mono">${esc(where(h))}</div></div>
          <div class="sub" style="text-align:center">${k===0?t('chain.entry'):k===c.hops.length-1?t('chain.exit'):t('chain.transit')}</div></div>`).join('');
       return `<div class="chain"><div class="meta"><b>${esc(c.name)}</b><div class="sub">${word(c.hops.length)}</div></div>
         <div class="path">${path}</div>
@@ -1267,10 +1275,22 @@ async function loadCtx(){
   const [hosts,chains,nodes] = await Promise.all([call('GET','/api/hosts'),call('GET','/api/chains'),call('GET','/api/nodes')]);
   ctx = {hosts,chains,nodes};
 }
-const taken = node => new Set([
-  ...ctx.hosts.filter(h=>h.node===node).map(h=>h.port),
-  ...ctx.chains.flatMap(c=>c.hops.filter(h=>h.node===node).map(h=>h.port)),
-]);
+/* Занятые порты считаются по машине, а не по одной ноде: две ноды с одним адресом — это
+   один и тот же сервер, и Xray там падает целиком, если два слушателя взяли один порт.
+   API-порт ноды — такой же слушатель на том же адресе. */
+const machineNames = node => {
+  const self = ctx.nodes.find(n=>n.name===node);
+  if(!self) return new Set([node]);
+  return new Set(ctx.nodes.filter(n=>n.address===self.address).map(n=>n.name));
+};
+const taken = node => {
+  const onMachine = machineNames(node);
+  return new Set([
+    ...ctx.nodes.filter(n=>onMachine.has(n.name)).map(n=>n.apiPort),
+    ...ctx.hosts.filter(h=>onMachine.has(h.node)).map(h=>h.port),
+    ...ctx.chains.flatMap(c=>c.hops.filter(h=>onMachine.has(h.node)).map(h=>h.port)),
+  ]);
+};
 function freePort(node, extra=[]){
   const used = new Set([...taken(node), ...extra]);
   const p = [443,8443,2053,2083,2087,2096].find(x=>!used.has(x));
@@ -1371,7 +1391,10 @@ function addHop(){
   if(box.children.length>=6) return toast(t('chain.maxHops',{n:6}));
   const prev = box.lastElementChild ? rowNode(box.lastElementChild) : null;
   const row = document.createElement('div'); row.className = 'hopbox';
-  row.innerHTML = `<div class="hop"><span></span><select data-k="node" aria-label="${t('th.node')}">${nodeOptions()}</select><button type="button" class="btn sm">${t('btn.remove')}</button></div>${cfgHTML()}`;
+  row.innerHTML = `<div class="hop"><span></span><select data-k="node" aria-label="${t('th.node')}">${nodeOptions()}</select>
+    <input data-k="address" class="hopaddr" maxlength="63" spellcheck="false" aria-label="${t('chain.hopAddress')}"
+           placeholder="${t('chain.hopAddressPh')}" title="${t('chain.hopAddressHint')}">
+    <button type="button" class="btn sm">${t('btn.remove')}</button></div>${cfgHTML()}`;
   const other = ctx.nodes.find(n=>n.name!==prev); if(other) K(row,'node').value = other.name;
   initCfg(row); setHopPort(row);
   K(row,'node').onchange = ()=>setHopPort(row);
@@ -1394,6 +1417,8 @@ function fillHop(row, hop){
   K(row,'security').value = hop.security;
   syncCfg(row);
   K(row,'port').value = hop.port;
+  // адрес хопа рендер подставляет и в outbound соседней ноды, и в ссылку входа цепочки
+  K(row,'address').value = hop.address || '';
 }
 async function openChain(chain){
   await loadCtx();
@@ -1434,7 +1459,8 @@ $('#cform').addEventListener('submit', e=>{
 });
 $('#cdlg').addEventListener('close', async ()=>{
   if($('#cdlg').returnValue!=='ok') return;
-  const hops = hopRows().map(r=>({node:rowNode(r), ...readCfg(r)}));
+  const hops = hopRows().map(r=>({node:rowNode(r), ...readCfg(r),
+    address: (K(r,'address').value || '').trim() || null}));
   const id = chainEditing, name = $('#cform [name=name]').value;
   try{
     if(id){ await call('PATCH','/api/chains/'+id,{name,hops}); toast(t('toast.chainEdited')); }

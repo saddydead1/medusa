@@ -15,7 +15,7 @@ import sqlite3
 from fastapi import APIRouter, Depends
 
 from src.core.xray_config import is_ip, reality_client_sni, security_issue, unsupported_protocol, UNSUPPORTED_HINT
-from src.panel import config_push
+from src.panel import config_push, ports
 from src.panel.db import get_conn, now_ms
 from src.panel.host_keys import new_reality_keys
 from src.panel.deps import bad_request, conflict, fetch_one, node_by_name, writer
@@ -128,12 +128,16 @@ def check_cert_pair(cert_file: str, key_file: str) -> None:
         raise bad_request("файл ключа должен называться .key или .pem")
 
 
-def check_port(conn: sqlite3.Connection, node_id: int, node_name: str, port: int, own_id: int | None = None) -> None:
-    busy = conn.execute(
-        "SELECT id FROM hosts WHERE node_id = ? AND port = ? AND id IS NOT ?", (node_id, port, own_id)
-    ).fetchone()
-    if busy:
-        raise conflict(f"порт {port} на ноде {node_name} уже занят")
+def check_port(conn: sqlite3.Connection, node_id: int, port: int, own_id: int | None = None) -> None:
+    """Порт хоста проверяется по машине ноды, а не по одной ноде.
+
+    Две ноды с одним адресом — одна машина: её слушатели не должны наступать друг на друга,
+    иначе Xray падает целиком (`bind: address already in use`) и вместе с ним все хосты ноды.
+    API-порт ноды — такой же слушатель на том же адресе.
+    """
+    issue = ports.host_port_conflict(conn, node_id, port, skip_host=own_id)
+    if issue:
+        raise conflict(issue)
 
 
 @router.get("")
@@ -153,7 +157,7 @@ def create_host(
                       clean(body.serverNames), clean(body.dest))
     check_fields(body, body.security, body.network)
     check_cert_pair(clean(body.certFile), clean(body.keyFile))
-    check_port(conn, node["id"], body.node, body.port)
+    check_port(conn, node["id"], body.port)
     private_key = public_key = ""
     if body.security == "reality":
         private_key, public_key = new_reality_keys()
@@ -223,7 +227,7 @@ def patch_host(
                       node["address"], merged["server_names"], merged["dest"])
     check_fields(body, merged["security"], merged["network"])
     check_cert_pair(merged["cert_file"], merged["key_file"])
-    check_port(conn, node_id, node["name"], merged["port"], own_id=host_id)
+    check_port(conn, node_id, merged["port"], own_id=host_id)
 
     private_key, public_key = row["private_key"], row["public_key"]
     if merged["security"] == "reality" and not private_key:

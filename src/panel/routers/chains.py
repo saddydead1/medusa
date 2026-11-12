@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends
 
 from src.core.xray_config import security_issue, unsupported_protocol, UNSUPPORTED_HINT
 from src.panel import config_push
+from src.panel import ports
 from src.panel.chain_hops import insert_hop
 from src.panel.db import get_conn, now_ms
 from src.panel.deps import bad_request, conflict, fetch_one, writer
@@ -56,6 +57,7 @@ def hops_of(conn: sqlite3.Connection, raw: str) -> list[dict]:
             "network": hop["network"],
             "security": hop["security"],
             "port": hop["port"],
+            "address": hop.get("address") or "",
         })
     return out
 
@@ -64,15 +66,14 @@ def as_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     return {"id": row["id"], "name": row["name"], "hops": hops_of(conn, row["hops"])}
 
 
-def used_ports(conn: sqlite3.Connection, skip_chain: int | None = None) -> dict[int, set[int]]:
-    """Занятые порты нод. Хопа цепочки занимают порт наравне с обычными хостами:
-    на ноде поднимается инбаунд каждого хопа, и два инбаунда на одном порту — не вариант."""
-    used: dict[int, set[int]] = {}
-    for row in conn.execute("SELECT node_id, port, chain_id FROM hosts").fetchall():
-        if skip_chain is not None and row["chain_id"] == skip_chain:
-            continue
-        used.setdefault(row["node_id"], set()).add(row["port"])
-    return used
+def hop_issue(conn: sqlite3.Connection, hop: dict, skip_chain: int | None) -> str | None:
+    """Чем занят порт этого хопа.
+
+    Смотрим не «на ноде», а на адресе ноды: соседняя нода с тем же адресом — это та же
+    машина, и два её слушателя на одном порту уронят Xray целиком (вместе с его здоровыми
+    хостами). API-порт ноды участвует в проверке: он слушает там же.
+    """
+    return ports.host_port_conflict(conn, hop["node_id"], hop["port"], skip_chain=skip_chain)
 
 
 def resolve_hops(conn: sqlite3.Connection, body: ChainCreate, skip_chain: int | None) -> tuple[list[dict], list[int]]:
@@ -89,15 +90,22 @@ def resolve_hops(conn: sqlite3.Connection, body: ChainCreate, skip_chain: int | 
         if a.node == b.node:
             raise bad_request("соседние хопы должны быть на разных нодах")
 
-    used = used_ports(conn, skip_chain=skip_chain)
-    for hop in body.hops:
-        node_id = nodes[hop.node]["id"]
-        if hop.port in used.get(node_id, set()):
-            raise conflict(f"порт {hop.port} на ноде {hop.node} уже занят")
-        used.setdefault(node_id, set()).add(hop.port)
-
     resolved = [{"node_id": nodes[h.node]["id"], "node": h.node, "protocol": h.protocol,
-                 "network": h.network, "security": h.security, "port": h.port} for h in body.hops]
+                 "network": h.network, "security": h.security, "port": h.port,
+                 "address": ports.norm(h.address)} for h in body.hops]
+
+    # хопы одной цепочки могут попасть на одну машину (две ноды с одним адресом), и тогда
+    # их порты обязаны различаться так же, как порты обычных хостов
+    on_machine: dict[tuple[str, int], str] = {}
+    for hop in resolved:
+        issue = hop_issue(conn, hop, skip_chain=skip_chain)
+        if issue:
+            raise conflict(issue)
+        key = (ports.node_address(conn, hop["node_id"]), hop["port"])
+        if key in on_machine:
+            raise conflict(f"порт {hop['port']} на {key[0]} уже занят хопом «{on_machine[key]}» "
+                           "этой же цепочки")
+        on_machine[key] = hop["node"]
     return resolved, [h["node_id"] for h in resolved]
 
 

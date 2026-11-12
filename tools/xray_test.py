@@ -435,7 +435,8 @@ def main() -> int:
             h1, h2, h3 = free_port(), free_port(), free_port()
             route = client.post("/api/chains", json={"name": "XRAY-CHAIN", "hops": [
                 {"node": "stub", "protocol": "vless", "network": "tcp", "security": "reality", "port": h1},
-                {"node": "stub2", "protocol": "trojan", "network": "ws", "security": "tls", "port": h2},
+                {"node": "stub2", "protocol": "trojan", "network": "ws", "security": "tls", "port": h2,
+                 "address": "hop2.internal.example"},
                 {"node": "stub", "protocol": "vmess", "network": "tcp", "security": "none", "port": h3},
             ]}).json()
             cfg = wait_cfg(cfg_path, lambda c: any(i["tag"] == "XRAY-CHAIN" for i in c["inbounds"])
@@ -454,9 +455,13 @@ def main() -> int:
             ok(out23["settings"]["vnext"][0]["users"][0]["id"] == hop3["settings"]["clients"][0]["id"]
                == hop_uuid(route["id"], 2),
                "переход vmess и инбаунд третьего хопа сошлись на одном uuid перехода")
-            ok(out12["settings"]["servers"][0]["address"] == "127.0.0.1"
-               and hop1["settings"]["clients"][0]["id"] == user_uuid(vasya["token"]),
-               "адрес перехода — адрес ноды следующего хопа, а подпись входа цепочки — подпись подписчика")
+            ok(out12["settings"]["servers"][0]["address"] == "hop2.internal.example",
+               f"у хопа есть свой адрес — переход соседней ноды идёт на него, а не на адрес ноды: "
+               f"{out12['settings']['servers'][0]['address']}")
+            ok(out23["settings"]["vnext"][0]["address"] == "127.0.0.1",
+               "а hop без своего адреса по-прежнему берёт адрес своей ноды: переход туда и ведёт")
+            ok(hop1["settings"]["clients"][0]["id"] == user_uuid(vasya["token"]),
+               "подпись входа цепочки — подпись подписчика")
             rules1 = cfg.get("routing", {}).get("rules", [])
             ok({"inboundTag": ["XRAY-CHAIN"], "outboundTag": "XRAY-CHAIN -> hop 2"} in rules1
                and {"inboundTag": ["XRAY-CHAIN hop 3"], "outboundTag": "direct"} not in rules1,
@@ -472,6 +477,10 @@ def main() -> int:
             ok(hashlib.sha256(der).hexdigest() == out12["streamSettings"]["tlsSettings"]["pinnedPeerCertSha256"],
                "отпечаток сертификата хопа совпал с тем, что закреплено на отправляющей ноде: "
                "tls-хоп цепочки собирается без allowInsecure")
+            hop_cert_name = x509.load_pem_x509_certificate(hop_cert.read_bytes()).subject
+            ok(any(name.value.lower() == "hop2.internal.example" for name in hop_cert_name),
+               f"сертификат хопа выпущен на его собственный адрес, а не на адрес ноды: {hop_cert_name} — "
+               "соседняя нода называет в SNI то же имя, что стоит в сертификате")
 
             client.delete(f"/api/chains/{route['id']}")
             cfg = wait_cfg(cfg_path, lambda c: all(not i["tag"].startswith("XRAY-CHAIN") for i in c["inbounds"]))

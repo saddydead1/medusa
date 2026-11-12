@@ -208,6 +208,32 @@ exec sleep 60
                                 {"name": "мусор"}]}) == {"u1": 5},
        "из ответа Xray берутся только счётчики трафика пользователей: чужие имена и мусор отбрасываются")
 
+    # Xray умер уже после запуска: нода обязана пересказать причину из его же лога.
+    # Именно так выглядит занятой порт на машине, где живут две ноды, — и человеку нужно
+    # видеть «address already in use», а не «детали в логе на ноде».
+    dying = tmp / "dying" / "state.json"
+    xray_dies = tmp / "fake-xray-dies"
+    xray_dies.write_text("""#!/usr/bin/env bash
+if [ "$1" = version ]; then echo "Xray 25.8.3 x"; exit 0; fi
+if [ "$1" = "-test" ]; then echo "configuration accepted"; exit 0; fi
+echo 'Failed to start: app/proxyman/inbound: failed to listen TCP on 443 > listen tcp 0.0.0.0:443: bind: address already in use' >&2
+exit 255
+""", encoding="utf-8")
+    xray_dies.chmod(0o755)
+    with TestClient(create_app(NodeConfig(state_path=dying, xray_bin=str(xray_dies)))) as client:
+        key = state_key(dying)
+        applied = client.put("/node/config", headers=bearer(key),
+                             json={"revision": 1, "config": config, "certs": []}).json()
+        ok(applied["ok"], f"конфиг прошёл проверку и процесс запущен ({applied['error']})")
+        time.sleep(1.2)
+        dead = client.get("/node/status", headers=bearer(key)).json()
+        reason = dead["lastError"] or ""
+        ok("завершился с кодом 255" in reason and "address already in use" in reason,
+           f"нода пересказала причину смерти Xray из его же лога: {reason}")
+        again = client.get("/node/status", headers=bearer(key)).json()
+        ok("address already in use" in (again["lastError"] or ""),
+           "причина не исчезает после первого же ответа: нода не забывает, что её Xray мёртв")
+
     print()
     return 1 if FAILS else 0
 

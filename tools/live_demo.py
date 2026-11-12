@@ -506,18 +506,22 @@ def main() -> int:
         api.post("/api/nodes", json={"name": "demo2", "address": "127.0.0.1",
                                      "apiPort": node2_port, "apiKey": NODE_KEY2})
         chain_hops = {
-            # вход reality на demo -> trojan tls на demo2
-            "LIVE-2H": [("demo", "vless", "tcp", "reality"), ("demo2", "trojan", "tcp", "tls")],
+            # вход reality на demo -> trojan tls на demo2. Второму hopу назван свой адрес
+            # ("localhost" вместо 127.0.0.1): соседняя нода обязана прийти именно туда, а
+            # сертификат хопа панель выпускает на это же имя
+            "LIVE-2H": [("demo", "vless", "tcp", "reality", ""),
+                        ("demo2", "trojan", "tcp", "tls", "localhost")],
             # вход websocket на demo -> shadowsocks на demo2 -> выход reality обратно на demo
-            "LIVE-3H": [("demo", "vless", "ws", "none"), ("demo2", "ss", "tcp", "none"),
-                        ("demo", "vless", "tcp", "reality")],
+            "LIVE-3H": [("demo", "vless", "ws", "none", ""), ("demo2", "ss", "tcp", "none", ""),
+                        ("demo", "vless", "tcp", "reality", "")],
         }
         chain_ports: dict[str, list[int]] = {}
         for chain_name, hops in chain_hops.items():
             ports = [free_port() for _ in hops]
             chain_ports[chain_name] = ports
             created = api.post("/api/chains", json={"name": chain_name, "hops": [
-                {"node": h[0], "protocol": h[1], "network": h[2], "security": h[3], "port": ports[i]}
+                {"node": h[0], "protocol": h[1], "network": h[2], "security": h[3], "port": ports[i],
+                 "address": h[4] or None}
                 for i, h in enumerate(hops)]}).json()
             ok("id" in created, f"цепочка {chain_name} заведена: {len(hops)} хопа, порты {ports}")
 
@@ -552,6 +556,11 @@ def main() -> int:
         tags2 = {i["tag"]: i for i in cfg2["inbounds"]}
         out1 = {o["tag"]: o for o in cfg1["outbounds"]}
         out2 = {o["tag"]: o for o in cfg2["outbounds"]}
+        hop2_target = out1.get("LIVE-2H -> hop 2", {}).get("settings", {}).get("servers", [{}])[0]
+        ok(hop2_target.get("address") == "localhost",
+           f"переход первой ноды идёт на названный адрес хопа, а не на адрес его ноды: "
+           f"{hop2_target.get('address')}:{hop2_target.get('port')} (туннель LIVE-2H ниже проверяется "
+           f"настоящим запросом)")
         ok(tags1.get("LIVE-2H", {}).get("protocol") == "vless"
            and tags2.get("LIVE-2H hop 2", {}).get("protocol") == "trojan",
            "хопа цепочки поднялись на своих нодах: вход на demo, приёмник на demo2")

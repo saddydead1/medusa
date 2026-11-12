@@ -15,6 +15,7 @@ from pathlib import Path
 
 from src.core.api_keys import new_api_key
 from src.core.xray_config import hop_email
+from src.panel import ports
 from src.panel.chain_hops import insert_hop
 from src.panel.host_keys import new_reality_keys
 from src.panel.security import hash_password, new_session_token, new_user_token, temporary_password
@@ -172,7 +173,7 @@ def get_conn() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def ensure_chain_hops(conn: sqlite3.Connection) -> None:
+def ensure_chain_hops(conn: sqlite3.Connection) -> list[str]:
     """Прежние цепочки дорисовываются до строк хопов.
 
     Раньше цепочка создавала только хост входа, а хопа существовали лишь в описании. Теперь
@@ -200,7 +201,44 @@ def ensure_chain_hops(conn: sqlite3.Connection) -> None:
             private, public = new_reality_keys()
             conn.execute("UPDATE hosts SET private_key = ?, public_key = ? WHERE id = ?",
                          (private, public, row["id"]))
+    notes = free_hop_ports(conn)
     conn.execute("UPDATE nodes SET config_dirty = 1 WHERE api_key <> ''")
+    return notes
+
+
+def free_hop_ports(conn: sqlite3.Connection) -> list[str]:
+    """Хопа цепочек не имеют права занимать чужой порт на машине ноды.
+
+    Прежняя цепочка могла попросить порт, который на той же машине держит API-порт другой ноды
+    (или хост другой ноды). Пока хопа были просто строкой в описании, это ничем не оборачивалось;
+    теперь у каждого хопа свой инбаунд, и Xray на такой ноде падает целиком — вместе со
+    здоровыми хостами. Поэтому миграция убирает хопа на первый свободный порт и честит это в
+    hops цепочки (иначе окно правки показывало бы порт, которого больше нет). Обычные хосты
+    людей миграция не трогает: там порт выбирал человек, и менять его молча — не дело панели.
+
+    Возвращает человеческие строки о том, что было сдвинуто (панель печатает их в лог).
+    """
+    notes: list[str] = []
+    rows = conn.execute(
+        """SELECT h.id, h.name, h.chain_id, h.hop_index, h.port, h.node_id, n.address AS node_address
+           FROM hosts h JOIN nodes n ON n.id = h.node_id
+           WHERE h.chain_id IS NOT NULL ORDER BY h.chain_id, h.hop_index, h.id""").fetchall()
+    for row in rows:
+        issue = ports.port_conflict(conn, row["node_address"], int(row["port"]), skip_host=row["id"])
+        if issue is None:
+            continue
+        moved = ports.free_port(conn, int(row["node_id"]), int(row["port"]) + 1)
+        if moved is None:
+            notes.append(f"{issue} — свободного порта для хопа «{row['name']}» не нашлось")
+            continue
+        conn.execute("UPDATE hosts SET port = ? WHERE id = ?", (moved, row["id"]))
+        hops = json.loads(conn.execute("SELECT hops FROM chains WHERE id = ?",
+                                       (row["chain_id"],)).fetchone()["hops"])
+        hops[int(row["hop_index"])]["port"] = moved
+        conn.execute("UPDATE chains SET hops = ? WHERE id = ?",
+                     (json.dumps(hops, ensure_ascii=False), row["chain_id"]))
+        notes.append(f"цепочка #{row['chain_id']}: {issue} — хоп «{row['name']}» переведён на порт {moved}")
+    return notes
 
 
 def ensure_settings(conn: sqlite3.Connection) -> None:
@@ -318,12 +356,16 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
         pass
 
 
-def init_db(path: Path | None = None) -> None:
+def init_db(path: Path | None = None) -> list[str]:
     conn = connect(path)
     try:
         conn.executescript(SCHEMA)
         ensure_columns(conn)
-        ensure_chain_hops(conn)
+        moved = ensure_chain_hops(conn)
+        for note in moved:
+            # миграция сдвинула порт хопа — это должен увидеть человек в логе панели,
+            # а не обнаружить по неработающей подписке
+            print(f"[medusa-panel] {note}", flush=True)
         # роли наблюдателя больше нет: прежние наблюдатели становятся администраторами
         conn.execute("UPDATE admins SET role = 'admin' WHERE role = 'viewer'")
         ensure_settings(conn)
@@ -336,6 +378,7 @@ def init_db(path: Path | None = None) -> None:
     if password:
         login = os.getenv("MEDUSA_ADMIN_USER", "admin")
         print(f"[medusa] создан владелец '{login}', пароль: {password}", flush=True)
+    return moved
 
 
 def create_session(conn: sqlite3.Connection, admin_id: int, hours: int) -> str:

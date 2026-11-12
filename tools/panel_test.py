@@ -92,6 +92,48 @@ def chain_migration_checks() -> None:
     except sqlite3.IntegrityError as exc:
         ok("hosts_node_port" in str(exc) or "UNIQUE" in str(exc).upper(),
            f"порт хопа занял ноду и в прежней базе: {exc}")
+    conn.close()
+
+    # вторая прежняя база: порт хопа прежней цепочки совпадает с API-портом соседней ноды
+    # на той же машине. Пока хопа были описанием — безразлично; теперь у хопа свой инбаунд,
+    # и на этой машине Xray упал бы целиком (вместе с здоровыми хостами ноды).
+    clash = Path(tempfile.mkdtemp(prefix="medusa-clashchain-")) / "clash.db"
+    init_db(clash)
+    conn = connect(clash)
+    node_a = conn.execute("INSERT INTO nodes (name, address, api_port, api_key, created_at) "
+                          "VALUES ('nodaa','10.9.1.1',8443,'sk-api-a0123456789012345',1)").lastrowid
+    node_b = conn.execute("INSERT INTO nodes (name, address, api_port, api_key, created_at) "
+                          "VALUES ('nodab','10.9.1.1',9443,'sk-api-b0123456789012345',1)").lastrowid
+    conn.execute("INSERT INTO hosts (name, node_id, protocol, port, network, security, created_at) "
+                 "VALUES ('живой хост', ?, 'vless', 7443, 'tcp', 'none', 1)", (node_a,))
+    clash_hops = [{"node_id": node_a, "protocol": "vless", "network": "tcp", "security": "none", "port": 8443},
+                  {"node_id": node_b, "protocol": "vless", "network": "tcp", "security": "none", "port": 443}]
+    clash_chain = conn.execute("INSERT INTO chains (name, hops, created_at) VALUES ('прежняя-столкновение', ?, 1)",
+                               (json.dumps(clash_hops),)).lastrowid
+    conn.execute("""INSERT INTO hosts (name, node_id, protocol, port, network, security, chain_id, hop_index, created_at)
+                    VALUES ('прежняя-столкновение', ?, 'vless', 8443, 'tcp', 'none', ?, 0, 1)""",
+                 (node_a, clash_chain))
+    conn.commit()
+    conn.close()
+
+    notes = init_db(clash)
+    conn = connect(clash)
+    hop_row = conn.execute("""SELECT h.port, h.name FROM hosts h WHERE h.chain_id = ? ORDER BY h.hop_index""",
+                           (clash_chain,)).fetchall()
+    moved_port = hop_row[0]["port"]
+    ok(moved_port != 8443 and moved_port not in {8443, 9443, 7443},
+       f"миграция убрала хопа с занятого порта: {hop_row[0]['name']} переехал на {moved_port}")
+    stored = json.loads(conn.execute("SELECT hops FROM chains WHERE id = ?", (clash_chain,)).fetchone()["hops"])
+    ok(stored[0]["port"] == moved_port,
+       "миграция записала новый порт и в hops цепочки: окно правки показывает то, что есть")
+    ok(any("уже занят API-портом" in note for note in notes),
+       f"миграция сказала человеку, что она сдвинула и почему: {notes}")
+    healthy = conn.execute("SELECT port FROM hosts WHERE chain_id IS NULL").fetchall()
+    ok([r["port"] for r in healthy] == [7443],
+       "порты обычных хостов миграция не трогает: их выбирал человек")
+    conn.close()
+
+    conn = connect(path)
     dirty = conn.execute("SELECT COUNT(*) c FROM nodes WHERE config_dirty = 1").fetchone()["c"]
     ok(dirty == 2, f"обе ноды прежней цепочки помечены грязными — их конфиги пересоберутся сами: {dirty}")
     legacy = ({row["name"] for row in conn.execute("PRAGMA table_info(users)")}
@@ -176,6 +218,90 @@ def traffic_checks(client: TestClient) -> None:
     ok(node_row(node_a["id"])["users"] == 0,
        "отключённый подписчик перестает считаться обслуживаемым этой нодой")
     conn.close()
+
+def port_and_hop_checks(client: TestClient) -> None:
+    """Порт считается занятым по машине ноды, а у хопа цепочки есть свой адрес.
+
+    Первая часть проверяет аварию, которую панель устраивала сама: две ноды на одном адресе
+    (одна машина), и хост или хоп цепочки просит порт, который там уже держит API-порт
+    соседней ноды. Xray половинки конфига не поднимает — он падает целиком, и у ноды
+    останавливается всё, включая вчерашние рабочие хосты.
+
+    Вторая часть — адрес хопа: соседняя нода обязана приходить туда же, куда панель
+    отправляет человеку ссылку на вход цепочки.
+    """
+    from src.panel import ports
+    from src.panel.config_push import collect
+    from src.panel.db import connect
+
+    # две ноды на одном адресе = одна машина. Это нормальная ситуация (несколько нод в
+    # контейнерах на одном хосте), но слушатели у них общие
+    mach_a = client.post("/api/nodes", json={"name": "machine-a", "address": "10.9.2.1",
+                                             "apiPort": 8443, "apiKey": "sk-api-macha0123456789012"}).json()
+    mach_b = client.post("/api/nodes", json={"name": "machine-b", "address": "10.9.2.1",
+                                             "apiPort": 9443, "apiKey": "sk-api-machb0123456789012"}).json()
+    ok(mach_b.get("apiPort") == 9443, "соседняя нода на том же адресе с другим API-портом — нормально")
+    twin = client.post("/api/nodes", json={"name": "machine-c", "address": "10.9.2.1",
+                                           "apiPort": 9443, "apiKey": "sk-api-machc0123456789012"})
+    ok(twin.status_code == 409 and "API-портом" in twin.json()["detail"],
+       f"дважды слушать один порт на одной машине панель не позволяет: {twin.json()['detail']}")
+
+    clash = client.post("/api/hosts", json={"name": "чужой api порт", "node": "machine-b", "protocol": "vless",
+                                            "port": 8443, "network": "tcp", "security": "none"})
+    ok(clash.status_code == 409 and "API-портом" in clash.json()["detail"],
+       f"хост не может занять API-порт соседней ноды на той же машине: {clash.json()['detail']}")
+
+    hop_clash = client.post("/api/chains", json={"name": "на занятом", "hops": [
+        {"node": "machine-b", "protocol": "vless", "network": "tcp", "security": "none", "port": 8443},
+        {"node": "home", "protocol": "vless", "network": "tcp", "security": "none", "port": 8445}]})
+    ok(hop_clash.status_code == 409 and "API-портом" in hop_clash.json()["detail"],
+       f"хост цепочки — такой же слушатель на той же машине: {hop_clash.json()['detail']}")
+
+    same_machine = client.post("/api/chains", json={"name": "одна машина", "hops": [
+        {"node": "machine-b", "protocol": "vless", "network": "tcp", "security": "none", "port": 8801},
+        {"node": "machine-a", "protocol": "vless", "network": "tcp", "security": "none", "port": 8801}]})
+    ok(same_machine.status_code == 409,
+       f"хопа одной цепочки на одной машине не могут занять один порт: {same_machine.json()['detail']}")
+
+    host_a = client.post("/api/hosts", json={"name": "хост машины a", "node": "machine-a", "protocol": "vless",
+                                             "port": 9101, "network": "tcp", "security": "none"}).json()
+    api_taken = client.patch(f"/api/nodes/{mach_b['id']}", json={"apiPort": 9101})
+    ok(api_taken.status_code == 409 and "9101" in api_taken.json()["detail"],
+       f"API-порт ноды не наступает на порт хоста той же машины: {api_taken.json()['detail']}")
+    move = client.patch(f"/api/nodes/{mach_b['id']}", json={"address": "10.8.0.1"})
+    ok(move.status_code == 409,
+       f"переезд ноды на чужую машину проверяется по её хостам тоже: {move.json()['detail']}")
+
+    chain = client.post("/api/chains", json={"name": "Со своим адресом", "hops": [
+        {"node": "home", "protocol": "vless", "network": "tcp", "security": "none", "port": 8811,
+         "address": "home-public.example.net"},
+        {"node": "machine-b", "protocol": "trojan", "network": "tcp", "security": "none", "port": 8812,
+         "address": "10.9.2.9"}]}).json()
+    ok(chain["hops"][0]["address"] == "home-public.example.net"
+       and chain["hops"][1]["address"] == "10.9.2.9",
+       f"адрес хопа сохраняется в цепочке: {[h['address'] for h in chain['hops']]}")
+    hosts = client.get("/api/hosts").json()
+    entry = next(h for h in hosts if h["chain"] == chain["id"])
+    ok(entry["address"] == "home-public.example.net",
+       f"хост цепочки (её вход) имеет свой адрес, а не пустой: {entry['address']}")
+
+    # конфиг отправляющей ноды: outbound обязан идти на адрес следующего хопа
+    home_id = next(n["id"] for n in client.get("/api/nodes").json() if n["name"] == "home")
+    probe = connect()
+    try:
+        cfg_home = collect(probe, home_id)["config"]
+    finally:
+        probe.close()
+    link = next((o for o in cfg_home["outbounds"] if o["tag"].endswith("-> hop 2")), {})
+    target = (link.get("settings", {}).get("vnext") or link.get("settings", {}).get("servers") or [{}])[0]
+    ok(target.get("address") == "10.9.2.9" and target.get("port") == 8812,
+       f"переход соседней ноды идёт на адрес хопа, а не на адрес его ноды: {target}")
+    entry_in = next((i for i in cfg_home["inbounds"] if i["tag"] == chain["name"]), {})
+    ok(bool(entry_in), f"вход цепочки — инбаунд своей ноды на её порту: {entry_in.get('port')}")
+
+    client.delete(f"/api/chains/{chain['id']}")
+    client.delete(f"/api/nodes/{mach_b['id']}")
+    client.delete(f"/api/nodes/{mach_a['id']}")
 
 
 def main() -> int:
@@ -620,13 +746,15 @@ def main() -> int:
         client.delete(f"/api/hosts/{probe['id']}")
         # «сохранили как есть» — не значит «поменяли»: связь должно сбрасывать только
         # настоящее изменение адреса, порта или API-ключа
+        # порты двух нод на одном адресе не должны наступать друг на друга: панель
+        # иначе толкает два разных конфига одному и тому же агенту
         kept = client.post("/api/nodes", json={"name": "keepme", "address": "127.0.0.1",
-                                               "apiPort": 1, "apiKey": "sk-api-keepme01234567890123"}).json()
+                                               "apiPort": 19411, "apiKey": "sk-api-keepme01234567890123"}).json()
         with sqlite3.connect(os.environ["MEDUSA_DB"]) as raw:
             raw.row_factory = sqlite3.Row
             raw.execute("UPDATE nodes SET online = 1, seen_at = 555, agent_version = '0.0.1' WHERE id = ?", (kept["id"],))
             raw.commit()
-        client.patch(f"/api/nodes/{kept['id']}", json={"name": "keepme2", "address": "127.0.0.1", "apiPort": 1})
+        client.patch(f"/api/nodes/{kept['id']}", json={"name": "keepme2", "address": "127.0.0.1", "apiPort": 19411})
         with sqlite3.connect(os.environ["MEDUSA_DB"]) as raw:
             raw.row_factory = sqlite3.Row
             row = raw.execute("SELECT online, seen_at, agent_version FROM nodes WHERE id = ?", (kept["id"],)).fetchone()
@@ -825,6 +953,7 @@ def main() -> int:
         ok(client.get("/api/chains").status_code == 200, "список цепочек работает")
 
     chain_migration_checks()
+    port_and_hop_checks(client)
     traffic_checks(client)
 
     print(f"\nпровалов: {FAILS}")

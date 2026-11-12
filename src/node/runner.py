@@ -253,6 +253,24 @@ class XrayRunner:
         self.harvest()
         self._stop()
 
+    def _log_reason(self) -> str:
+        """Что Xray написал перед тем как умереть.
+
+        Код возврата сам по себе ничего человеку не говорит (255 — «что-то не так»), а настоящая
+        причина всегда в его же логе: `bind: address already in use` (порт занят другим слушателем
+        на этой машине), плохой конфиг, не хватает прав на порт. Панель обязана показать именно
+        её, а не «детали в логе на ноде».
+        """
+        try:
+            lines = [line.strip() for line in self.log_path.read_text(encoding="utf-8",
+                                                                       errors="replace").splitlines() if line.strip()]
+        except OSError:
+            return ""
+        for line in reversed(lines):
+            if "Failed to start" in line or "error" in line.lower():
+                return line.split(">")[-1].strip()[:240]
+        return lines[-1][:240] if lines else ""
+
     def note_process_state(self) -> None:
         """Перед ответом о статусе проверяем, жив ли процесс: мёртвый Xray не должен
         прятаться за «применено»."""
@@ -260,7 +278,9 @@ class XrayRunner:
             # процесс уже умер: снимем хотя бы то, что успели прочитать раньше, и зафиксируем причину
             code = self.proc.poll()
             self.proc = None
-            self.identity.last_error = f"Xray завершился с кодом {code}: детали в {self.log_path}"
+            reason = self._log_reason()
+            self.identity.last_error = (f"Xray завершился с кодом {code}"
+                                        + (f": {reason}" if reason else f": детали в {self.log_path}"))
             save_identity(self.identity)
 
     # ---------- порт счётчиков трафика ----------
