@@ -25,7 +25,7 @@ let fails = 0;
 const ok = (cond, msg) => { console.log((cond ? 'PASS  ' : 'FAIL  ') + msg); if(!cond) fails++; };
 const text = () => page.textContent('#view');
 const toastText = () => page.textContent('#toast');
-const wait = (fn, arg) => page.waitForFunction(fn, arg, {timeout: 15000});
+const wait = (fn, arg, opts) => page.waitForFunction(fn, arg, {timeout: 15000, ...(opts || {})});
 const closed = sel => wait(x => !document.querySelector(x).open, sel);
 const go = async (tab) => {
   await page.click(`#nav a[data-p="${tab}"]`);
@@ -273,6 +273,63 @@ if (nodePort && nodeKey) {
   pollProc = await spawnNode(pollPort, 'sk-api-pollnodeOTHER00000000002', pollState);
   await cardShows('pollnode', 'Недоступна');
   ok(true, 'нода сменила API-ключ — и стала недоступной без единого клика');
+
+  /* ---------- socks5: панель доходит до ноды через прокси ----------
+     Нода может сидеть за NAT или быть доступна только через прыжок. Проверка настоящая:
+     поднят свой socks5-сервер, прокси вписан в окно ноды как это делает человек, и панель
+     продолжает ходить к ноде — уже через него. */
+  const socks = spawn('.venv/bin/python', ['tools/socks5.py', 'medusa', 'sockssecret'],
+    {stdio: ['ignore', 'pipe', 'ignore']});
+  const socksUrl = await new Promise((resolve, reject) => {
+    socks.stdout.on('data', d => { const s = d.toString().trim(); if (s.includes('socks5://')) resolve(s); });
+    setTimeout(() => reject(new Error('socks5-прокси не назвал свой адрес')), 12000);
+  });
+  ok(socksUrl.startsWith('socks5://medusa'), `подняли настоящий socks5-прокси: ${socksUrl.replace('sockssecret', '••••')}`);
+
+  await openCard('pollnode');
+  await fill('#nedlg', {proxy: socksUrl});
+  await submit('#neform');
+  await wait(() => document.querySelector('#toast').textContent.includes('нода обновлена'));
+
+  await openCard('pollnode');
+  ok((await page.inputValue('#nedlg [data-f="proxy"]')) === socksUrl,
+     'окно правки предзаполняет прокси целиком, с паролем: masked-форма для сохранения не годится');
+  const viaHint = (await page.textContent('#ne_proxy')).trim().replace('sockssecret', '••••');
+  ok(viaHint.includes('через прокси'), `подсказка окна называет путь: ${viaHint}`);
+  await page.click('#nedlg [data-a="ncheck"]');
+  /* ключ этой ноды тест уже сменил (проверка «статус обновляется сам»), поэтому связка
+     не обязана складываться. Важное здесь другое: нода ОТВЕТИЛА через прокси и отвергла
+     не тот ключ — значит путь работал. Не работала бы socks5-дорога, панель виноватым
+     назвала бы прокси. */
+  await wait(() => document.querySelector('#ne_status').textContent.includes('Связь не сложилась'));
+  const viaCheck = (await page.textContent('#ne_status')).trim();
+  ok(viaCheck.includes('не подходит'),
+     `панель дошла до ноды через socks5: нода ответила и отвергла ключ — ${viaCheck}`);
+
+  socks.kill('SIGTERM');
+  await page.waitForTimeout(1500);            // прокси должен успеть умереть
+  await page.click('#nedlg [data-a="ncheck"]');
+  await wait(() => document.querySelector('#ne_status').textContent.includes('прокси'), null, {timeout: 25000});
+  const brokenCheck = (await page.textContent('#ne_status')).trim().replace('sockssecret', '••••');
+  ok(brokenCheck.includes('не ответил') || brokenCheck.includes('не пустил'),
+     `если socks5 встал, панель винит socks5, а не Xray на ноде: ${brokenCheck}`);
+
+  const rows = await (await api('/api/nodes')).json();
+  const proxied = rows.find(n => n.name === 'pollnode');
+  ok(proxied.proxySet === true && proxied.proxy.includes('••••') && !JSON.stringify(rows).includes('sockssecret'),
+     `в списке нод пароль прокси скрыт: ${proxied.proxy}`);
+
+  await fill('#nedlg', {proxy: ''});
+  await submit('#neform');
+  /* PATCH в закрытии диалога асинхронный: читаем список, пока панель не сохранит правку */
+  let directRow = null;
+  for (let i = 0; i < 60; i++) {
+    directRow = (await (await api('/api/nodes')).json()).find(n => n.name === 'pollnode');
+    if (directRow && directRow.proxy === '' && directRow.proxySet === false) break;
+    await page.waitForTimeout(250);
+  }
+  ok(directRow && directRow.proxy === '' && directRow.proxySet === false,
+     'прокси убран из окна — нода снова ходит напрямую');
 
   await openCard('pollnode');
   await page.click('#nedlg [data-a="ndelete"]');

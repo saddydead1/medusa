@@ -49,6 +49,9 @@ class NodeCreate(BaseModel):
     # API-ключ обязателен: без него панель не сможет сделать на ноде ничего,
     # кроме как проверить, что та отвечает
     apiKey: Annotated[str, Field(min_length=12, max_length=128, pattern=r"^[A-Za-z0-9_.\-]+$")]
+    # socks5-прокси, через который панель доезжает до API этой ноды (нода за NAT или
+    # доступна только через прыжок); форму проверяет proxy_url.normalize_proxy
+    proxy: str | None = Field(default=None, max_length=200)
 
 
 class NodePatch(BaseModel):
@@ -60,6 +63,8 @@ class NodePatch(BaseModel):
     xray: str | None = Field(default=None, max_length=16)
     apiPort: PORT | None = None
     apiKey: Annotated[str | None, Field(min_length=12, max_length=128, pattern=r"^[A-Za-z0-9_.\-]+$")] = None
+    # пустая строка — прокси снять, нода ходит напрямую
+    proxy: str | None = Field(default=None, max_length=200)
 
 
 class HostCreate(BaseModel):

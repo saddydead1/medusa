@@ -10,6 +10,7 @@ dependencies = [
     "pyyaml>=6",
     # QR для страницы подписки: чисто питоновский генератор, SVG без картинок
     "segno>=1.6",
+    "socksio>=1.0.0",
 ]
 
 [project.scripts]

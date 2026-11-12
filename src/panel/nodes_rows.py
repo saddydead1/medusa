@@ -8,6 +8,7 @@ from __future__ import annotations
 import sqlite3
 
 from src.core.api_keys import api_key_fingerprint, mask_api_key
+from src.panel.proxy_url import mask_proxy
 
 # Сколько подписчиков эта нода обслуживает, считает сама панель: активному человеку на
 # этой ноде должен быть куда подключаться — прямой хост или вход цепочки. Нода, которая
@@ -17,7 +18,7 @@ SERVED_USERS = ("(SELECT COUNT(*) FROM users u WHERE u.status = 'active' AND EXI
                 "AND (h.chain_id IS NULL OR h.hop_index = 0)))")
 
 NODE_COLUMNS = ("id, name, address, online, xray_version, traffic_bytes, traffic_error, "
-                "api_port, api_key, agent_version, seen_at, "
+                "api_port, api_key, api_proxy, agent_version, seen_at, "
                 "config_rev, config_dirty, applied_rev, applied_at, apply_error, "
                 f"{SERVED_USERS} AS served_users")
 
@@ -36,6 +37,10 @@ def as_dict(row: sqlite3.Row) -> dict:
         "trafficError": row["traffic_error"],
         "apiPort": row["api_port"],
         "apiPath": "/node/health",
+        # socks5-прокси, через который панель доходит до этой ноды: в списке виден адрес
+        # прокси, но не его пароль; целиком — отдельным запросом
+        "proxy": mask_proxy(row["api_proxy"]),
+        "proxySet": bool(row["api_proxy"]),
         "keySet": bool(api_key),
         "keyMasked": mask_api_key(api_key) if api_key else None,
         "fingerprint": api_key_fingerprint(api_key) if api_key else None,

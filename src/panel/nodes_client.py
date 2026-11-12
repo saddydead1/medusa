@@ -2,9 +2,13 @@
 
 Нода отвечает на своём порту (`nodes.api_port`), адрес берётся из `nodes.address`.
 API-ключ панель берёт из `nodes.api_key` — когда-то его создала сама нода.
+Если у ноды вписан socks5-прокси (`nodes.api_proxy`) — панель идёт через него: нода может
+сидеть за NAT или быть доступна только через прыжок.
 
-Здесь два разных отказа, и путать их нельзя:
+Здесь три разных отказа, и путать их нельзя:
 * `NodeUnreachable` — нода не ответила (порт закрыт, адрес протух, таймаут);
+* `NodeUnreachable` с другим текстом — не ответил прокси: человек обязан видеть, что
+  встал не сам Xray, а путь до него;
 * `NodeUnauthorized` — нода ответила, но API-ключ не подходит.
 """
 from __future__ import annotations
@@ -13,6 +17,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from src.panel.proxy_url import mask_proxy
 from src.core.contract import (
     BEARER_PREFIX,
     PATH_CONFIG,
@@ -43,6 +48,7 @@ class NodeTarget:
     address: str
     port: int
     api_key: str | None = None
+    proxy: str | None = None
 
     @property
     def base_url(self) -> str:
@@ -52,13 +58,42 @@ class NodeTarget:
     def configured(self) -> bool:
         return bool(self.api_key)
 
+    @property
+    def via(self) -> str:
+        """Человеческое «откуда мы стучимся»: адрес ноды, плюс прокси если он есть."""
+        return f"{self.address}:{self.port} через прокси {mask_proxy(self.proxy or '')}" \
+            if self.proxy else f"{self.address}:{self.port}"
+
+
+def _client(target: NodeTarget, timeout: float) -> httpx.Client:
+    """httpx понимает socks5:// и socks5h://; без прокси клиент самый обычный."""
+    kwargs: dict = {"timeout": timeout}
+    if target.proxy:
+        kwargs["proxy"] = target.proxy
+    return httpx.Client(**kwargs)
+
+
+def _unreachable(target: NodeTarget, err: httpx.HTTPError) -> NodeUnreachable:
+    """Отказ обязан называть то, что действительно встало: саму ноду или путь до неё.
+    Иначе человек будет чинить Xray на ноде, которая тут ни при чём.
+    """
+    if isinstance(err, httpx.ProxyError):
+        return NodeUnreachable(f"прокси {mask_proxy(target.proxy or '')} не пустил к ноде "
+                               f"{target.address}:{target.port}: {err}")
+    if target.proxy:
+        return NodeUnreachable(f"нода {target.address}:{target.port} не ответила: панель идёт через "
+                               f"прокси {mask_proxy(target.proxy)}, и он не отвечает "
+                               f"({err.__class__.__name__})")
+    return NodeUnreachable(f"нода {target.address}:{target.port} не ответила: {err.__class__.__name__}")
+
 
 def _get(target: NodeTarget, path: str, timeout: float, auth: bool) -> dict:
     headers = {"Authorization": f"{BEARER_PREFIX}{target.api_key}"} if auth and target.api_key else {}
     try:
-        response = httpx.get(target.base_url + path, headers=headers, timeout=timeout)
+        with _client(target, timeout) as client:
+            response = client.get(target.base_url + path, headers=headers)
     except httpx.HTTPError as err:
-        raise NodeUnreachable(f"нода {target.address}:{target.port} не ответила: {err.__class__.__name__}") from err
+        raise _unreachable(target, err) from err
 
     if response.status_code == 401:
         raise NodeUnauthorized(detail_of(response) or "нода отвергла API-ключ")
@@ -92,9 +127,10 @@ def node_apply(target: NodeTarget, revision: int, config: dict, certs: list[dict
     headers = {"Authorization": f"{BEARER_PREFIX}{target.api_key}"}
     payload = {"revision": revision, "config": config, "certs": certs}
     try:
-        response = httpx.put(target.base_url + PATH_CONFIG, json=payload, headers=headers, timeout=timeout)
+        with _client(target, timeout) as client:
+            response = client.put(target.base_url + PATH_CONFIG, json=payload, headers=headers)
     except httpx.HTTPError as err:
-        raise NodeUnreachable(f"нода {target.address}:{target.port} не приняла конфиг: {err.__class__.__name__}") from err
+        raise _unreachable(target, err) from err
     if response.status_code == 401:
         raise NodeUnauthorized(detail_of(response) or "нода отвергла API-ключ")
     if response.status_code >= 400:

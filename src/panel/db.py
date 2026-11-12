@@ -95,9 +95,11 @@ CREATE TABLE IF NOT EXISTS nodes (
     -- и подписчиков, и транзит цепочек; traffic_error — почему счётчиков нет
     traffic_bytes    INTEGER NOT NULL DEFAULT 0,
     traffic_error    TEXT,
-    -- связь панели с нодой: отдельный порт API ноды и API-ключ, который создала сама нода
+    -- связь панели с нодой: отдельный порт API ноды, API-ключ, который создала сама нода,
+    -- и socks5-прокси, через который панель до этой ноды доезжает (пусто — идёт напрямую)
     api_port         INTEGER NOT NULL DEFAULT 9443 CHECK (api_port BETWEEN 1 AND 65535),
     api_key          TEXT    NOT NULL DEFAULT '',
+    api_proxy        TEXT    NOT NULL DEFAULT '',
     agent_version    TEXT,
     seen_at          INTEGER NOT NULL DEFAULT 0,
     created_at       INTEGER NOT NULL
@@ -268,6 +270,8 @@ COLUMNS = {
     "nodes": {
         "api_port": "INTEGER NOT NULL DEFAULT 9443",
         "api_key": "TEXT NOT NULL DEFAULT ''",
+        # socks5-прокси для связи с этой нодой: нода за NAT или доступна только через прыжок
+        "api_proxy": "TEXT NOT NULL DEFAULT ''",
         "agent_version": "TEXT",
         "seen_at": "INTEGER NOT NULL DEFAULT 0",
         # почему счётчики трафика молчат (нет xray, Xray не поднят, порт не подобран)

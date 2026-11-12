@@ -20,6 +20,7 @@ from src.panel.node_traffic import apply_status
 from src.panel.nodes_client import (NodeError, NodeTarget, node_health, node_identity,
                                     node_status)
 from src.panel.nodes_rows import NODE_COLUMNS, as_dict
+from src.panel.proxy_url import mask_proxy
 
 NO_KEY = "нода отвечает, но API-ключа для неё в панели нет"
 
@@ -45,11 +46,14 @@ def check_node(conn: sqlite3.Connection, node_id: int) -> dict[str, Any]:
     """
     row = fetch_node(conn, node_id)
     timeout = node_timeout(conn)
-    target = NodeTarget(row["address"], row["api_port"], row["api_key"])
+    target = NodeTarget(row["address"], row["api_port"], row["api_key"], row["api_proxy"] or None)
     checked_at = now_ms()
     report: dict[str, Any] = {
         "ok": False, "reachable": False, "keyOk": False, "online": False,
         "panelFingerprint": api_key_fingerprint(target.api_key) if target.api_key else None,
+        # куда именно панель стучится в этом походе: адрес ноды и прокси, если он вписан
+        "via": target.via,
+        "proxy": mask_proxy(target.proxy) if target.proxy else None,
         "node": None, "error": None, "checkedAt": checked_at,
     }
 

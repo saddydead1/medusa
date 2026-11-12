@@ -304,6 +304,65 @@ def port_and_hop_checks(client: TestClient) -> None:
     client.delete(f"/api/nodes/{mach_a['id']}")
 
 
+def proxy_setting_checks(client: TestClient) -> None:
+    """Прокси ноды: форму принимает панель, наружу отдаёт без пароля, а окно правки
+    получает значение целиком — иначе сохранение диалога стирало бы учётку прокси.
+
+    Живой socks5-прокси проверяется отдельно, в блоке со связкой с нодой: здесь же только
+    то, что видно по одному HTTP — нормализация, отказ чужой схемы, masked-форма.
+    """
+    from src.panel.proxy_url import mask_proxy, normalize_proxy
+
+    ok(normalize_proxy("10.0.0.1:1080") == "socks5://10.0.0.1:1080",
+       "человек мог написать просто host:port — панель понимает так же")
+    ok(normalize_proxy("socks5h://jump.example") == "socks5h://jump.example:1080",
+       "без порта берётся разумный 1080")
+    ok(normalize_proxy("socks5://[::1]:1080") == "socks5://[::1]:1080", "IPv6-адрес прокси сохраняется")
+    for bad, why in (("http://p:3128", "чужая схема"), ("socks5://", "нет адреса"),
+                     ("socks5://h:0", "порт вне диапазона"), ("socks5://h:1/p", "лишнее после адреса"),
+                     ("socks5://:pw@h:1080", "пароль без имени")):
+        try:
+            normalize_proxy(bad)
+            ok(False, f"{why}: панель должна отвергать {bad!r}")
+        except ValueError as err:
+            ok(True, f"{why}: {err}")
+    ok(mask_proxy("socks5://med:pw@j.example:1080") == "socks5://med:••••@j.example:1080",
+       "masked-форма прокси: адрес виден, пароля нет")
+
+    node = client.post("/api/nodes", json={"name": "behind-nat", "address": "10.9.3.1",
+                                          "apiKey": "sk-api-behind01234567890123",
+                                          "proxy": "jump.example:1080"}).json()
+    ok(node["proxy"] == "socks5://jump.example:1080" and node["proxySet"] is True,
+       f"нода создана через прокси: {node['proxy']}")
+    listed = next(n for n in client.get("/api/nodes").json() if n["id"] == node["id"])
+    ok(listed["proxy"] == "socks5://jump.example:1080", "в списке прокси виден как адрес, не как учётка")
+
+    secret = client.post("/api/nodes", json={"name": "behind-auth", "address": "10.9.3.2",
+                                            "apiKey": "sk-api-behind02345678901234",
+                                            "proxy": "socks5://med:proxysecret@jump.example:1080"}).json()
+    ok(secret["proxy"] == "socks5://med:••••@jump.example:1080",
+       f"пароль прокси не показывается в ответе создания: {secret['proxy']}")
+    ok("proxysecret" not in json.dumps(client.get("/api/nodes").json()),
+       "ни в одном списке нод пароля прокси нет")
+    full = client.get(f"/api/nodes/{secret['id']}/proxy")
+    ok(full.status_code == 200 and full.json()["proxy"] == "socks5://med:proxysecret@jump.example:1080",
+       "окну правки прокси отдаётся целиком — отдельным запросом")
+
+    bad = client.patch(f"/api/nodes/{node['id']}", json={"proxy": "https://p:8080"})
+    ok(bad.status_code == 422 and "socks5" in bad.json()["detail"],
+       f"чужая схема отвергается человеческим текстом: {bad.json()['detail']}")
+
+    moved = client.patch(f"/api/nodes/{node['id']}", json={"proxy": "socks5://backup.example:1080"}).json()
+    ok(moved["proxy"] == "socks5://backup.example:1080", "прокси можно сменить")
+    cleared = client.patch(f"/api/nodes/{node['id']}", json={"proxy": ""}).json()
+    ok(cleared["proxy"] == "" and cleared["proxySet"] is False, "пустая строка — прокси снят, нода ходит напрямую")
+    ok(client.get(f"/api/nodes/{node['id']}/proxy").json()["proxy"] == "", "у снятого прокси полный ответ пустой")
+
+    for name in ("behind-nat", "behind-auth"):
+        nid = next(n["id"] for n in client.get("/api/nodes").json() if n["name"] == name)
+        client.delete(f"/api/nodes/{nid}")
+
+
 def main() -> int:
     with TestClient(app) as client:
         session = client.post("/api/login", json={"username": "admin", "password": "supersecret1"}).json()
@@ -344,8 +403,9 @@ def main() -> int:
 
         # --- API-ключ: создаёт его нода, панель только хранит и предъявляет ---
         keyed = client.post("/api/nodes", json={"name": "link", "address": "127.0.0.1",
-                                                "apiPort": 9443, "apiKey": "sk-api-test123456789000000"}).json()
-        ok(keyed["apiPort"] == 9443 and keyed["keySet"] is True, "нода заведена со своим портом API и API-ключом")
+                                                "apiPort": 19443, "apiKey": "sk-api-test123456789000000"}).json()
+        ok(keyed["apiPort"] == 19443 and keyed["keySet"] is True,
+           "нода заведена со своим портом API и API-ключом (порт не наступает на живую ноду теста)")
         ok(keyed["keyMasked"].startswith("sk-api") and keyed["fingerprint"],
            f"в списке только masked-ключ: {keyed['keyMasked']}")
         ok(all(k not in keyed for k in ("apiKey", "api_key")), "открытый ключ не утекает из POST /api/nodes")
@@ -891,6 +951,56 @@ def main() -> int:
 
             again_wrong = client.post(f"/api/nodes/{fixed['id']}/check", json={}).json()
             ok(again_wrong["ok"] is True, "с правильным API-ключом связка снова работает")
+
+            # --- socks5: панель доходит до ноды через прокси ---
+            # Это не украшение: нода может сидеть за NAT или быть доступна только через
+            # прыжок. Проверка обязана видеть, что поход прошёл именно через прокси, и что
+            # отказ прокси панель называет отказом прокси, а не «нода не ответила».
+            sys.path.insert(0, str(ROOT / "tools"))
+            from socks5 import Socks5Proxy
+
+            plain = Socks5Proxy()
+            plain.start()
+            via = client.patch(f"/api/nodes/{fixed['id']}", json={"proxy": plain.url()}).json()
+            ok(via["proxy"] == plain.url() and via["proxySet"] is True,
+               f"нода сохранена через прокси: {via['proxy']}")
+            through = client.post(f"/api/nodes/{via['id']}/check", json={}).json()
+            ok(through["ok"] is True and through["proxy"] == plain.url(),
+               f"связка через socks5: {through['via']}")
+            ok(any(c.endswith(f":{node_port}") for c in plain.connections),
+               f"прокси правда переключал соединения к ноде: {plain.connections}")
+
+            plain.fail_next = True
+            broken = client.post(f"/api/nodes/{via['id']}/check", json={}).json()
+            ok(broken["ok"] is False and broken["reachable"] is False,
+               f"если socks5 не пустил, нода не в сети: {broken['error']}")
+            ok("прокси" in broken["error"], f"виноватый назван прямо: {broken['error']}")
+
+            guarded = Socks5Proxy(username="medusa", password="sockssecret")
+            guarded.start()
+            secret_node = client.patch(f"/api/nodes/{via['id']}",
+                                       json={"proxy": guarded.url()}).json()
+            ok(secret_node["proxy"] == "socks5://medusa:••••@127.0.0.1:%d" % guarded.port,
+               f"пароль прокси скрыт в ответе панели: {secret_node['proxy']}")
+            guarded_check = client.post(f"/api/nodes/{via['id']}/check", json={}).json()
+            ok(guarded_check["ok"] is True and guarded.connections,
+               f"socks5 с паролем работает: {guarded_check['via']}")
+            ok("sockssecret" not in json.dumps(client.get("/api/nodes").json()),
+               "пароль прокси не утекает в список нод")
+
+            # конфиг ноде доставляется тем же путём: доставка конфига и опрос ноды должны
+            # ходить туда же, куда ходит кнопка «Проверить связь», а не мимо прокси
+            before_push = len(guarded.connections)
+            pushed = client.post(f"/api/nodes/{via['id']}/apply", json={}).json()
+            ok(len(guarded.connections) > before_push,
+               f"применение конфига прошло через тот же socks5: {pushed.get('error') or 'конфиг доставлен'}")
+
+            direct = client.patch(f"/api/nodes/{via['id']}", json={"proxy": ""}).json()
+            ok(direct["proxy"] == "" and direct["proxySet"] is False, "прокси снят — панель снова ходит напрямую")
+            back = client.post(f"/api/nodes/{via['id']}/check", json={}).json()
+            ok(back["ok"] is True and back["proxy"] is None, "без прокси связка снова полная")
+            plain.stop()
+            guarded.stop()
         else:
             print("SKIP  связка с живой нодой: MEDUSA_TEST_NODE_PORT / MEDUSA_TEST_NODE_KEY не заданы")
         ok(all(h["node"] != "vps-fi" for h in client.get("/api/hosts").json()), "хосты ноды удалились cascade'ом")
@@ -954,6 +1064,7 @@ def main() -> int:
 
     chain_migration_checks()
     port_and_hop_checks(client)
+    proxy_setting_checks(client)
     traffic_checks(client)
 
     print(f"\nпровалов: {FAILS}")

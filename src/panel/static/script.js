@@ -80,6 +80,10 @@ const I18N = {
     'btn.newNode':'Добавить ноду','dlg.node.title':'Новая нода','dlg.node.name':'Название','dlg.node.address':'Адрес (IP или домен)',
     'dlg.node.apiPort':'Порт API ноды','dlg.node.key':'API-ключ ноды',
     'dlg.node.keyHint':'API-ключ нода печатает в консоль при первом запуске.',
+    'dlg.node.proxy':'SOCKS5-прокси (необязательно)',
+    'dlg.node.proxyHint':'Нужен, если нода доступна панели только через прокси: socks5://[user:pass@]host:port. Касается только связи панели с API ноды.',
+    'dlg.nodeEdit.proxy':'SOCKS5-прокси для связи',
+    'node.proxyOn':'панель идёт к этой ноде через прокси {proxy}','node.proxyOff':'панель идёт к этой ноде напрямую: впиши socks5://[user:pass@]host:port, если нода доступна только через прыжок',
     'node.openTip':'Изменить ноду','node.version':'Версия ноды','node.notReported':'неизвестно',
     'dlg.nodeEdit.apiKey':'API-ключ','dlg.nodeEdit.check':'Связь с панелью',
     'dlg.nodeEdit.fp':'отпечаток API-ключа: {fp}','dlg.nodeEdit.keyMissing':'API-ключа пока нет: впишите тот, что напечатала нода',
@@ -193,6 +197,10 @@ const I18N = {
     'btn.newNode':'Add node','dlg.node.title':'New node','dlg.node.name':'Name','dlg.node.address':'Address (IP or domain)',
     'dlg.node.apiPort':'Node API port','dlg.node.key':'Node API key',
     'dlg.node.keyHint':'The node prints its API key to the console on first start.',
+    'dlg.node.proxy':'SOCKS5 proxy (optional)',
+    'dlg.node.proxyHint':'Needed when the node is reachable only through a proxy: socks5://[user:pass@]host:port. It affects the panel-to-node API link only.',
+    'dlg.nodeEdit.proxy':'SOCKS5 proxy for the link',
+    'node.proxyOn':'the panel reaches this node through proxy {proxy}','node.proxyOff':'the panel reaches this node directly: type socks5://[user:pass@]host:port if the node is reachable only via a jump host',
     'node.openTip':'Edit this node','node.version':'Node version','node.notReported':'unknown',
     'dlg.nodeEdit.apiKey':'API key','dlg.nodeEdit.check':'Panel link',
     'dlg.nodeEdit.fp':'API key fingerprint: {fp}','dlg.nodeEdit.keyMissing':'no API key yet: type the one the node printed',
@@ -1160,6 +1168,7 @@ $('#ndlg').addEventListener('close', async ()=>{
   const dlg = $('#ndlg');
   const body = {name:FV(dlg,'name'), address:FV(dlg,'address'), apiKey:FV(dlg,'apiKey')};
   const port = FV(dlg,'apiPort'); if(port) body.apiPort = +port;
+  const proxy = FV(dlg,'proxy').trim(); if(proxy) body.proxy = proxy;
   try{
     await call('POST','/api/nodes', body);
     toast(t('toast.nodeCreated')); show();
@@ -1167,7 +1176,7 @@ $('#ndlg').addEventListener('close', async ()=>{
 });
 
 /* Карточка ноды — это кнопка: всё остальное живёт здесь, в окне правки ноды. */
-let editing = null, edited = false, keyKnown = '';
+let editing = null, edited = false, keyKnown = '', proxyKnown = '';
 const NEF = () => document.querySelector('#neform');
 const nfill = (k,v) => { const el = NEF().querySelector(`[data-f="${k}"]`); if(el) el.value = v; };
 const missing = v => v ? esc(v) : `<span class="mono">${t('node.notReported')}</span>`;
@@ -1210,6 +1219,16 @@ async function openNodeEdit(id){
   } else {
     keyKnown = ''; nfill('apiKey', '');
   }
+  // прокси в списке отдаётся masked (пароль скрыт), а поле должно быть целым —
+  // иначе сохранение диалога выглядело бы как «прокси без учётки»
+  proxyKnown = '';
+  if(n.proxySet){
+    try{ proxyKnown = (await call('GET',`/api/nodes/${n.id}/proxy`)).proxy || ''; }catch(err){ proxyKnown = n.proxy || ''; }
+  }
+  nfill('proxy', proxyKnown);
+  $('#ne_proxy').textContent = proxyKnown
+    ? t('node.proxyOn', {proxy: n.proxy || proxyKnown})
+    : t('node.proxyOff');
   $('#ne_key').textContent = n.fingerprint ? t('dlg.nodeEdit.fp', {fp: n.fingerprint}) : t('dlg.nodeEdit.keyMissing');
   $('#ne_agent').innerHTML = missing(n.agent);
   $('#ne_xray').innerHTML = missing(n.xray);
@@ -1263,6 +1282,8 @@ $('#nedlg').addEventListener('close', async ()=>{
   // API-ключ отправляем только если его правда поменяли: иначе панель сочтёт, что
   // связь надо проверять заново, и нода ложно станет «недоступна»
   const key = FV(form,'apiKey'); if(key && key !== keyKnown) body.apiKey = key;
+  // то же, что и с ключом: прокси отправляем только если его правда поменяли
+  const proxy = FV(form,'proxy').trim(); if(proxy !== proxyKnown) body.proxy = proxy;
   try{ await call('PATCH','/api/nodes/'+editing.id, body); toast(t('toast.nodeSaved')); }
   catch(err){ toast(t('toast.error',{msg:err.message})) }
   show();

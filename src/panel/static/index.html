@@ -139,6 +139,8 @@
     </div>
     <label><span data-i18n="dlg.node.key">API-ключ ноды</span><input data-f="apiKey" required maxlength="128" spellcheck="false" placeholder="sk-api-"></label>
     <p class="hint" data-i18n="dlg.node.keyHint"></p>
+    <label><span data-i18n="dlg.node.proxy">SOCKS5-прокси (необязательно)</span><input data-f="proxy" maxlength="200" spellcheck="false" autocomplete="off" placeholder="socks5://10.0.0.1:1080"></label>
+    <p class="hint" data-i18n="dlg.node.proxyHint">Нужен, если нода доступна панели только через прокси: socks5://[user:pass@]host:port. Касается только связи панели с API ноды.</p>
     <div class="row">
       <button class="btn" value="cancel" formnovalidate data-i18n="btn.cancel">Отмена</button>
       <button class="btn pri" value="ok" data-i18n="btn.save">Сохранить</button>
@@ -155,6 +157,8 @@
     </div>
     <label><span data-i18n="dlg.nodeEdit.apiKey">API-ключ</span><input data-f="apiKey" maxlength="128" spellcheck="false" placeholder="sk-api-"></label>
     <p class="hint" id="ne_key"></p>
+    <label><span data-i18n="dlg.nodeEdit.proxy">SOCKS5-прокси для связи</span><input data-f="proxy" maxlength="200" spellcheck="false" autocomplete="off" placeholder="socks5://10.0.0.1:1080"></label>
+    <p class="hint" id="ne_proxy"></p>
     <dl class="ninfo">
       <dt data-i18n="node.version">Версия ноды</dt><dd id="ne_agent"></dd>
       <dt data-i18n="node.xray">Версия Xray</dt><dd id="ne_xray"></dd>

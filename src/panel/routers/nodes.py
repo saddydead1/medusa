@@ -13,6 +13,7 @@ from src.panel.db import get_conn, now_ms
 from src.panel.deps import bad_request, conflict, current_admin, fetch_one, writer
 from src.panel.node_check import check_node as run_check
 from src.panel.nodes_rows import NODE_COLUMNS, as_dict
+from src.panel.proxy_url import ProxySettingError, normalize_proxy
 from src.panel.schemas import NodeCreate, NodePatch
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
@@ -42,12 +43,13 @@ def create_node(
     _: sqlite3.Row | None = Depends(writer),
 ) -> dict:
     check_api_port(conn, None, body.address, body.apiPort or 9443)
+    proxy = checked_proxy(body.proxy)
     try:
         conn.execute(
             """INSERT INTO nodes (name, address, online, xray_version, traffic_bytes,
-                                   api_port, api_key, created_at)
-               VALUES (?,?,0,?,0,?,?,?)""",        # трафик и подписчиков считает нода, не INSERT
-            (body.name, body.address, body.xray, body.apiPort or 9443, body.apiKey, now_ms()),
+                                   api_port, api_key, api_proxy, created_at)
+               VALUES (?,?,0,?,0,?,?,?,?)""",        # трафик и подписчиков считает нода, не INSERT
+            (body.name, body.address, body.xray, body.apiPort or 9443, body.apiKey, proxy, now_ms()),
         )
     except sqlite3.IntegrityError:
         raise conflict(f"нода «{body.name}» уже есть")
@@ -69,10 +71,12 @@ def patch_node(
     # поле трогается только если его прислали: null значит «убрать», но только там,
     # где колонка и правда может быть пустой (ключ ноды, версия Xray)
     provided = body.model_fields_set
-    nullable = {"xray"}   # API-ключ не снимается: без него нода остаётся декоративной
+    nullable = {"xray", "proxy"}   # API-ключ не снимается: без него нода остаётся декоративной
     changes = {k: v for k, v in body.model_dump().items() if k in provided and (v is not None or k in nullable)}
+    if "proxy" in changes:
+        changes["proxy"] = checked_proxy(changes["proxy"])
     columns = {"name": "name", "address": "address", "online": "online", "xray": "xray_version",
-               "apiPort": "api_port", "apiKey": "api_key"}
+               "apiPort": "api_port", "apiKey": "api_key", "proxy": "api_proxy"}
     if not changes:
         return as_dict(fetch_one(conn, f"SELECT {NODE_COLUMNS} FROM nodes WHERE id = ?", (node_id,)))
     sets = ", ".join(f"{columns[k]} = ?" for k in changes)
@@ -80,7 +84,8 @@ def patch_node(
     # «связь есть» перестаёт быть честным, только если адрес, порт или API-ключ правда
     # поменялись. Форма присылает их всегда одними и теми же — значит, и сбрасывать
     # ничего не надо: иначе каждый сохранённый диалог ронял бы ноду в «недоступна».
-    same = {"address": before["address"], "apiPort": before["api_port"], "apiKey": before["api_key"]}
+    same = {"address": before["address"], "apiPort": before["api_port"], "apiKey": before["api_key"],
+            "proxy": before["api_proxy"]}
     if any(k in changes and changes[k] != same[k] for k in same):
         sets += ", seen_at = 0, agent_version = NULL, online = 0"
     # чем нода станет после правки: адрес и API-порт проверяются уже новыми значениями,
@@ -144,6 +149,29 @@ def node_api_key(
     if not api_key:
         raise conflict("API-ключа у этой ноды нет — в старой базе его просто не было")
     return {"key": api_key, "fingerprint": api_key_fingerprint(api_key)}
+
+
+def checked_proxy(raw: str | None) -> str:
+    """Прокси ноды разбирает proxy_url: человеку возвращаются его же слова, а не
+    «string does not match pattern».
+    """
+    try:
+        return normalize_proxy(raw)
+    except ProxySettingError as err:
+        raise HTTPException(status_code=422, detail=str(err)) from err
+
+
+@router.get("/{node_id}/proxy")
+def node_proxy(
+    node_id: int,
+    conn: sqlite3.Connection = Depends(get_conn),
+    _: sqlite3.Row | None = Depends(writer),
+) -> dict:
+    """Прокси этой ноды целиком, с паролем. Нужен окну правки: в списках панель отдаёт
+    masked-форму, а без парола сохранение диалога вышло бы как «прокси без учётки».
+    """
+    row = fetch_one(conn, "SELECT api_proxy FROM nodes WHERE id = ?", (node_id,))
+    return {"proxy": row["api_proxy"]}
 
 
 @router.post("/{node_id}/check")

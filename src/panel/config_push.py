@@ -168,7 +168,8 @@ def push_node(conn: sqlite3.Connection, node_id: int) -> dict[str, Any]:
         conn.execute("UPDATE nodes SET config_rev = ? WHERE id = ?", (revision, node_id))
         conn.commit()
 
-        target = NodeTarget(node["address"], node["api_port"], node["api_key"])
+        target = NodeTarget(node["address"], node["api_port"], node["api_key"],
+                            node["api_proxy"] or None)
         try:
             report = node_apply(target, revision, data["config"], data["certs"], node_timeout(conn))
         except NodeError as err:
