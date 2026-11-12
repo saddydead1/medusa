@@ -103,7 +103,7 @@ const I18N = {
     'dlg.admin.hint':'Администратор управляет пользователями, хостами, цепочками и нодами. Настройки и других администраторов меняет владелец.',
     'dlg.host.title':'Новый хост','dlg.host.name':'Название (его увидит пользователь)','dlg.host.node':'Нода','dlg.host.address':'Адрес хоста (IP или домен)',
     'dlg.chain.title':'Новая цепочка','dlg.chain.name':'Название хоста (его увидит пользователь)',
-    'dlg.chain.hint':'Пользователь увидит цепочку как один хост и подключится к первой ноде. Инбаунд на каждой ноде создастся автоматически.',
+    'dlg.chain.hint':'Пользователь увидит цепочку как один хост и подключится к первой ноде. Инбаунд каждой ноды и переход между нодами создаются автоматически.',
     'cfg.protocol':'Протокол','cfg.transport':'Транспорт','cfg.security':'Защита','cfg.port':'Порт',
     'cfg.sec.reality.dest':'Маскированный адрес (dest)','cfg.sec.fp':'Отпечаток клиента (utls)',
     'cfg.sec.reality.serverNames':'Какие SNI принимать (через запятую)',
@@ -150,7 +150,7 @@ const I18N = {
     'ago.never':'Никогда','ago.now':'Только что','ago.min':'{n} мин назад','ago.hour':'{n} ч назад','ago.day':'{n} дн. назад',
     'toast.saved':'Настройки сохранены','toast.discarded':'Изменения отменены','toast.passwordChanged':'Пароль изменён',
     'toast.adminCreated':'Администратор создан','toast.chainCreated':'Цепочка создана','toast.userCreated':'Пользователь создан',
-    'toast.deleted':'Удалён','toast.chainDeleted':'Удалена','toast.subCopied':'Ссылка подписки скопирована',
+    'toast.deleted':'Удалён','toast.chainDeleted':'Удалена','toast.chainEdited':'Цепочка изменена','toast.subCopied':'Ссылка подписки скопирована',
     'toast.error':'Ошибка: {msg}','toast.loadSettings':'Не удалось получить настройки: {msg}',
     'auth.login':'Вход в панель','auth.user':'Логин','auth.password':'Пароль','auth.btn':'Войти','auth.key':'Войти ключом',
     'auth.bad':'Вход не прошёл: {msg}','auth.logout':'Выйти','auth.logoutTip':'Выйти из панели: сессия перестанет работать',
@@ -178,6 +178,7 @@ const I18N = {
     'cfg.adv':'Настройки транспорта','cfg.adv.path':'Путь (path)','cfg.adv.hostHeader':'Host-заголовок','cfg.adv.serviceName':'Имя сервиса (gRPC)',
     'cfg.adv.grpc.authority':'Authority (к кому «обращается» gRPC)',
     'chain.maxHops':'Максимум {n} хопов','btn.remove':'Убрать',
+    'dlg.chain.editTitle':'Цепочка: изменение',
     'chain.minNodes':'Для цепочки нужны минимум две ноды',
     'chain.hopSameNode':'Соседние хопы должны быть на разных нодах',
 
@@ -211,7 +212,7 @@ const I18N = {
     'dlg.admin.hint':'An administrator manages users, hosts, chains and nodes. Only the owner can change settings and other administrators.',
     'dlg.host.title':'New host','dlg.host.name':'Name (the user will see it)','dlg.host.node':'Node','dlg.host.address':'Host address (IP or domain)',
     'dlg.chain.title':'New chain','dlg.chain.name':'Host name (the user will see it)',
-    'dlg.chain.hint':'The user sees a chain as a single host and connects to the first node. An inbound on every node is created automatically.',
+    'dlg.chain.hint':'The user sees a chain as a single host and connects to the first node. Every node gets its inbound and the hop to the next node automatically.',
     'cfg.protocol':'Protocol','cfg.transport':'Transport','cfg.security':'Security','cfg.port':'Port',
     'cfg.sec.reality.dest':'Camouflage address (dest)','cfg.sec.fp':'Client fingerprint (utls)',
     'cfg.sec.reality.serverNames':'Accepted SNIs (comma-separated)',
@@ -258,7 +259,7 @@ const I18N = {
     'ago.never':'Never','ago.now':'Just now','ago.min':'{n} min ago','ago.hour':'{n} h ago','ago.day':'{n} d ago',
     'toast.saved':'Settings saved','toast.discarded':'Changes discarded','toast.passwordChanged':'Password changed',
     'toast.adminCreated':'Administrator created','toast.chainCreated':'Chain created','toast.userCreated':'User created',
-    'toast.deleted':'Deleted','toast.chainDeleted':'Deleted','toast.subCopied':'Subscription link copied',
+    'toast.deleted':'Deleted','toast.chainDeleted':'Deleted','toast.chainEdited':'Chain updated','toast.subCopied':'Subscription link copied',
     'toast.error':'Error: {msg}','toast.loadSettings':'Could not load settings: {msg}',
     'auth.login':'Sign in to the panel','auth.user':'Login','auth.password':'Password','auth.btn':'Sign in','auth.key':'Sign in with a key',
     'auth.bad':'Sign-in failed: {msg}','auth.logout':'Sign out','auth.logoutTip':'Sign out: this session stops working',
@@ -286,6 +287,7 @@ const I18N = {
     'cfg.adv':'Transport settings','cfg.adv.path':'Path','cfg.adv.hostHeader':'Host header','cfg.adv.serviceName':'Service name (gRPC)',
     'cfg.adv.grpc.authority':'Authority (gRPC target host)',
     'chain.maxHops':'At most {n} hops','btn.remove':'Remove',
+    'dlg.chain.editTitle':'Chain: edit',
     'chain.minNodes':'A chain needs at least two nodes',
     'chain.hopSameNode':'Neighbouring hops must be on different nodes',
 
@@ -933,7 +935,8 @@ const pages = {
       return `<div class="chain"><div class="meta"><b>${esc(c.name)}</b><div class="sub">${word(c.hops.length)}</div></div>
         <div class="path">${path}</div>
         <span class="badge ${problem?'b-bad':'b-ok'}">${problem||t('chain.ok')}</span>
-        ${canWrite()?`<button class="btn sm del" data-a="cdel" data-id="${c.id}">${ic('trash')}${t('btn.delete')}</button>`:''}</div>`}).join('');
+        ${canWrite()?`<button class="btn sm" data-a="cedit" data-id="${c.id}">${ic('gear')}${t('btn.edit')}</button>
+        <button class="btn sm del" data-a="cdel" data-id="${c.id}">${ic('trash')}${t('btn.delete')}</button>`:''}</div>`}).join('');
     return `<div class="head"><h2>${t('nav.chains')}</h2>${canWrite()?`<button class="btn pri" data-a="newchain">${ic('plus')}${t('btn.newChain')}</button>`:''}</div>`+
       (chains.length?`<div class="chains">${items}</div>`
       :`<div class="panel"><div class="empty">${t('empty.chains')}</div></div>`);
@@ -1002,12 +1005,13 @@ $('#view').addEventListener('click', async e=>{
   const a = b.dataset.a, id = +b.dataset.id;
   /* диалог своей учётки нужен всякому вошедшему: пароль, свои ключи;
      а бэкенд и так не пропустит правку чужого */
-  const WRITE_ACTIONS = ['new','newnode','newhost','newchain','anew','del','toggle','hdel','hedit','cdel','atoggle','adel','ncheck','ndelete'];
+  const WRITE_ACTIONS = ['new','newnode','newhost','newchain','anew','del','toggle','hdel','hedit','cedit','cdel','atoggle','adel','ncheck','ndelete'];
   if(WRITE_ACTIONS.includes(a) && !canWrite()) return toast(t('auth.required'));
   try{
     if(a==='new'){ $('#dlg').returnValue=''; return $('#dlg').showModal(); }
     /* return без await: ошибка диалога ушла бы мимо try/catch и в консоль вместо объяснения */
     if(a==='newchain') return void await openChain();
+    if(a==='cedit') return void await openChainEdit(id);
     if(a==='newhost') return void await openHost();
     if(a==='gochain') return void await show('chains');
     if(a==='newnode') return void await openNode();
@@ -1353,20 +1357,52 @@ function addHop(){
   row.querySelector('.hop button').onclick = ()=>{ row.remove(); renumber(); };
   box.append(row); renumber();
 }
-async function openChain(){
+let chainEditing = null;
+function chainShell(){
+  chainEditing = null;
+  $('#cform').reset(); $('#hops').innerHTML = '';
+  $('#cdlg h3').textContent = t('dlg.chain.title');
+  $('#cdlg [value=ok]').textContent = t('btn.create');
+}
+function fillHop(row, hop){
+  K(row,'node').value = hop.node;
+  setCfg(row,'protocol',hop.protocol); setCfg(row,'network',hop.network);
+  setCfg(row,'security',hop.security); syncCfg(row);
+  K(row,'port').value = hop.port;
+}
+async function openChain(chain){
   await loadCtx();
   if(ctx.nodes.length<2) return toast(t('chain.minNodes'));
-  $('#cform').reset(); $('#hops').innerHTML = ''; addHop(); addHop();
+  chainShell();
+  const hops = chain ? chain.hops : [];
+  hops.forEach(hop=>{ addHop(); fillHop(hopRows()[hopRows().length-1], hop); });
+  if(!hops.length){ addHop(); addHop(); }
+  if(chain){
+    chainEditing = chain.id;
+    $('#cform [name=name]').value = chain.name;
+    $('#cdlg h3').textContent = t('dlg.chain.editTitle');
+    $('#cdlg [value=ok]').textContent = t('btn.save');
+  }
   $('#cdlg').returnValue = ''; $('#cdlg').showModal();
+}
+async function openChainEdit(id){
+  const chains = await call('GET','/api/chains');
+  const c = chains.find(x=>x.id===id);
+  if(!c) return toast(t('err.notFound'));
+  await openChain(c);
 }
 $('#addhop').onclick = addHop;
 $('#cform').addEventListener('submit', e=>{
   if(e.submitter && e.submitter.value!=='ok') return;
   const rows = hopRows(); let err = null;
+  // свои порты при правке цепочки конфликтом не считаются: хопа этой же цепочки
+  // занимают их прямо сейчас, и перестановка хопов внутри тех же портов — не занято
+  const own = chainEditing ? (ctx.chains.find(c=>c.id===chainEditing)?.hops || []) : [];
+  const mine = (node, port) => own.some(h=>h.node===node && h.port===port);
   rows.forEach((r,i)=>{
     const n = rowNode(r), port = rowPort(r);
     if(i && n===rowNode(rows[i-1])) err ||= t('chain.hopSameNode');
-    if(taken(n).has(port)) err ||= t('toast.portTaken',{port,node:n});
+    if(!mine(n,port) && taken(n).has(port)) err ||= t('toast.portTaken',{port,node:n});
     if(rows.slice(0,i).some(o=>rowNode(o)===n && rowPort(o)===port)) err ||= t('toast.portDup',{port,node:n});
   });
   if(err){ e.preventDefault(); toast(err); }
@@ -1374,7 +1410,12 @@ $('#cform').addEventListener('submit', e=>{
 $('#cdlg').addEventListener('close', async ()=>{
   if($('#cdlg').returnValue!=='ok') return;
   const hops = hopRows().map(r=>({node:rowNode(r), ...readCfg(r)}));
-  try{ await call('POST','/api/chains',{name:$('#cform [name=name]').value, hops}); toast(t('toast.chainCreated')); show(); }
+  const id = chainEditing, name = $('#cform [name=name]').value;
+  try{
+    if(id){ await call('PATCH','/api/chains/'+id,{name,hops}); toast(t('toast.chainEdited')); }
+    else{ await call('POST','/api/chains',{name,hops}); toast(t('toast.chainCreated')); }
+    show();
+  }
   catch(err){ toast(t('toast.error',{msg:err.message})) }
 });
 

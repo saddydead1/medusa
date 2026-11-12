@@ -1,7 +1,18 @@
 """Цепочки: пользователь видит её как один хост, вход — в первую ноду.
 
-Создание цепочки сразу заводит хост (как и на настоящих панелях), удаление —
-забирает хост с собой. Логика инбаундов на нодах пока не делается.
+Цепочка живёт в таблице `hosts` своими строками — по одной на каждый хоп (`hop_index`
+0..n-1, у обычного хоста -1). Вход цепочки (хоп 0) человек видит в списке хостов как хост
+с именем цепочки: к нему он подключается, ему же отдаётся ссылка подписки. Промежуточные
+хопа — те же строки hosts, но наружу они не показываются: это внутренняя связь нод, и
+правятся они только вместе с цепочкой.
+
+Такой порядок даёт цепочке всё, что есть у обычного хоста: занятый порт учитывается наравне
+(UNIQUE (node_id, port)), ключи reality выпускаются при создании, а tls-хосту цепочки панель
+выпускает сертификат сама (src/panel/host_keys.py) — иначе соседняя нода не смогла бы ему
+доверять.
+
+Логика инбаундов и переходов — в `src/core/xray_config.py` (hop_clients, hop_outbound,
+routing по inboundTag); здесь только смысл записи и её границы.
 """
 from __future__ import annotations
 
@@ -11,6 +22,8 @@ import sqlite3
 from fastapi import APIRouter, Depends
 
 from src.core.xray_config import security_issue, unsupported_protocol, UNSUPPORTED_HINT
+from src.panel import config_push
+from src.panel.chain_hops import insert_hop
 from src.panel.db import get_conn, now_ms
 from src.panel.deps import bad_request, conflict, fetch_one, writer
 from src.panel.schemas import ChainCreate
@@ -52,15 +65,40 @@ def as_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
 
 
 def used_ports(conn: sqlite3.Connection, skip_chain: int | None = None) -> dict[int, set[int]]:
+    """Занятые порты нод. Хопа цепочки занимают порт наравне с обычными хостами:
+    на ноде поднимается инбаунд каждого хопа, и два инбаунда на одном порту — не вариант."""
     used: dict[int, set[int]] = {}
-    for row in conn.execute("SELECT node_id, port FROM hosts").fetchall():
-        used.setdefault(row["node_id"], set()).add(row["port"])
-    for row in conn.execute("SELECT id, hops FROM chains").fetchall():
-        if skip_chain is not None and row["id"] == skip_chain:
+    for row in conn.execute("SELECT node_id, port, chain_id FROM hosts").fetchall():
+        if skip_chain is not None and row["chain_id"] == skip_chain:
             continue
-        for hop in json.loads(row["hops"]):
-            used.setdefault(hop["node_id"], set()).add(hop["port"])
+        used.setdefault(row["node_id"], set()).add(row["port"])
     return used
+
+
+def resolve_hops(conn: sqlite3.Connection, body: ChainCreate, skip_chain: int | None) -> tuple[list[dict], list[int]]:
+    """Хопы запроса -> хопы базы: ноды по именам, порты проверены, порядок сохранён."""
+    nodes = {}
+    for hop in body.hops:
+        check_hop(hop)
+        row = conn.execute("SELECT id, name, address FROM nodes WHERE name = ?", (hop.node,)).fetchone()
+        if row is None:
+            raise bad_request(f"ноды «{hop.node}» нет")
+        nodes[hop.node] = row
+
+    for a, b in zip(body.hops, body.hops[1:], strict=False):
+        if a.node == b.node:
+            raise bad_request("соседние хопы должны быть на разных нодах")
+
+    used = used_ports(conn, skip_chain=skip_chain)
+    for hop in body.hops:
+        node_id = nodes[hop.node]["id"]
+        if hop.port in used.get(node_id, set()):
+            raise conflict(f"порт {hop.port} на ноде {hop.node} уже занят")
+        used.setdefault(node_id, set()).add(hop.port)
+
+    resolved = [{"node_id": nodes[h.node]["id"], "node": h.node, "protocol": h.protocol,
+                 "network": h.network, "security": h.security, "port": h.port} for h in body.hops]
+    return resolved, [h["node_id"] for h in resolved]
 
 
 @router.get("")
@@ -74,58 +112,53 @@ def create_chain(
     conn: sqlite3.Connection = Depends(get_conn),
     _: sqlite3.Row | None = Depends(writer),
 ) -> dict:
-    nodes = {}
-    for hop in body.hops:
-        check_hop(hop)
-        row = conn.execute("SELECT id, name FROM nodes WHERE name = ?", (hop.node,)).fetchone()
-        if row is None:
-            raise bad_request(f"ноды «{hop.node}» нет")
-        nodes[hop.node] = row["id"]
-
-    for a, b in zip(body.hops, body.hops[1:], strict=False):
-        if a.node == b.node:
-            raise bad_request("соседние хопы должны быть на разных нодах")
-        if a.security == "reality" and a.network == "ws":
-            raise bad_request("reality не работает поверх ws")
-
-    used = used_ports(conn)
-    for hop in body.hops:
-        node_id = nodes[hop.node]
-        if hop.port in used.get(node_id, set()):
-            raise conflict(f"порт {hop.port} на ноде {hop.node} уже занят")
-        used.setdefault(node_id, set()).add(hop.port)
-
-    hops = [{"node_id": nodes[h.node], "node": h.node, "protocol": h.protocol,
-             "network": h.network, "security": h.security, "port": h.port} for h in body.hops]
+    hops, node_ids = resolve_hops(conn, body, skip_chain=None)
     try:
         cur = conn.execute("INSERT INTO chains (name, hops, created_at) VALUES (?,?,?)",
                            (body.name, json.dumps(hops, ensure_ascii=False), now_ms()))
+        chain_id = cur.lastrowid
+        for index, hop in enumerate(hops):
+            insert_hop(conn, chain_id, body.name, index, hop, now_ms())
     except sqlite3.IntegrityError:
-        raise conflict(f"цепочка «{body.name}» уже есть")
-    first = hops[0]
-    conn.execute(
-        "INSERT INTO hosts (name, node_id, protocol, port, network, security, chain_id, created_at) VALUES (?,?,?,?,?,?,?,?)",
-        (body.name, first["node_id"], first["protocol"], first["port"], first["network"], first["security"], cur.lastrowid, now_ms()),
-    )
+        conn.rollback()
+        raise conflict(f"цепочка «{body.name}» уже есть (или её порты уже заняты)")
     conn.commit()
-    return as_dict(conn, fetch_one(conn, "SELECT * FROM chains WHERE id = ?", (cur.lastrowid,)))
+    config_push.mark_dirty(conn, node_ids)
+    config_push.schedule_push(node_ids)
+    return as_dict(conn, fetch_one(conn, "SELECT * FROM chains WHERE id = ?", (chain_id,)))
 
 
 @router.patch("/{chain_id}")
-def rename_chain(
+def patch_chain(
     chain_id: int,
     body: ChainCreate,
     conn: sqlite3.Connection = Depends(get_conn),
     _: sqlite3.Row | None = Depends(writer),
 ) -> dict:
-    """Переименование цепочки заодно правит и её хост — расхождений быть не должно."""
+    """Цепочка правится целиком, вместе со своими хопами.
+
+    Хост цепочки нельзя править отдельно (`409` в hosts), поэтому здесь принимаются и
+    новые хопа: строки хостов пересоздаются вместе с описанием цепочки. Ключи при этом
+    выпускаются заново — подпись цепочки (ссылка подписки на её вход) меняется вслед за
+    конфигами, расхождений «человек видит одно, нода работает по другому» не остаётся.
+    """
     fetch_one(conn, "SELECT id FROM chains WHERE id = ?", (chain_id,))
+    before = [row["node_id"] for row in conn.execute(
+        "SELECT node_id FROM hosts WHERE chain_id = ?", (chain_id,)).fetchall()]
+    hops, node_ids = resolve_hops(conn, body, skip_chain=chain_id)
     try:
-        conn.execute("UPDATE chains SET name = ? WHERE id = ?", (body.name, chain_id))
-        conn.execute("UPDATE hosts SET name = ? WHERE chain_id = ?", (body.name, chain_id))
+        conn.execute("DELETE FROM hosts WHERE chain_id = ?", (chain_id,))
+        conn.execute("UPDATE chains SET name = ?, hops = ? WHERE id = ?",
+                     (body.name, json.dumps(hops, ensure_ascii=False), chain_id))
+        for index, hop in enumerate(hops):
+            insert_hop(conn, chain_id, body.name, index, hop, now_ms())
     except sqlite3.IntegrityError:
-        raise conflict(f"цепочка «{body.name}» уже есть")
+        conn.rollback()
+        raise conflict(f"цепочка «{body.name}» уже есть (или её порты уже заняты)")
     conn.commit()
+    touched = sorted(set(before) | set(node_ids))
+    config_push.mark_dirty(conn, touched)
+    config_push.schedule_push(touched)
     return as_dict(conn, fetch_one(conn, "SELECT * FROM chains WHERE id = ?", (chain_id,)))
 
 
@@ -136,5 +169,9 @@ def delete_chain(
     _: sqlite3.Row | None = Depends(writer),
 ) -> None:
     fetch_one(conn, "SELECT id FROM chains WHERE id = ?", (chain_id,))
+    node_ids = [row["node_id"] for row in conn.execute(
+        "SELECT node_id FROM hosts WHERE chain_id = ?", (chain_id,)).fetchall()]
     conn.execute("DELETE FROM chains WHERE id = ?", (chain_id,))   # hosts.chain_id ON DELETE CASCADE
     conn.commit()
+    config_push.mark_dirty(conn, node_ids)
+    config_push.schedule_push(node_ids)

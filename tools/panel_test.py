@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import sys
@@ -35,6 +36,60 @@ def ok(cond: object, message: str) -> None:
     print(("PASS  " if cond else "FAIL  ") + message)
     if not cond:
         FAILS += 1
+
+
+def chain_migration_checks() -> None:
+    """Прежняя база поверх новой панели: у цепочки был только хост входа.
+
+    Проверка нужна, потому что цепочка теперь живёт строками hosts на каждый хоп: без
+    миграции старая цепочка молча осталась бы одним хостом (её следующий хоп существовал
+    только в описании), а её reality-вход уехал бы на ноду с пустым приватным ключом.
+    """
+    from src.panel.db import connect, init_db
+
+    path = Path(tempfile.mkdtemp(prefix="medusa-oldchain-")) / "old.db"
+    init_db(path)
+    conn = connect(path)
+    # ключи у нод есть: миграция помечает грязными только те ноды, которым что-то можно отправить
+    node_fi = conn.execute("INSERT INTO nodes (name, address, api_key, created_at) VALUES ('fi','127.0.0.1','sk-api-fi',1)").lastrowid
+    node_de = conn.execute("INSERT INTO nodes (name, address, api_key, created_at) VALUES ('de','127.0.0.2','sk-api-de',1)").lastrowid
+    hops = [{"node_id": node_fi, "protocol": "vless", "network": "tcp", "security": "reality", "port": 2053},
+            {"node_id": node_de, "protocol": "trojan", "network": "ws", "security": "tls", "port": 2083}]
+    chain_id = conn.execute("INSERT INTO chains (name, hops, created_at) VALUES ('прежняя', ?, 1)",
+                            (json.dumps(hops),)).lastrowid
+    conn.execute("""INSERT INTO hosts (name, node_id, protocol, port, network, security, chain_id, created_at)
+                    VALUES ('прежняя', ?, 'vless', 2053, 'tcp', 'reality', ?, 1)""", (node_fi, chain_id))
+    conn.commit()
+    conn.close()
+
+    init_db(path)                       # повторный запуск панели поверх прежней базы
+    conn = connect(path)
+    rows = conn.execute("""SELECT name, hop_index, protocol, port, security, private_key, cert_pem, cert_sha256
+                           FROM hosts WHERE chain_id = ? ORDER BY hop_index""", (chain_id,)).fetchall()
+    ok(len(rows) == len(hops),
+       f"миграция дорисовала хопа прежней цепочки строками hosts: {[r['name'] for r in rows]}")
+    ok([r["hop_index"] for r in rows] == list(range(len(hops))),
+       "вход прежней цепочки помечен хопом 0 (его человек видит хостом), следующий — хопом 1")
+    reality_hop, tls_hop = rows[0], rows[1]
+    ok(bool(reality_hop["private_key"]) and len(reality_hop["private_key"]) == 43,
+       f"reality-вход прежней цепочки получил пару x25519 ({len(reality_hop['private_key'])} символов): "
+       "без неё Xray не принял бы конфиг ноды")
+    ok(bool(tls_hop["cert_pem"]) and len(tls_hop["cert_sha256"]) == 64,
+       "tls-хопу прежней цепочки панель выпустила сертификат и запомнила его отпечаток "
+       "(его она закрепляет за соседней нодой: Xray 26 самоподписанный сертификат не примет)")
+    visible = [r["name"] for r in conn.execute(
+        "SELECT name FROM hosts WHERE chain_id IS NULL OR hop_index = 0 ORDER BY id").fetchall()]
+    ok(visible == ["прежняя"], f"человек по-прежнему видит только вход цепочки: {visible}")
+    try:
+        conn.execute("""INSERT INTO hosts (name, node_id, protocol, port, network, security, created_at)
+                        VALUES ('дубликат порта хопа', ?, 'vless', 2053, 'tcp', 'none', 1)""", (node_fi,))
+        ok(False, "порт, занятый хопом прежней цепочки, свободен для нового хоста — индекс не создался")
+    except sqlite3.IntegrityError as exc:
+        ok("hosts_node_port" in str(exc) or "UNIQUE" in str(exc).upper(),
+           f"порт хопа занял ноду и в прежней базе: {exc}")
+    dirty = conn.execute("SELECT COUNT(*) c FROM nodes WHERE config_dirty = 1").fetchone()["c"]
+    ok(dirty == 2, f"обе ноды прежней цепочки помечены грязными — их конфиги пересоберутся сами: {dirty}")
+    conn.close()
 
 
 def main() -> int:
@@ -175,6 +230,112 @@ def main() -> int:
         ok(client.delete(f"/api/hosts/{chain_host_id}").status_code == 409, "хост цепочки поодиночке не удаляется")
         ok(client.delete(f"/api/chains/{chain['id']}").status_code == 204, "удалить цепочку")
         ok(all(h["chain"] != chain["id"] for h in client.get("/api/hosts").json()), "хост цепочки удалён вместе с ней")
+
+        # --- цепочки в конфиге: инбаунд каждого хопа и переход в следующий ---
+        # Hop-ports скрыты от человека, но заняты: на ноде поднимается инбаунд каждого хопа.
+        route = client.post("/api/chains", json={"name": "ROUTE-3", "hops": [
+            {"node": "vps-fi", "protocol": "vless", "network": "tcp", "security": "reality", "port": 3101},
+            {"node": "home", "protocol": "trojan", "network": "tcp", "security": "tls", "port": 3102},
+            {"node": "vps-fi", "protocol": "ss", "network": "tcp", "security": "none", "port": 3103},
+        ]}).json()
+        hosts = client.get("/api/hosts").json()
+        ok(len([h for h in hosts if h["chain"] == route["id"]]) == 1,
+           "человек видит один хост цепочки — её вход, промежуточные хопа наружу не показываются")
+        taken = client.post("/api/hosts", json={"name": "Чужой порт", "node": "home", "protocol": "vless",
+                                               "port": 3102, "network": "tcp", "security": "none"})
+        ok(taken.status_code == 409,
+           f"порт хопа занят, хотя хопа не показываются -> {taken.status_code}: {taken.json()['detail']}")
+
+        def node_config(node_id: int) -> dict:
+            """то, что панель отправляет ноде: её же collect() по настоящей базе.
+
+           эндпоинт /api/nodes/<id>/config отдаёт показ для человека (секреты скрыты) —
+            сверять пароли хопов по нему было бы подгонкой «скрыто панелью» с «скрыто панелью».
+            """
+            from src.panel.config_push import collect
+            from src.panel.db import connect
+            probe = connect()
+            try:
+                return collect(probe, node_id)["config"]
+            finally:
+                probe.close()
+
+        cfg_fi, cfg_home = node_config(fi["id"]), node_config(home["id"])
+        in_fi = {i["tag"]: i for i in cfg_fi["inbounds"]}
+        in_home = {i["tag"]: i for i in cfg_home["inbounds"]}
+        out_fi = {o["tag"]: o for o in cfg_fi["outbounds"]}
+        out_home = {o["tag"]: o for o in cfg_home["outbounds"]}
+        ok(in_fi.get("ROUTE-3", {}).get("port") == 3101 and in_fi["ROUTE-3"]["protocol"] == "vless",
+           "вход цепочки — инбаунд первой ноды, тегом по имени цепочки")
+        ok(in_home.get("ROUTE-3 hop 2", {}).get("port") == 3102 and in_home["ROUTE-3 hop 2"]["protocol"] == "trojan",
+           "промежуточный хоп — инбаунд своей ноды (его порт и протокол), а не выдумка фронтенда")
+        ok(in_fi.get("ROUTE-3 hop 3", {}).get("port") == 3103,
+           "нода может быть и второй раз в цепочке: её хопы — отдельные инбаунды")
+        link1 = out_fi.get("ROUTE-3 -> hop 2") or {}
+        ok(link1.get("protocol") == "trojan" and link1["settings"]["servers"][0]["address"] == "10.8.0.1",
+           "переход первой ноды идёт на адрес ноды второго хопа (у хопа своего адреса нет)")
+        ok(link1["settings"]["servers"][0]["password"] == in_home["ROUTE-3 hop 2"]["settings"]["clients"][0]["password"],
+           "пароль перехода и пароль инбаунда следующего хопа выведены из одного смысла: цепочка соберётся")
+        pinned = link1["streamSettings"]["tlsSettings"]["pinnedPeerCertSha256"]
+        ok(len(pinned) == 64 and all(c in "0123456789abcdef" for c in pinned)
+           and in_home["ROUTE-3 hop 2"]["streamSettings"]["tlsSettings"]["certificates"],
+           "tls-хоп: панель выпускает сертификат сама и закрепляет его отпечаток за соседней нодой "
+           "(Xray 26 не принимает самоподписанный сертификат без pinnedPeerCertSha256)")
+        link2 = out_home.get("ROUTE-3 -> hop 3") or {}
+        ok(link2["settings"]["servers"][0]["method"] == "chacha20-ietf-poly1305"
+           and link2["settings"]["servers"][0]["password"] == in_fi["ROUTE-3 hop 3"]["settings"]["users"][0]["password"],
+           "shadowsocks-переход: шифр и пароль совпадают с users инбаунда третьего хопа")
+        rules_fi = cfg_fi.get("routing", {}).get("rules", [])
+        rules_home = cfg_home.get("routing", {}).get("rules", [])
+        ok({"inboundTag": ["ROUTE-3"], "outboundTag": "ROUTE-3 -> hop 2"} in rules_fi,
+           "трафик, вошедший во вход цепочки, обязан уйти переходом, а не наружу напрямую")
+        ok({"inboundTag": ["ROUTE-3 hop 2"], "outboundTag": "ROUTE-3 -> hop 3"} in rules_home
+           and {"inboundTag": ["ROUTE-3 hop 3"], "outboundTag": "direct"} not in rules_home,
+           "у выхода цепочки правила нет: последний хоп уходит наружу через direct")
+        def secrets_of(config: dict) -> list[str]:
+            """и приватные ключи reality, и пароли trojan/ss/vmess — и у инбаундов, и у переходов"""
+            found = []
+            for block in list(config.get("inbounds", [])) + list(config.get("outbounds", [])):
+                stream = (block.get("streamSettings") or {}).get("realitySettings") or {}
+                if stream.get("privateKey"):
+                    found.append(stream["privateKey"])
+                settings = block.get("settings") or {}
+                for group in (settings.get("servers"), settings.get("clients"), settings.get("users"),
+                              settings.get("vnext")):
+                    for item in group or []:
+                        for user in (item.get("users") or [item]):
+                            if user.get("password"):
+                                found.append(user["password"])
+            return found
+
+        real_secrets = secrets_of(cfg_fi)
+        shown = client.get(f"/api/nodes/{fi['id']}/config").json()["config"]
+        shown_text = json.dumps(shown, ensure_ascii=False)
+        ok(real_secrets and all(secret not in shown_text for secret in real_secrets)
+           and shown_text.count("скрыто панелью") >= len(real_secrets),
+           f"в окне конфига человек видит тот же JSON, что уедет ноде, но не ключи и не пароли "
+           f"переходов цепочки: спрятано {len(real_secrets)} секретов")
+        ok(json.dumps(cfg_fi, ensure_ascii=False).count("скрыто панелью") == 0,
+           "а то, что действительно уезжает ноде, секретов не прячет: ноде нужен настоящий конфиг")
+
+        moved = client.patch(f"/api/chains/{route['id']}", json={"name": "ROUTE-3", "hops": [
+            {"node": "home", "protocol": "vless", "network": "ws", "security": "tls", "port": 3111},
+            {"node": "vps-fi", "protocol": "vless", "network": "tcp", "security": "reality", "port": 3112},
+        ]}).json()
+        in_fi2 = {i["tag"]: i for i in node_config(fi["id"])["inbounds"]}
+        in_home2 = {i["tag"]: i for i in node_config(home["id"])["inbounds"]}
+        ok(moved["hops"][0]["node"] == "home" and in_home2.get("ROUTE-3", {}).get("port") == 3111
+           and in_fi2.get("ROUTE-3 hop 2", {}).get("port") == 3112,
+           "правка цепочки пересобирает хопа: вход переехал на другую ноду, прежних инбаундов нет")
+        ok("ROUTE-3 hop 3" not in in_fi2 and 3101 not in {i["port"] for i in in_fi2.values()},
+           "старые хопа исчезли из конфига, их порты освобождены")
+        freed = client.post("/api/hosts", json={"name": "Освободившийся", "node": "vps-fi", "protocol": "vless",
+                                               "port": 3101, "network": "tcp", "security": "none"})
+        ok(freed.status_code == 201, f"порт освобождённого хопа снова свободен: {freed.json().get('detail', 'ok')}")
+        client.delete(f"/api/hosts/{freed.json()['id']}")
+        ok(client.delete(f"/api/chains/{route['id']}").status_code == 204, "цепочка удалена")
+        ok(not any(tag.startswith("ROUTE-3") for tag in {i["tag"] for i in node_config(fi["id"])["inbounds"]}),
+           "удаление цепочки снимает и её инбаунды, и её переходы")
 
         # --- подписка: страница /sub/<токен> ---
         from src.core.xray_config import REALITY_DEST
@@ -576,6 +737,8 @@ def main() -> int:
         page = client.get("/")
         ok(page.status_code == 200 and 'id="view"' in page.text, "статика и API живут рядом")
         ok(client.get("/api/chains").status_code == 200, "список цепочек работает")
+
+    chain_migration_checks()
 
     print(f"\nпровалов: {FAILS}")
     return 1 if FAILS else 0

@@ -246,13 +246,15 @@ def fetch_hosts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def fetch_chains(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Для подписки цепочка — это её вход: адрес, порт и защита первой ноды,
-    имя — имя цепочки (его подписчик и увидит в приложении)."""
+    """Для подписки цепочка — это её вход (хоп 0): адрес, порт и защита первой ноды,
+    имя — имя цепочки (его подписчик и увидит в приложении). Дальнейшие хопа — строки той
+    же таблицы hosts, но подписчику они не показываются: их держит панель и исполняет
+    соседняя нода."""
     return conn.execute(
         f"""SELECT {host_columns('c.name')}, c.hops,
                   n.address AS node_address
            FROM chains c JOIN hosts h ON h.chain_id = c.id JOIN nodes n ON n.id = h.node_id
-           ORDER BY c.name""").fetchall()
+           WHERE h.hop_index = 0 ORDER BY c.name""").fetchall()
 
 
 def qr_svg(data: str) -> Response:

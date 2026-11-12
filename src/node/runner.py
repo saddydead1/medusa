@@ -140,6 +140,13 @@ class XrayRunner:
             if crt.exists() and key.exists():
                 continue
             try:
+                if hint.get("certificate") and hint.get("privateKey"):
+                    # сертификат выпустила панель (так бывает у хостов цепочки: соседний
+                    # узел должен знать его отпечаток) — нода просто кладёт его на диск
+                    crt.write_bytes(hint["certificate"].encode("utf-8"))
+                    key.write_bytes(hint["privateKey"].encode("utf-8"))
+                    os.chmod(key, 0o600)
+                    continue
                 _self_signed(hint["host"], crt, key)
             except Exception as err:  # noqa: BLE001 — причину пишем человеку в отчёт
                 return f"сертификат {hint['file']} выпустить не вышло: {err}"

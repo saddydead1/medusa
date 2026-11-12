@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -43,6 +44,10 @@ os.environ["MEDUSA_NODE_AUTO"] = "0"     # фоновый опрос здесь 
 NODE_KEY = "sk-api-xraytest0000000000000"
 STUB_LOG = tmp / "stub.log"
 STATE = tmp / "node" / "state.json"
+# вторая нода нужна для цепочек: хоп живёт на своей ноде, и её конфиг обязан прийти на неё
+NODE_KEY2 = "sk-api-xraytest2000000000000"
+STUB_LOG2 = tmp / "stub2.log"
+STATE2 = tmp / "node2" / "state.json"
 
 FAILS = 0
 
@@ -114,7 +119,9 @@ def main() -> int:
     stub.chmod(0o755)
     STUB_LOG.touch()
 
+    STUB_LOG2.touch()
     node_port = free_port()
+    node2_port = free_port()
     node_proc = subprocess.Popen(
         [str(ROOT / ".venv/bin/python"), "-m", "uvicorn", "src.node.main:app",
          "--host", "127.0.0.1", "--port", str(node_port)],
@@ -123,10 +130,18 @@ def main() -> int:
              "MEDUSA_XRAY_BIN": str(stub), "XRAY_STUB_LOG": str(STUB_LOG)},
     )
 
+    node2_proc = subprocess.Popen(
+        [str(ROOT / ".venv/bin/python"), "-m", "uvicorn", "src.node.main:app",
+         "--host", "127.0.0.1", "--port", str(node2_port)],
+        cwd=ROOT,
+        env={**os.environ, "MEDUSA_NODE_STATE": str(STATE2), "MEDUSA_NODE_API_KEY": NODE_KEY2,
+             "MEDUSA_XRAY_BIN": str(stub), "XRAY_STUB_LOG": str(STUB_LOG2)},
+    )
+
     import httpx
 
-    from src.core.xray_config import (SS_CIPHER, VMESS_CIPHER, reality_short_id, ss_password,
-                                      user_password, user_uuid)
+    from src.core.xray_config import (SS_CIPHER, VMESS_CIPHER, hop_password, hop_uuid,
+                                      reality_short_id, ss_password, user_password, user_uuid)
     from src.panel.main import app
     from fastapi.testclient import TestClient
 
@@ -140,6 +155,15 @@ def main() -> int:
             time.sleep(0.25)
         else:
             raise SystemExit("тестовая нода не поднялась")
+        for _ in range(80):
+            try:
+                if httpx.get(f"http://127.0.0.1:{node2_port}/node/health", timeout=1).is_success:
+                    break
+            except httpx.HTTPError:
+                pass
+            time.sleep(0.25)
+        else:
+            raise SystemExit("вторая тестовая нода не поднялась")
 
         with TestClient(app) as client:
             token = client.post("/api/login", json={"username": "admin", "password": "supersecret1"}).json()["token"]
@@ -367,6 +391,57 @@ def main() -> int:
             ok(len(set(tags)) == 8 and "R443" in tags and any(tag == f"R443-{dup['id']}" for tag in tags),
                f"одноимённые хосты получили разные теги: {sorted(tags)}")
 
+            # --- цепочки: каждый хоп доезжает до своей ноды и скрепляется переходом ---
+            node2 = client.post("/api/nodes", json={"name": "stub2", "address": "127.0.0.1",
+                                                    "apiPort": node2_port, "apiKey": NODE_KEY2}).json()
+            cfg2_path = STATE2.parent / "xray" / "config.json"
+            h1, h2, h3 = free_port(), free_port(), free_port()
+            route = client.post("/api/chains", json={"name": "XRAY-CHAIN", "hops": [
+                {"node": "stub", "protocol": "vless", "network": "tcp", "security": "reality", "port": h1},
+                {"node": "stub2", "protocol": "trojan", "network": "ws", "security": "tls", "port": h2},
+                {"node": "stub", "protocol": "vmess", "network": "tcp", "security": "none", "port": h3},
+            ]}).json()
+            cfg = wait_cfg(cfg_path, lambda c: any(i["tag"] == "XRAY-CHAIN" for i in c["inbounds"])
+                and any(i["tag"] == "XRAY-CHAIN hop 3" for i in c["inbounds"]))
+            cfg2 = wait_cfg(cfg2_path, lambda c: any(i["tag"] == "XRAY-CHAIN hop 2" for i in c["inbounds"]))
+            hop1 = next(i for i in cfg["inbounds"] if i["tag"] == "XRAY-CHAIN")
+            hop2 = next(i for i in cfg2["inbounds"] if i["tag"] == "XRAY-CHAIN hop 2")
+            hop3 = next(i for i in cfg["inbounds"] if i["tag"] == "XRAY-CHAIN hop 3")
+            ok(hop1["port"] == h1 and hop2["port"] == h2 and hop3["port"] == h3,
+               f"инбаунды хопа поднялись на своих нодах: {h1} и {h3} на первой, {h2} на второй")
+            out12 = next(o for o in cfg["outbounds"] if o["tag"] == "XRAY-CHAIN -> hop 2")
+            out23 = next(o for o in cfg2["outbounds"] if o["tag"] == "XRAY-CHAIN -> hop 3")
+            ok(out12["settings"]["servers"][0]["password"] == hop2["settings"]["clients"][0]["password"]
+               == hop_password(route["id"], 1),
+               "переход trojan и инбаунд второго хопа сошлись на одном пароле, выведенном из цепочки")
+            ok(out23["settings"]["vnext"][0]["users"][0]["id"] == hop3["settings"]["clients"][0]["id"]
+               == hop_uuid(route["id"], 2),
+               "переход vmess и инбаунд третьего хопа сошлись на одном uuid перехода")
+            ok(out12["settings"]["servers"][0]["address"] == "127.0.0.1"
+               and hop1["settings"]["clients"][0]["id"] == user_uuid(vasya["token"]),
+               "адрес перехода — адрес ноды следующего хопа, а подпись входа цепочки — подпись подписчика")
+            rules1 = cfg.get("routing", {}).get("rules", [])
+            ok({"inboundTag": ["XRAY-CHAIN"], "outboundTag": "XRAY-CHAIN -> hop 2"} in rules1
+               and {"inboundTag": ["XRAY-CHAIN hop 3"], "outboundTag": "direct"} not in rules1,
+               "маршрут по inboundTag: вход цепочки уходит переходом, выход цепочки — наружу")
+
+            hop_cert = cfg2_path.parent / hop2["streamSettings"]["tlsSettings"]["certificates"][0]["certificateFile"]
+            hop_key = cfg2_path.parent / hop2["streamSettings"]["tlsSettings"]["certificates"][0]["keyFile"]
+            ok(hop_cert.exists() and hop_key.exists() and (hop_key.stat().st_mode & 0o077) == 0,
+               f"панель привезла сертификат хопа ноде-приёмнику: {hop_cert.name}, закрытый ключ под 0600")
+            from cryptography import x509
+            from cryptography.hazmat.primitives.serialization import Encoding
+            der = x509.load_pem_x509_certificate(hop_cert.read_bytes()).public_bytes(Encoding.DER)
+            ok(hashlib.sha256(der).hexdigest() == out12["streamSettings"]["tlsSettings"]["pinnedPeerCertSha256"],
+               "отпечаток сертификата хопа совпал с тем, что закреплено на отправляющей ноде: "
+               "tls-хоп цепочки собирается без allowInsecure")
+
+            client.delete(f"/api/chains/{route['id']}")
+            cfg = wait_cfg(cfg_path, lambda c: all(not i["tag"].startswith("XRAY-CHAIN") for i in c["inbounds"]))
+            cfg2 = wait_cfg(cfg2_path, lambda c: all(not i["tag"].startswith("XRAY-CHAIN") for i in c["inbounds"]))
+            ok(all(not o["tag"].startswith("XRAY-CHAIN") for o in cfg["outbounds"] + cfg2["outbounds"]),
+               "удаление цепочки сняло и инбаунды хопа, и переходы на обеих нодах")
+
             # панель подтвердит ревизию чуть позже, чем файл конфига сменился: ждём оба факта
             final = wait_rows(client, node["id"], lambda r: not r["configDirty"]) or \
                 next(n for n in client.get("/api/nodes").json() if n["id"] == node["id"])
@@ -374,6 +449,11 @@ def main() -> int:
             ok(len(started_lines) == final["appliedRev"],
                f"каждое настоящее применение перезапускало Xray: стартов {len(started_lines)}, ревизий {final['appliedRev']}")
     finally:
+        node2_proc.terminate()
+        try:
+            node2_proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            node2_proc.kill()
         node_proc.terminate()
         try:
             node_proc.wait(timeout=15)

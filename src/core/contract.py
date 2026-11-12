@@ -69,7 +69,10 @@ class NodeConfigApply(BaseModel):
 
     revision: int = Field(ge=1)
     config: dict
-    certs: list[dict] = Field(default_factory=list, description="[{file, key, host}] tls-сертификаты до применения")
+    certs: list[dict] = Field(default_factory=list,
+                              description="[{file, key, host, certificate?, privateKey?}] tls-сертификаты "
+                                          "до применения: без PEM нода выпускает self-signed сама, с PEM "
+                                          "кладёт то, что выпустила панель (хопа цепочек)")
 
 
 class NodeApplyReport(BaseModel):

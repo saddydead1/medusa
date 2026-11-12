@@ -14,6 +14,8 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from src.core.api_keys import new_api_key
+from src.panel.chain_hops import insert_hop
+from src.panel.host_keys import new_reality_keys
 from src.panel.security import hash_password, new_session_token, new_user_token, temporary_password
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -114,9 +116,11 @@ CREATE TABLE IF NOT EXISTS hosts (
     network    TEXT    NOT NULL DEFAULT 'tcp',
     security   TEXT    NOT NULL DEFAULT 'none',
     chain_id   INTEGER REFERENCES chains(id) ON DELETE CASCADE,
-    created_at INTEGER NOT NULL,
-    UNIQUE (node_id, port)
+    created_at INTEGER NOT NULL
 );
+-- порт ноды занят и обычным хостом, и хопом цепочки; индекс заводится отдельной
+-- инструкцией (см. ensure_columns), чтобы достался и новым, и прежним базам
+CREATE UNIQUE INDEX IF NOT EXISTS hosts_node_port ON hosts (node_id, port);
 
 CREATE INDEX IF NOT EXISTS idx_hosts_node   ON hosts(node_id);
 CREATE INDEX IF NOT EXISTS idx_hosts_chain  ON hosts(chain_id);
@@ -151,6 +155,37 @@ def get_conn() -> Iterator[sqlite3.Connection]:
         yield conn
     finally:
         conn.close()
+
+
+def ensure_chain_hops(conn: sqlite3.Connection) -> None:
+    """Прежние цепочки дорисовываются до строк хопов.
+
+    Раньше цепочка создавала только хост входа, а хопа существовали лишь в описании. Теперь
+    у цепочки свой ряд hosts на каждый хоп: вход (`hop_index` 0 — его человек и видит хостом
+    цепочки) и промежуточные хопа, которые являются такими же инбаундами на своих нодах.
+    Миграция расставляет метки прежних строк и заводит недостающие хопа вместе с ключами
+    (reality — пара x25519, tls — сертификат от панели), иначе старая цепочка молча
+    превратилась бы в обычный хост, а её reality-вход уехал бы на ноду с пустым ключом.
+    """
+    conn.execute("UPDATE hosts SET hop_index = 0 WHERE chain_id IS NOT NULL AND hop_index < 0")
+    for chain in conn.execute("SELECT id, name, hops, created_at FROM chains").fetchall():
+        try:
+            hops = json.loads(chain["hops"])
+        except json.JSONDecodeError:
+            continue
+        have = {row["hop_index"] for row in conn.execute(
+            "SELECT hop_index FROM hosts WHERE chain_id = ?", (chain["id"],)).fetchall()}
+        for index, hop in enumerate(hops):
+            if index in have or "node_id" not in hop:
+                continue
+            insert_hop(conn, chain["id"], chain["name"], index, hop, chain["created_at"])
+        for row in conn.execute("""SELECT id FROM hosts WHERE chain_id = ?
+                                   AND security = 'reality' AND private_key = ''""",
+                                (chain["id"],)).fetchall():
+            private, public = new_reality_keys()
+            conn.execute("UPDATE hosts SET private_key = ?, public_key = ? WHERE id = ?",
+                         (private, public, row["id"]))
+    conn.execute("UPDATE nodes SET config_dirty = 1 WHERE api_key <> ''")
 
 
 def ensure_settings(conn: sqlite3.Connection) -> None:
@@ -216,6 +251,15 @@ COLUMNS = {
         "cert_file": "TEXT NOT NULL DEFAULT ''",
         "key_file": "TEXT NOT NULL DEFAULT ''",
         "server_names": "TEXT NOT NULL DEFAULT ''",
+        # хоп цепочки: цепочка живёт своими строками в hosts, по одной на каждый хоп
+        # (-1 — обычный хост, 0 — вход цепочки, 1.. — промежуточные хопа; человек в списке
+        # хостов видит только вход, остальные — внутренняя связь нод)
+        "hop_index": "INTEGER NOT NULL DEFAULT -1",
+        # сертификат хопа с tls выпускает панель (см. src/panel/host_keys.py): она обязана
+        # знать и сам сертификат, и его отпечаток, чтобы закрепить его за соседней нодой
+        "cert_pem": "TEXT NOT NULL DEFAULT ''",
+        "key_pem": "TEXT NOT NULL DEFAULT ''",
+        "cert_sha256": "TEXT NOT NULL DEFAULT ''",
         # колонки alpn, min_version, max_version, cipher_suites, reality_min_client,
         # reality_max_client, grpc_multi_mode остались разве что в старых базах:
         # панель ими больше не управляет — разумные значения знает сам Xray
@@ -238,6 +282,13 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
         for column, definition in columns.items():
             if column not in known:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    # порт занят и хопом цепочки: в прежних базах хопа отдельными строками hosts не были,
+    # поэтому индекс добавляется отдельно (создать его поверх уже существующего дубликата
+    # sqlite не может — тогда держится только проверка слоя выше)
+    try:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS hosts_node_port ON hosts (node_id, port)")
+    except sqlite3.IntegrityError:
+        pass
 
 
 def init_db(path: Path | None = None) -> None:
@@ -245,6 +296,7 @@ def init_db(path: Path | None = None) -> None:
     try:
         conn.executescript(SCHEMA)
         ensure_columns(conn)
+        ensure_chain_hops(conn)
         # роли наблюдателя больше нет: прежние наблюдатели становятся администраторами
         conn.execute("UPDATE admins SET role = 'admin' WHERE role = 'viewer'")
         ensure_settings(conn)
@@ -336,21 +388,22 @@ def seed_demo(conn: sqlite3.Connection) -> None:
             (name, node_ids[node], protocol, port, network, security, now),
         )
 
+    # порты хопов занимают ноду по-настоящему (UNIQUE (node_id, port)), поэтому в демо
+    # ни один порт ни одной ноды не используется дважды — как у живых цепочек
     chains = [
         ("FI-DE", [("vps-fi", "vless", "tcp", "reality", 2053), ("vps-de", "vless", "tcp", "reality", 2053)]),
         ("Home-FI-DE", [("home", "vless", "tcp", "reality", 443), ("vps-fi", "vless", "grpc", "tls", 2083),
-                        ("vps-de", "vless", "tcp", "reality", 2083)]),
-        ("Home-FI", [("home", "vless", "tcp", "reality", 2053), ("vps-fi", "vless", "tcp", "reality", 2053)]),
+                        ("vps-de", "vless", "tcp", "reality", 2084)]),
+        ("Home-FI", [("home", "vless", "tcp", "reality", 2054), ("vps-fi", "vless", "tcp", "reality", 2054)]),
     ]
     for name, hops in chains:
         payload = [{"node_id": node_ids[h[0]], "protocol": h[1], "network": h[2], "security": h[3], "port": h[4]} for h in hops]
         cur = conn.execute("INSERT INTO chains (name, hops, created_at) VALUES (?,?,?)",
                            (name, json_column(payload), now))
-        first = payload[0]
-        conn.execute(
-            "INSERT INTO hosts (name, node_id, protocol, port, network, security, chain_id, created_at) VALUES (?,?,?,?,?,?,?,?)",
-            (name, first["node_id"], first["protocol"], first["port"], first["network"], first["security"], cur.lastrowid, now),
-        )
+        # каждый хоп — ряд hosts: вход цепочки виден человеку как её хост, остальные хопа —
+        # рабочие инбаунды своих нод, и у каждого свои ключи (panel/chain_hops.py)
+        for index, hop in enumerate(payload):
+            insert_hop(conn, cur.lastrowid, name, index, hop, now)
 
 
 def json_column(value) -> str:

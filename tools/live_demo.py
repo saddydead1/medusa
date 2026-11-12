@@ -58,6 +58,11 @@ NODE_KEY = "sk-api-livecheck00000000000000"
 STATE = tmp / "node" / "state.json"
 CFG_PATH = STATE.parent / "xray" / "config.json"
 XRAY_LOG = STATE.parent / "xray" / "xray.log"
+# вторая нода: цепочка — это два узла, и без настоящего второго узла проверять нечего
+NODE_KEY2 = "sk-api-livecheck2000000000000"
+STATE2 = tmp / "node2" / "state.json"
+CFG2_PATH = STATE2.parent / "xray" / "config.json"
+XRAY2_LOG = STATE2.parent / "xray" / "xray.log"
 
 FAILS = 0
 
@@ -78,6 +83,17 @@ def free_port() -> int:
 def spawn(cmd: list[str], env: dict[str, str], log: Path) -> subprocess.Popen:
     handle = log.open("w", encoding="utf-8")
     return subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=handle, stderr=subprocess.STDOUT)
+
+
+def port_alive(port: int, tries: int = 30) -> bool:
+    """Слушает ли Xray этот порт: последнее применение могло его ещё не поднять."""
+    for _ in range(tries):
+        with socket.socket() as probe:
+            probe.settimeout(3)
+            if probe.connect_ex(("127.0.0.1", port)) == 0:
+                return True
+        time.sleep(0.5)
+    return False
 
 
 def wait_http(url: str, seconds: float = 30.0) -> bool:
@@ -310,14 +326,7 @@ def main() -> int:
         ports_dead = []
         for label in host_names:
             port = hosts_ports[label]
-            alive = False
-            for _ in range(30):        # последнее применение могло ещё не поднять порты
-                with socket.socket() as probe:
-                    probe.settimeout(3)
-                    alive = probe.connect_ex(("127.0.0.1", port)) == 0
-                if alive:
-                    break
-                time.sleep(0.5)
+            alive = port_alive(port)
             ok(alive, f"порт {label} ({port}) слушается Xray")
             if not alive:
                 ports_dead.append(label)
@@ -482,6 +491,117 @@ def main() -> int:
            and clash_doc["rules"][0] == f"MATCH,{group['name']}",
            f"clash yaml: группа выбора «{group['name']}» — одиночный Mihomo знает, куда класть трафик")
 
+        # ===== цепочки: две настоящие ноды, трафик переходит с ноды на ноду =====
+        node2_port = free_port()
+        node2_proc = spawn(
+            [str(ROOT / ".venv/bin/python"), "-m", "uvicorn", "src.node.main:app",
+             "--host", "127.0.0.1", "--port", str(node2_port), "--log-level", "warning"],
+            {**os.environ, "MEDUSA_NODE_STATE": str(STATE2), "MEDUSA_NODE_API_KEY": NODE_KEY2,
+             "MEDUSA_XRAY_BIN": XRAY_BIN},
+            tmp / "node2.log",
+        )
+        ok(wait_http(f"http://127.0.0.1:{node2_port}/node/health"),
+           "вторая нода поднялась: цепочка — это два узла, с одним проверять нечего")
+
+        api.post("/api/nodes", json={"name": "demo2", "address": "127.0.0.1",
+                                     "apiPort": node2_port, "apiKey": NODE_KEY2})
+        chain_hops = {
+            # вход reality на demo -> trojan tls на demo2
+            "LIVE-2H": [("demo", "vless", "tcp", "reality"), ("demo2", "trojan", "tcp", "tls")],
+            # вход websocket на demo -> shadowsocks на demo2 -> выход reality обратно на demo
+            "LIVE-3H": [("demo", "vless", "ws", "none"), ("demo2", "ss", "tcp", "none"),
+                        ("demo", "vless", "tcp", "reality")],
+        }
+        chain_ports: dict[str, list[int]] = {}
+        for chain_name, hops in chain_hops.items():
+            ports = [free_port() for _ in hops]
+            chain_ports[chain_name] = ports
+            created = api.post("/api/chains", json={"name": chain_name, "hops": [
+                {"node": h[0], "protocol": h[1], "network": h[2], "security": h[3], "port": ports[i]}
+                for i, h in enumerate(hops)]}).json()
+            ok("id" in created, f"цепочка {chain_name} заведена: {len(hops)} хопа, порты {ports}")
+
+        def settled_node(name: str, seconds: float = 120.0) -> dict | None:
+            stable, deadline, row = None, time.time() + seconds, None
+            while time.time() < deadline:
+                row = next((n for n in api.get("/api/nodes").json() if n["name"] == name), None)
+                if row is None:
+                    time.sleep(0.5)
+                    continue
+                clean = (not row["configDirty"] and row["appliedRev"] >= 1
+                         and row["configRev"] == row["appliedRev"] and not row["applyError"])
+                if clean and stable == row["appliedRev"]:
+                    return row
+                stable = row["appliedRev"] if clean else None
+                time.sleep(0.6)
+            return row
+
+        row_demo, row_demo2 = settled_node("demo"), settled_node("demo2")
+        delivered = bool(row_demo and row_demo2 and not row_demo["applyError"] and not row_demo2["applyError"])
+        ok(delivered, f"конфиг с хопам доехал до обеих нод без кнопок: demo ревизия "
+                      f"{row_demo['appliedRev'] if row_demo else '—'}, demo2 ревизия "
+                      f"{row_demo2['appliedRev'] if row_demo2 else '—'}")
+        if not delivered:
+            for log_name in ("panel.log", "node.log", "node2.log"):
+                print(f"{log_name}:\n" + (tmp / log_name).read_text(encoding="utf-8")[-1200:])
+            return 2
+
+        cfg1 = json.loads(CFG_PATH.read_text(encoding="utf-8"))
+        cfg2 = json.loads(CFG2_PATH.read_text(encoding="utf-8"))
+        tags1 = {i["tag"]: i for i in cfg1["inbounds"]}
+        tags2 = {i["tag"]: i for i in cfg2["inbounds"]}
+        out1 = {o["tag"]: o for o in cfg1["outbounds"]}
+        out2 = {o["tag"]: o for o in cfg2["outbounds"]}
+        ok(tags1.get("LIVE-2H", {}).get("protocol") == "vless"
+           and tags2.get("LIVE-2H hop 2", {}).get("protocol") == "trojan",
+           "хопа цепочки поднялись на своих нодах: вход на demo, приёмник на demo2")
+        ok(tags1.get("LIVE-3H hop 3", {}).get("protocol") == "vless"
+           and tags2.get("LIVE-3H hop 2", {}).get("protocol") == "shadowsocks",
+           "цепочка из трёх хопов возвращается на первую ноду: у неё два отдельных инбаунда")
+        ok({tags2["LIVE-2H hop 2"]["port"], tags2["LIVE-3H hop 2"]["port"]}
+           <= {i["port"] for i in cfg2["inbounds"]},
+           f"нода demo2 приняла хопа цепочек: её инбаунды на "
+           f"{tags2['LIVE-2H hop 2']['port']} и {tags2['LIVE-3H hop 2']['port']}")
+
+        hop_tls = tags2["LIVE-2H hop 2"]["streamSettings"]["tlsSettings"]
+        hop_cert = CFG2_PATH.parent / hop_tls["certificates"][0]["certificateFile"]
+        hop_der = x509.load_pem_x509_certificate(hop_cert.read_bytes()).public_bytes(Encoding.DER)
+        pinned = out1["LIVE-2H -> hop 2"]["streamSettings"]["tlsSettings"]["pinnedPeerCertSha256"]
+        ok(pinned == hashlib.sha256(hop_der).hexdigest(),
+           "tls-хоп: сертификат выпустила панель, привезла его ноде-приёмнику, а отправляющая нода "
+           "закрепила его отпечаток — Xray 26 иначе такой переход не принял бы")
+        ok(out1["LIVE-3H -> hop 2"]["settings"]["servers"][0]["password"]
+           == tags2["LIVE-3H hop 2"]["settings"]["users"][0]["password"]
+           and out2["LIVE-3H -> hop 3"]["settings"]["vnext"][0]["users"][0]["id"]
+           == tags1["LIVE-3H hop 3"]["settings"]["clients"][0]["id"],
+           "ключи перехода и инбаунда следующего хопа выведены из одной цепочки: туннель собрался")
+        rules1 = {tuple(rule["inboundTag"]): rule["outboundTag"] for rule in cfg1.get("routing", {}).get("rules", [])}
+        ok(rules1.get(("LIVE-2H",)) == "LIVE-2H -> hop 2" and rules1.get(("LIVE-3H hop 3",)) is None,
+           "правила маршрута на ноде: вход цепочки уходит переходом, выход цепочки — наружу")
+
+        dead = [port for port in sum(chain_ports.values(), []) if not port_alive(port, tries=6)]
+        ok(not dead, f"все порты хопа обеих нод слушаются ({sorted(sum(chain_ports.values(), []))})"
+           + ("" if not dead else f", мёртвые: {dead}"))
+
+        petya_chain, masha_chain = links_of(petya), links_of(masha)
+        ok({"LIVE-2H", "LIVE-3H"} <= set(petya_chain),
+           f"вход цепочки — такой же хост подписки: {sorted(k for k in petya_chain if k.startswith('LIVE-'))}")
+        ok("pbk=" in petya_chain["LIVE-2H"] and "sid=" in petya_chain["LIVE-2H"],
+           "reality-вход цепочки дал подписчику его публичный ключ и короткий id, как обычный reality-хост")
+        # туннель через цепочку: если бы демо2 не приняла трафик своего хопа, переход бы не
+        # соединился — 204 наружу возможен только через обе ноды
+        through("LIVE-2H", free_port(), outbound_from_link(petya_chain["LIVE-2H"]))
+        through("LIVE-2H", free_port(), outbound_from_link(masha_chain["LIVE-2H"]), " / masha")
+        through("LIVE-3H", free_port(), outbound_from_link(petya_chain["LIVE-3H"]))
+
+        api.delete(f"/api/chains/{next(c['id'] for c in api.get('/api/chains').json() if c['name'] == 'LIVE-2H')}")
+        settled_node("demo"), settled_node("demo2")
+        cfg1 = json.loads(CFG_PATH.read_text(encoding="utf-8"))
+        cfg2 = json.loads(CFG2_PATH.read_text(encoding="utf-8"))
+        ok(not any(tag.startswith("LIVE-2H") for tag in [i["tag"] for i in cfg1["inbounds"]])
+           and not any(tag.startswith("LIVE-2H") for tag in [i["tag"] for i in cfg2["inbounds"]]),
+           "удаление цепочки сняло её инбаунды и переход на обеих нодах")
+
         # --- Clash/Mihomo берёт подписку целиком и ходит через неё наружу ---
         # Mihomo — тот же движок, что стоит за Clash Verge: если подписку принимает он,
         # её принимают Clash, Clash Verge, flclash и Mihomo proxy-provider.
@@ -515,10 +635,18 @@ def main() -> int:
                 # конфиг (он принят и лежит в группе выбора), а его туннель проверяется
                 # настоящим Xray-клиентом выше по тексту. Остальные протоколы панель
                 # обязана провести через Clash целиком.
-                by_name = {p["name"]: p for p in clash_doc["proxies"]}
+                # перечитываем подписку целиком: к этому моменту в ней уже есть
+                # вход цепочки LIVE-3H — для Clash он обычный прокси
+                live_doc = _yaml.safe_load(yaml_text)
+                by_name = {p["name"]: p for p in live_doc["proxies"]}
+                live_group = live_doc["proxy-groups"][0]
                 reality_names = [n for n, p in by_name.items() if "reality-opts" in p]
                 clash_names = [n for n in ("plain", "reality", "wss", "ws", "grpc", "vmess",
-                                           "trojan", "trojan-reality", "ss") if n in by_name]
+                                           "trojan", "trojan-reality", "ss", "LIVE-3H") if n in by_name]
+                ok("LIVE-3H" in by_name and by_name["LIVE-3H"]["type"] == "vless"
+                   and "LIVE-3H" in live_group["proxies"],
+                   "Clash видит вход цепочки обычным прокси в группе выбора: цепочку можно "
+                   "выбрать в приложении наравне с прямым хостом")
                 ok(sorted(reality_names) == ["reality", "trojan-reality"]
                    and all(by_name[n]["sni"] == by_name[n]["servername"] for n in reality_names),
                    f"clash yaml: reality-хосты названы сайтом-маской обоими полями "
@@ -539,7 +667,7 @@ def main() -> int:
                     def select(name: str) -> None:
                         req = urllib.request.Request(
                             f"http://127.0.0.1:{controller}/proxies/"
-                            f"{urllib.parse.quote(group['name'])}",
+                            f"{urllib.parse.quote(live_group['name'])}",
                             method="PUT", data=json.dumps({"name": name}).encode(),
                             headers={"Content-Type": "application/json"})
                         urllib.request.urlopen(req, timeout=5).read()
@@ -581,7 +709,7 @@ def main() -> int:
             while panel_proc.poll() is None:
                 time.sleep(1)
     finally:
-        for proc in (node_proc, panel_proc):
+        for proc in (node_proc, node2_proc, panel_proc):
             proc.terminate()
             try:
                 proc.wait(timeout=15)

@@ -10,16 +10,14 @@
 """
 from __future__ import annotations
 
-import base64
 import sqlite3
 
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, PublicFormat, NoEncryption
 from fastapi import APIRouter, Depends
 
 from src.core.xray_config import is_ip, reality_client_sni, security_issue, unsupported_protocol, UNSUPPORTED_HINT
 from src.panel import config_push
 from src.panel.db import get_conn, now_ms
+from src.panel.host_keys import new_reality_keys
 from src.panel.deps import bad_request, conflict, fetch_one, node_by_name, writer
 from src.panel.schemas import HostCreate, HostPatch
 
@@ -31,16 +29,10 @@ FROM hosts h
 JOIN nodes n ON n.id = h.node_id
 LEFT JOIN chains c ON c.id = h.chain_id
 """
-ORDER = "ORDER BY (h.chain_id IS NOT NULL), h.name"
-
-
-def new_reality_keys() -> tuple[str, str]:
-    """Пара x25519 для reality-хоста: приватный ключ едет в конфиг ноде,
-    публичный — в ссылку подписки. Формат — base64url без дополнения, как у `xray x25519`."""
-    private = X25519PrivateKey.generate()
-    raw = lambda data: base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
-    return (raw(private.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())),
-            raw(private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)))
+# хостом цепочки человек видит только её вход: промежуточные хопа — внутренняя связь нод,
+# их адрес, порт и ключи наружу показывать нечего
+VISIBLE = " WHERE h.chain_id IS NULL OR h.hop_index = 0"
+ORDER = " ORDER BY (h.chain_id IS NOT NULL), h.name"
 
 
 def as_dict(row: sqlite3.Row) -> dict:
@@ -146,7 +138,7 @@ def check_port(conn: sqlite3.Connection, node_id: int, node_name: str, port: int
 
 @router.get("")
 def list_hosts(conn: sqlite3.Connection = Depends(get_conn)) -> list[dict]:
-    return [as_dict(r) for r in conn.execute(SELECT + ORDER).fetchall()]
+    return [as_dict(r) for r in conn.execute(SELECT + VISIBLE + ORDER).fetchall()]
 
 
 @router.post("", status_code=201)

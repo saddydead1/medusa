@@ -166,6 +166,148 @@ def clients_for(users: list[dict], protocol: str, host: dict | None = None) -> l
     return clients
 
 
+# --- хопы цепочек --------------------------------------------------------------------
+#
+# Цепочка — несколько нод подряд. Вход в неё (хоп 0) человек видит как обычный хост:
+# он к нему подключается, ему же отдаётся ссылка подписки на этот вход. Остальные хопа
+# панель держит у себя: они нужны, чтобы трафик перешёл с одной ноды на другую, и никто,
+# кроме панели и самих нод, про них не узнаёт.
+#
+# Поэтому у промежуточных хопов свои ключи, выведенные из id цепочки и номера хопа:
+# панель одним и тем же выводом собирает инбаунд ноды-приёмника и outbound ноды, которая
+# в этот хоп стучится. Разойтись они могут только вместе — поэтому вывод один, общий для
+# обеих сторон, и ни разу не случайный.
+
+
+def hop_number(host: dict) -> int:
+    """Номер хопа в цепочке (0 — вход). -1 у обычного хоста: он не хоп."""
+    raw = host.get("hop_index")
+    return int(raw) if raw is not None else -1
+
+
+def is_hop(host: dict) -> bool:
+    """Промежуточный хоп цепочки: к нему подключается нода, а не человек."""
+    return hop_number(host) > 0
+
+
+def hop_token(chain_id: int, hop_number_: int) -> str:
+    return f"medusa-chain-{chain_id}-hop-{hop_number_}"
+
+
+def hop_uuid(chain_id: int, hop_number_: int) -> str:
+    return str(uuid.uuid5(USER_NAMESPACE, hop_token(chain_id, hop_number_)))
+
+
+def hop_password(chain_id: int, hop_number_: int) -> str:
+    return user_password(hop_token(chain_id, hop_number_))
+
+
+def hop_short_id(chain_id: int, hop_number_: int) -> str:
+    return reality_short_id(hop_token(chain_id, hop_number_))
+
+
+def hop_clients(chain_id: int, hop_number_: int, protocol: str) -> list[dict]:
+    """Ключи одного хопа — одни на весь переход, и их не получает человек.
+
+    Пользователь цепочки не различается на промежуточных хопах: он различается на входе
+    (своим uuid, паролем или коротким id), а дальше трафик идёт общим переходом. Иначе
+    на каждый хоп и на каждого подписчика нужен был бы отдельный outbound.
+    """
+    if protocol == "trojan":
+        return [{"password": hop_password(chain_id, hop_number_)}]
+    if protocol == "ss":
+        return [{"password": hop_password(chain_id, hop_number_), "method": SS_CIPHER}]
+    client = {"id": hop_uuid(chain_id, hop_number_)}
+    if protocol == "vmess":
+        client["security"] = VMESS_CIPHER
+    return [client]
+
+
+def transport_settings(host: dict) -> dict[str, Any]:
+    """Транспортные детали инбаунда и outbound одинаковые: путь и Host у websocket,
+    имя сервиса и authority у gRPC. Пустое не пишем вовсе — у Xray свои значения."""
+    settings: dict[str, Any] = {}
+    network = host.get("network") or "tcp"
+    if network == "ws":
+        ws: dict[str, Any] = {}
+        if host.get("path"):
+            ws["path"] = host["path"]
+        if host.get("host_header"):
+            ws["host"] = host["host_header"]
+        if ws:
+            settings["wsSettings"] = ws
+    elif network == "grpc":
+        grpc: dict[str, Any] = {}
+        if host.get("service_name"):
+            grpc["serviceName"] = host["service_name"]
+        if host.get("grpc_authority"):
+            grpc["authority"] = host["grpc_authority"]
+        if grpc:
+            settings["grpcSettings"] = grpc
+    return settings
+
+
+def hop_out_tag(chain_name: str, target: dict) -> str:
+    """Тег перехода: видно в логе Xray, какой хоп какой цепочки куда ушёл."""
+    return f"{chain_name} -> hop {hop_number(target) + 1}"
+
+
+def hop_outbound(chain: dict, target: dict) -> dict[str, Any]:
+    """Outbound ноды в следующий хоп цепочки.
+
+    Адрес — адрес ноды этого хопа: у хопа нет своего адреса, это внутренняя связь нод.
+    Ключи те же, что положены в инбаунд ноды-приёмника (hop_clients, hop_short_id).
+    Формат settings диктует Xray: у vless/vmess — vnext, у trojan и shadowsocks —
+    servers (Xray 26 прямо отказывает trojan с vnext: "servers" should have one and
+    only one member).
+    """
+    chain_id, number = chain["id"], hop_number(target)
+    protocol = "shadowsocks" if target["protocol"] == "ss" else target["protocol"]
+    address = target.get("node_address") or target.get("address") or ""
+    port = target["port"]
+    if protocol in ("vless", "vmess"):
+        user: dict[str, Any] = {"id": hop_uuid(chain_id, number)}
+        if protocol == "vless":
+            user["encryption"] = "none"          # Xray 26 требует явно
+        else:
+            user["alterId"] = 0
+            user["security"] = VMESS_CIPHER
+        settings: dict[str, Any] = {"vnext": [{"address": address, "port": port, "users": [user]}]}
+    elif protocol == "trojan":
+        settings = {"servers": [{"address": address, "port": port,
+                                 "password": hop_password(chain_id, number)}]}
+    else:
+        settings = {"servers": [{"address": address, "port": port, "method": SS_CIPHER,
+                                 "password": hop_password(chain_id, number)}]}
+
+    stream: dict[str, Any] = {"network": target.get("network") or "tcp",
+                              "security": target.get("security") or "none"}
+    stream.update(transport_settings(target))
+    fingerprint = (target.get("fp") or "").strip()
+    security = target.get("security") or "none"
+    if security == "tls":
+        # Сертификат этого хопа выпускает панель (у ноды нет CA, и у панели тоже),
+        # поэтому панель знает его отпечаток и закрепляет его за принимающим переходом:
+        # Xray 26 выбросил allowInsecure и больше не принимает самоподписанный
+        # сертификат «на веру» — только pinnedPeerCertSha256.
+        tls: dict[str, Any] = {"serverName": (target.get("sni") or "").strip() or address}
+        if target.get("cert_sha256"):
+            tls["pinnedPeerCertSha256"] = target["cert_sha256"]
+        if fingerprint:
+            stream["fingerprint"] = fingerprint
+        stream["tlsSettings"] = tls
+    elif security == "reality":
+        stream["realitySettings"] = {
+            "fingerprint": fingerprint or "chrome",
+            "serverName": reality_client_sni(target, address),
+            "publicKey": target.get("public_key") or "",
+            "shortId": hop_short_id(chain_id, number),
+            "spiderX": "/",
+        }
+    return {"tag": hop_out_tag(chain["name"], target), "protocol": protocol,
+            "settings": settings, "streamSettings": stream}
+
+
 def connect_address(host: dict) -> str:
     return host["address"] or host["node_address"]
 
@@ -228,24 +370,7 @@ def cert_files(host: dict) -> tuple[str, str]:
 def stream_settings(host: dict) -> dict[str, Any]:
     address = connect_address(host)
     stream: dict[str, Any] = {"network": host["network"], "security": host["security"]}
-    # транспортные детали: путь и Host у websocket; имя сервиса, authority и
-    # двунаправленный поток у gRPC; пустое — не пишем вовсе, у Xray свои разумные значения
-    if host["network"] == "ws":
-        ws: dict[str, Any] = {}
-        if host.get("path"):
-            ws["path"] = host["path"]
-        if host.get("host_header"):
-            ws["host"] = host["host_header"]
-        if ws:
-            stream["wsSettings"] = ws
-    elif host["network"] == "grpc":
-        grpc: dict[str, Any] = {}
-        if host.get("service_name"):
-            grpc["serviceName"] = host["service_name"]
-        if host.get("grpc_authority"):
-            grpc["authority"] = host["grpc_authority"]
-        if grpc:
-            stream["grpcSettings"] = grpc
+    stream.update(transport_settings(host))
     # отпечаток клиента (utls): куда нода притворяется браузером — работает при
     # любой шифрующей защите, поэтому поле общее, а не reality-специальное
     fingerprint = (host.get("fp") or "").strip()
@@ -281,7 +406,12 @@ def stream_settings(host: dict) -> dict[str, Any]:
 def inbound(host: dict, users: list[dict], tag: str) -> dict[str, Any]:
     users = active_only(users)
     protocol, security = host["protocol"], host["security"]
-    clients = clients_for(users, protocol, host)
+    if is_hop(host):
+        # промежуточный хоп цепочки: ключи перехода, а не подписчики — человек
+        # различается на входе цепочки, здесь трафик общий
+        clients = hop_clients(host["chain_id"], hop_number(host), protocol)
+    else:
+        clients = clients_for(users, protocol, host)
     # у shadowsocks клиенты живут в `users` (Xray зовёт это мультипользовательским ss:
     # инбаунд различает людей по их ключам) и шифр называется у каждого клиента свой
     settings: dict[str, Any] = {"users": clients} if protocol == "ss" else {"clients": clients}
@@ -295,27 +425,57 @@ def inbound(host: dict, users: list[dict], tag: str) -> dict[str, Any]:
     if protocol == "vless":
         entry["settings"]["decryption"] = "none"      # Xray 26 требует явно
     if security == "reality":
-        # короткие id живых подписчиков — у инбаунда: клиент приходит со своим shortId
-        sids = sorted({reality_short_id(u["token"]) for u in users})
+        if is_hop(host):
+            # у хопа один короткий id на весь переход: его называет outbound соседней ноды
+            sids = [hop_short_id(host["chain_id"], hop_number(host))]
+        else:
+            # короткие id живых подписчиков — у инбаунда: клиент приходит со своим shortId
+            sids = sorted({reality_short_id(u["token"]) for u in users})
         entry["streamSettings"]["realitySettings"]["shortIds"] = sids or [""]
     return entry
 
 
-def render_node_config(node: dict, hosts: list[dict], users: list[dict]) -> dict:
-    """Один узел = один конфиг. Цепочки сюда пока не попадают: их хопа — про связь
-    нод между собой, а не про инбаунд для подписчика."""
+def render_node_config(node: dict, hosts: list[dict], users: list[dict],
+                       chains: list[dict] | None = None) -> dict:
+    """Один узел = один конфиг.
+
+    `chains` — цепочки, которые проходят через эту ноду: hops = те же словари хостов
+    (каждый хоп цепочки живёт в таблице hosts своим рядом) плюс `node_address` ноды этого
+    хопа. Нода получает инбаунд своего хопа (он уже среди hosts), outbound в следующий хоп
+    и правило маршрута: трафик, вошедший в инбаунд цепочки, обязан выйти через переход, а
+    не наружу напрямую. Последний хоп правила не получает — у него выход наружу.
+    """
     hosts = [h for h in hosts if h["protocol"] in SUPPORTED_PROTOCOLS]
     seen: set[str] = set()
+    tags: dict[int, str] = {}
     inbounds = []
     for host in hosts:
         tag = host_tag(host)
         if tag in seen:
             tag = f"{tag}-{host['id']}"      # одноимённые хосты на одной ноде: тег остаётся разным
         seen.add(tag)
+        tags[host["id"]] = tag
         inbounds.append(inbound(host, users, tag))
-    return {
+
+    outbounds: list[dict[str, Any]] = [{"protocol": "freedom", "tag": "direct"}]
+    rules: list[dict[str, Any]] = []
+    for chain in chains or []:
+        hops = sorted((h for h in chain["hops"] if h["protocol"] in SUPPORTED_PROTOCOLS),
+                      key=hop_number)
+        for position, hop in enumerate(hops):
+            tag = tags.get(hop["id"])
+            if tag is None or position + 1 >= len(hops):
+                continue        # хоп не на этой ноде, или это выход цепочки — ему наружу
+            outbound = hop_outbound(chain, hops[position + 1])
+            outbounds.append(outbound)
+            rules.append({"inboundTag": [tag], "outboundTag": outbound["tag"]})
+
+    config: dict[str, Any] = {
         "log": {"loglevel": "warning"},
         "dns": {"servers": ["1.1.1.1", "8.8.8.8"]},
         "inbounds": inbounds,
-        "outbounds": [{"protocol": "freedom", "tag": "direct"}],
+        "outbounds": outbounds,
     }
+    if rules:
+        config["routing"] = {"rules": rules}
+    return config
