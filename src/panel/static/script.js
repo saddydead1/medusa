@@ -81,9 +81,7 @@ const I18N = {
     'dlg.node.apiPort':'Порт API ноды','dlg.node.key':'API-ключ ноды',
     'dlg.node.keyHint':'API-ключ нода печатает в консоль при первом запуске.',
     'dlg.node.proxy':'SOCKS5-прокси (необязательно)',
-    'dlg.node.proxyHint':'Нужен, если нода доступна панели только через прокси: socks5://[user:pass@]host:port. Касается только связи панели с API ноды.',
     'dlg.nodeEdit.proxy':'SOCKS5-прокси для связи',
-    'node.proxyOn':'панель идёт к этой ноде через прокси {proxy}','node.proxyOff':'панель идёт к этой ноде напрямую: впиши socks5://[user:pass@]host:port, если нода доступна только через прыжок',
     'node.openTip':'Изменить ноду','node.version':'Версия ноды','node.notReported':'неизвестно',
     'dlg.nodeEdit.apiKey':'API-ключ','dlg.nodeEdit.check':'Связь с панелью',
     'dlg.nodeEdit.fp':'отпечаток API-ключа: {fp}','dlg.nodeEdit.keyMissing':'API-ключа пока нет: впишите тот, что напечатала нода',
@@ -176,8 +174,9 @@ const I18N = {
     'toast.themeLocal':'Тема сохранена в браузере, сервер ответил ошибкой: {msg}',
     'toast.noNodes':'Сначала добавьте ноду',
     'toast.portTaken':'Порт {port} на ноде {node} уже занят','toast.portDup':'Порт {port} на ноде {node} повторяется в цепочке',
-    'chain.hopAddress':'Адрес хопа','chain.hopAddressPh':'адрес ноды','chain.hopAddressHint':
-      'Куда придёт соседняя нода: домен или IP этого хопа. Пусто — адрес ноды. У входа цепочки тот же адрес попадает в ссылку подписки.',
+    'chain.hopAddress':'Адрес хоста','chain.hopAddressPh':'Адрес хоста','chain.hopAddressHint':
+      'Домен или IP, к которому подключятся подписчик входа и соседняя нода. Подставлен адрес ноды этого хопа — поменяй, если хост живёт на другом адресе.',
+    'chain.hopAddressEmpty':'У каждого хопа обязан быть адрес хоста: домен или IP, куда подключаются подписчик и соседняя нода',
     'confirm.delAdmin':'Удалить администратора? Он больше не сможет войти в панель.',
     'confirm.delHost':'Удалить хост?','confirm.delChain':'Удалить цепочку? Её хост и инбаунды на нодах тоже удалятся.',
     'confirm.delUser':'Удалить пользователя? Это действие нельзя отменить.',
@@ -199,9 +198,7 @@ const I18N = {
     'dlg.node.apiPort':'Node API port','dlg.node.key':'Node API key',
     'dlg.node.keyHint':'The node prints its API key to the console on first start.',
     'dlg.node.proxy':'SOCKS5 proxy (optional)',
-    'dlg.node.proxyHint':'Needed when the node is reachable only through a proxy: socks5://[user:pass@]host:port. It affects the panel-to-node API link only.',
     'dlg.nodeEdit.proxy':'SOCKS5 proxy for the link',
-    'node.proxyOn':'the panel reaches this node through proxy {proxy}','node.proxyOff':'the panel reaches this node directly: type socks5://[user:pass@]host:port if the node is reachable only via a jump host',
     'node.openTip':'Edit this node','node.version':'Node version','node.notReported':'unknown',
     'dlg.nodeEdit.apiKey':'API key','dlg.nodeEdit.check':'Panel link',
     'dlg.nodeEdit.fp':'API key fingerprint: {fp}','dlg.nodeEdit.keyMissing':'no API key yet: type the one the node printed',
@@ -294,8 +291,9 @@ const I18N = {
     'toast.themeLocal':'Theme saved in the browser, the server answered with an error: {msg}',
     'toast.noNodes':'Add a node first',
     'toast.portTaken':'Port {port} on node {node} is already taken','toast.portDup':'Port {port} on node {node} repeats inside the chain',
-    'chain.hopAddress':'Hop address','chain.hopAddressPh':'node address','chain.hopAddressHint':
-      'Where the previous node connects: this hop\'s domain or IP. Empty means the node address. For the chain entry the same address goes into the subscription link.',
+    'chain.hopAddress':'Host address','chain.hopAddressPh':'Host address','chain.hopAddressHint':
+      'The domain or IP the entry subscriber and the neighbouring node connect to. Prefilled with this hop\'s node address — change it when the host lives on a different address.',
+    'chain.hopAddressEmpty':'Every hop needs a host address: the domain or IP its subscriber and the neighbouring node connect to',
     'confirm.delAdmin':'Delete this administrator? They will no longer be able to sign in.',
     'confirm.delHost':'Delete this host?','confirm.delChain':'Delete this chain? Its host and the inbounds on the nodes will be removed too.',
     'confirm.delUser':'Delete this user? This cannot be undone.',
@@ -1262,9 +1260,6 @@ async function openNodeEdit(id){
     try{ proxyKnown = (await call('GET',`/api/nodes/${n.id}/proxy`)).proxy || ''; }catch(err){ proxyKnown = n.proxy || ''; }
   }
   nfill('proxy', proxyKnown);
-  $('#ne_proxy').textContent = proxyKnown
-    ? t('node.proxyOn', {proxy: n.proxy || proxyKnown})
-    : t('node.proxyOff');
   $('#ne_key').textContent = n.fingerprint ? t('dlg.nodeEdit.fp', {fp: n.fingerprint}) : t('dlg.nodeEdit.keyMissing');
   $('#ne_agent').innerHTML = missing(n.agent);
   $('#ne_xray').innerHTML = missing(n.xray);
@@ -1432,9 +1427,25 @@ $('#hdlg').addEventListener('close', async ()=>{
 const hopRows = ()=>[...document.querySelectorAll('#hops .hopbox')];
 const rowNode = r => K(r,'node').value;
 const rowPort = r => +K(r,'port').value;
+const nodeAddress = name => (ctx.nodes.find(n=>n.name===name) || {}).address || '';
 function setHopPort(row){
   const same = hopRows().filter(r=>r!==row && rowNode(r)===rowNode(row)).map(rowPort);
   K(row,'port').value = freePort(rowNode(row), same);
+}
+/* Адрес хопа обязателен и подставляется сам: это тот адрес, куда подключаются и подписчик
+   входа, и соседняя нода. Панель пишет сюда адрес ноды этого хопа — поле никогда не пусто,
+   и человек видит настоящий адрес, а не догадывается, куда поедет его клиент. */
+function setHopAddress(row){
+  const cur = (K(row,'address').value || '').trim();
+  const auto = row.dataset.addr || '';        // то, что подставлено панелью, а не названо человеком
+  if(!cur || cur === auto) K(row,'address').value = nodeAddress(rowNode(row));
+  row.dataset.addr = (K(row,'address').value || '').trim();
+}
+function hopAddress(row){
+  const a = (K(row,'address').value || '').trim();
+  // назван адрес ноды — записываем null: в базе «адрес ноды» означает «следуй за нодой»,
+  // и если нода переедет, цепочка переедет вместе с ней, а не останется со старым адресом
+  return a && a !== nodeAddress(rowNode(row)) ? a : null;
 }
 function renumber(){
   const rows = hopRows();
@@ -1451,13 +1462,13 @@ function addHop(){
   // детали защиты/транспорта — свои на каждый хоп: переход «ws с путём /cdn» на второй ноде
   // и «grpc» на третьей — это разные настройки, и окно цепочки обязано их различать
   row.innerHTML = `<div class="hop"><span></span><select data-k="node" aria-label="${t('th.node')}">${nodeOptions()}</select>
-    <input data-k="address" class="hopaddr" maxlength="63" spellcheck="false" aria-label="${t('chain.hopAddress')}"
+    <input data-k="address" class="hopaddr" required maxlength="63" spellcheck="false" aria-label="${t('chain.hopAddress')}"
            placeholder="${t('chain.hopAddressPh')}" title="${t('chain.hopAddressHint')}">
     <button type="button" class="btn sm">${t('btn.remove')}</button></div>${cfgHTML()}
     <div class="hopsec"></div><div class="hopadv"></div>`;
   const other = ctx.nodes.find(n=>n.name!==prev); if(other) K(row,'node').value = other.name;
-  initCfg(row, ()=>renderHopCfg(row)); renderHopCfg(row); setHopPort(row);
-  K(row,'node').onchange = ()=>setHopPort(row);
+  initCfg(row, ()=>renderHopCfg(row)); renderHopCfg(row); setHopPort(row); setHopAddress(row);
+  K(row,'node').onchange = ()=>{ setHopPort(row); setHopAddress(row); };
   row.querySelector('.hop button').onclick = ()=>{ row.remove(); renumber(); };
   box.append(row); renumber();
 }
@@ -1478,7 +1489,10 @@ function fillHop(row, hop){
   syncCfg(row);
   K(row,'port').value = hop.port;
   // адрес хопа рендер подставляет и в outbound соседней ноды, и в ссылку входа цепочки
-  K(row,'address').value = hop.address || '';
+  K(row,'address').value = hop.address || nodeAddress(hop.node);
+  // своего адреса у хопа нет — значит показан адрес ноды, и при переезде хопа на другую
+  // ноду панель подставит адрес той ноды (значение названо не человеком)
+  row.dataset.addr = hop.address ? '' : (K(row,'address').value || '').trim();
   renderHopCfg(row);
   HOP_DETAIL.forEach(k => {
     const el = K(row, k); if(!el) return;
@@ -1518,6 +1532,7 @@ $('#cform').addEventListener('submit', e=>{
   const mine = (node, port) => own.some(h=>h.node===node && h.port===port);
   rows.forEach((r,i)=>{
     const n = rowNode(r), port = rowPort(r);
+    if(!(K(r,'address').value || '').trim()) err ||= t('chain.hopAddressEmpty');
     if(i && n===rowNode(rows[i-1])) err ||= t('chain.hopSameNode');
     if(!mine(n,port) && taken(n).has(port)) err ||= t('toast.portTaken',{port,node:n});
     if(rows.slice(0,i).some(o=>rowNode(o)===n && rowPort(o)===port)) err ||= t('toast.portDup',{port,node:n});
@@ -1526,8 +1541,7 @@ $('#cform').addEventListener('submit', e=>{
 });
 $('#cdlg').addEventListener('close', async ()=>{
   if($('#cdlg').returnValue!=='ok') return;
-  const hops = hopRows().map(r=>({node:rowNode(r), ...readCfg(r), ...hopCfgBody(r),
-    address: (K(r,'address').value || '').trim() || null}));
+  const hops = hopRows().map(r=>({node:rowNode(r), ...readCfg(r), ...hopCfgBody(r), address: hopAddress(r)}));
   const id = chainEditing, name = $('#cform [name=name]').value;
   try{
     if(id){ await call('PATCH','/api/chains/'+id,{name,hops}); toast(t('toast.chainEdited')); }

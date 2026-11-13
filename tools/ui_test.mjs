@@ -294,8 +294,9 @@ if (nodePort && nodeKey) {
   await openCard('pollnode');
   ok((await page.inputValue('#nedlg [data-f="proxy"]')) === socksUrl,
      'окно правки предзаполняет прокси целиком, с паролем: masked-форма для сохранения не годится');
-  const viaHint = (await page.textContent('#ne_proxy')).trim().replace('sockssecret', '••••');
-  ok(viaHint.includes('через прокси'), `подсказка окна называет путь: ${viaHint}`);
+  ok(await page.evaluate(() => !document.querySelector('#ne_proxy') &&
+      !/панель идёт к этой ноде/.test(document.querySelector('#nedlg').textContent)),
+     'под полем SOCKS5-прокси текста нет: окно ноды не печатает строку «как именно идём»');
   await page.click('#nedlg [data-a="ncheck"]');
   /* ключ этой ноды тест уже сменил (проверка «статус обновляется сам»), поэтому связка
      не обязана складываться. Важное здесь другое: нода ОТВЕТИЛА через прокси и отвергла
@@ -439,10 +440,23 @@ await page.evaluate(() => {
   document.querySelectorAll('#hops .hopbox').forEach((row, i) => {
     const set = (k, v) => { const el = row.querySelector(`[data-k="${k}"]`); if(el){ el.value = v; el.dispatchEvent(new Event('change', {bubbles: true})); } };
     set('node', i === 0 ? 'vps-fi' : 'home'); set('protocol', 'vless'); set('security', 'reality'); set('network', 'tcp'); set('port', 2053);
-    // у хопа может быть свой адрес: туда же придёт соседняя нода и туда же пойдёт ссылка входа
-    set('address', i === 0 ? 'fi.example.net' : '');
   });
 });
+/* адрес хоста у хопа обязателен: это тот адрес, куда подключатся и подписчик входа,
+   и соседняя нода. Панель подставляет адрес ноды этого хопа, чтобы поле не было пустым. */
+const NODE_ADDR = {'home': '10.8.0.1', 'vps-fi': '195.232.115.27'};
+const prefilled = await page.evaluate(() => [...document.querySelectorAll('#hops .hopbox')]
+  .map(r => ({node: r.querySelector('[data-k="node"]').value, address: r.querySelector('[data-k="address"]').value})));
+ok(prefilled.every(h => h.address === NODE_ADDR[h.node]),
+   `адрес хоста подставлен заранее — адрес ноды этого хопа: ${JSON.stringify(prefilled)}`);
+await page.evaluate(() => { const el = document.querySelector('#hops .hopbox [data-k="address"]'); el.value = ''; });
+await clearToast();
+await page.click('#cform .btn.pri');
+await page.waitForTimeout(400);
+ok(await page.evaluate(() => document.querySelector('#cdlg').open),
+   'адрес хоста обязателен: без него окно цепочки не сохраняет хопа');
+// свой адрес хопа: туда же придёт соседняя нода и туда же пойдёт ссылка входа
+await page.evaluate(() => { const el = document.querySelector('#hops .hopbox [data-k="address"]'); el.value = 'fi.example.net'; });
 await submit('#cform');
 await wait(() => document.querySelectorAll('#view .chain').length === 1);
 ok((await text()).includes('FI-DE') && (await text()).includes('2053'), 'цепочка из двух нод создана');
@@ -469,8 +483,11 @@ const prefill = await page.evaluate(() => ({
 }));
 ok(prefill.title.includes('изменение') && prefill.save.includes('Сохранить') && prefill.name === 'FI-DE'
    && prefill.hops.length === 2 && prefill.hops[0].node === 'vps-fi' && prefill.hops[1].node === 'home'
-   && prefill.hops[0].address === 'fi.example.net' && prefill.hops[1].address === '',
-   `окно правки цепочки предзаполнено её же хопами: ${JSON.stringify(prefill.hops)} («${prefill.title}»)`);
+   && prefill.hops[0].address === 'fi.example.net' && prefill.hops[1].address === '10.8.0.1',
+   `окно правки цепочки предзаполнено её же хопами (адрес хоста у каждого): ${JSON.stringify(prefill.hops)} («${prefill.title}»)`);
+const chainApi = (await (await api('/api/chains')).json())[0];
+ok(chainApi.hops[0].address === 'fi.example.net' && chainApi.hops[1].address === '',
+   `свой адрес хопа сохранился, а названный равным адресу ноды панель не записывает отдельно (пусто = адрес ноды): ${JSON.stringify(chainApi.hops.map(h => [h.node, h.address]))}`);
 
 // хопа местами: те же ноды и те же порты, но вход переезжает на другую ноду.
 // Свои порты своей же цепочки конфликтом быть не должны.
