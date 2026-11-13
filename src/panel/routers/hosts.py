@@ -14,7 +14,8 @@ import sqlite3
 
 from fastapi import APIRouter, Depends
 
-from src.core.xray_config import is_ip, reality_client_sni, security_issue, unsupported_protocol, UNSUPPORTED_HINT
+from src.core.xray_config import (is_ip, reality_client_sni, security_issue, transport_issue,
+                                  unsupported_hint, unsupported_protocol)
 from src.panel import config_push, ports
 from src.panel.db import get_conn, now_ms
 from src.panel.host_keys import new_reality_keys
@@ -78,13 +79,17 @@ def check_combination(protocol: str, network: str, security: str, address: str, 
     """Смысл combos один на create и patch: набор «reality поверх ws» или reality на IP
     одинаково бессмысленен при создании и при правке.
 
-    Протокол, которого панель не умеет ни в конфиге, ни в ссылке (hy2), отвергается здесь
-    же: панель не заводит хост, о котором подписчик никогда не узнает.
+    Протокол, которого панель не умеет ни в конфиге, ни в ссылке, отвергается здесь же:
+    панель не заводит хост, о котором подписчик никогда не узнает. У hy2 отдельно проверяется
+    транспорт: у hysteria2 его выбирать нечего, а «hy2 поверх ws» был бы хостом, который
+    Xray просто не поднимет.
     """
     if unsupported_protocol(protocol):
-        raise bad_request(UNSUPPORTED_HINT)
+        raise bad_request(unsupported_hint(protocol))
     issue = security_issue(protocol, security)
     if issue:
+        raise bad_request(issue)
+    if issue := transport_issue(protocol, network):
         raise bad_request(issue)
     if security == "reality" and network == "ws":
         raise bad_request("reality не работает поверх ws")
@@ -103,14 +108,14 @@ def check_combination(protocol: str, network: str, security: str, address: str, 
             raise bad_request(issue)
 
 
-def check_fields(body: HostCreate | HostPatch, security: str, network: str) -> None:
+def check_fields(body: HostCreate | HostPatch, security: str, network: str, protocol: str) -> None:
     """Поле чужой защиты или чужого транспорта — не «лишнее», а путаница:
     панель отвергает сразу, чтобы потом не удивляться молча игнорируемому полю.
 
     Сами правила живут в `src/panel/field_rules.py` — оттуда же их берут хопа цепочек,
     чтобы «sni у reality» не означало одно для хоста и другое для цепочки.
     """
-    issue = fields_issue(security, network, meaningful(body))
+    issue = fields_issue(security, network, meaningful(body), protocol=protocol)
     if issue:
         raise bad_request(issue)
 
@@ -156,7 +161,7 @@ def create_host(
     check_combination(body.protocol, body.network, body.security, address, node["address"],
                       clean(body.serverNames), clean(body.dest),
                       no_ipv6=bool(node["ipv6_disabled"]), node_name=node["name"])
-    check_fields(body, body.security, body.network)
+    check_fields(body, body.security, body.network, body.protocol)
     check_cert_pair(clean(body.certFile), clean(body.keyFile))
     check_port(conn, node["id"], body.port)
     private_key = public_key = ""
@@ -227,7 +232,7 @@ def patch_host(
     check_combination(merged["protocol"], merged["network"], merged["security"], merged["address"],
                       node["address"], merged["server_names"], merged["dest"],
                       no_ipv6=bool(node["ipv6_disabled"]), node_name=node["name"])
-    check_fields(body, merged["security"], merged["network"])
+    check_fields(body, merged["security"], merged["network"], merged["protocol"])
     check_cert_pair(merged["cert_file"], merged["key_file"])
     check_port(conn, node_id, merged["port"], own_id=host_id)
 

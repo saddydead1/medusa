@@ -16,8 +16,13 @@
 с конфигом — подписчик подключиться не сможет, поэтому расхождение здесь считается ошибкой,
 а не мелочью.
 
-Протоколы, ссылки которых панель не умеет (hy2), до хоста не допускаются на уровне API:
-лучше честный отказ, чем хост, о котором подписчик не узнает.
+Hysteria2 панель раздаёт ссылкой `hy2://` (её понимают Hiddify, Shadowrocket, Streisand,
+NekoBox и прочее hy2-семейство) и прокси `type: hysteria2` для Clash/Mihomo. В clash-фазе
+живого прогона (`tools/live_demo.py`) Mihomo подключается к такому хосту панели — это
+отдельно от reality, с которым Mihomo не договаривается.
+
+Протоколы, ссылки которых панель не умеет, до хоста не допускаются на уровне API: лучше
+честный отказ, чем хост, о котором подписчик не узнает.
 """
 from __future__ import annotations
 
@@ -28,7 +33,7 @@ from urllib.parse import quote, urlencode
 
 import yaml
 
-from src.core.xray_config import (SS_CIPHER, VMESS_CIPHER, is_ip, reality_client_sni,
+from src.core.xray_config import (SS_CIPHER, VMESS_CIPHER, hy2_auth, is_ip, reality_client_sni,
                                   reality_short_id, reality_sni_list, ss_password,
                                   user_password, user_uuid)
 
@@ -44,7 +49,8 @@ def host_columns(name_expr: str) -> str:
 
 
 # во что протокол панели превращается в Clash YAML
-CLASH_TYPE = {"vless": "vless", "vmess": "vmess", "trojan": "trojan", "ss": "ss"}
+CLASH_TYPE = {"vless": "vless", "vmess": "vmess", "trojan": "trojan", "ss": "ss",
+              "hy2": "hysteria2"}
 # Clash-группа выбора: без неё одиночный Clash (и Mihomo «конфигом») не знает,
 # куда вообще класть трафик; Clash Verge её просто добавит к своим группам
 CLASH_GROUP_SUFFIX = " · выбор"
@@ -204,7 +210,27 @@ def ss_link(token: str, host: Any) -> str:
             f"{fragment(val(host, 'name'))}")
 
 
-LINK_BUILDERS = {"vless": vless_link, "vmess": vmess_link, "trojan": trojan_link, "ss": ss_link}
+def hy2_link(token: str, host: Any) -> str:
+    """Hysteria2-ссылка: ключ человека — auth строка рукопожатия, а не uuid и не пароль шифра.
+
+    `insecure=1` панель ставит, когда сертификата хосту выдала себя сама (self-signed): без
+    этого hy2-клиенты честно отказываются принимать чужой сертификат. Свои сертификаты
+    (обычные, валидные) остаются без insecure — проверка stays как есть.
+    """
+    address = connect_address(host)
+    params: dict[str, str] = {}
+    sni = client_sni(host, address)
+    if sni:
+        params["sni"] = sni
+    if not (val(host, "cert_file") and val(host, "key_file")):
+        params["insecure"] = "1"
+    auth = hy2_auth(token, host["id"])
+    return (f"hy2://{auth}@{address}:{host['port']}{query(params)}"
+            f"{fragment(val(host, 'name'))}")
+
+
+LINK_BUILDERS = {"vless": vless_link, "vmess": vmess_link, "trojan": trojan_link, "ss": ss_link,
+                 "hy2": hy2_link}
 
 
 def host_link(token: str, host: Any) -> str | None:
@@ -225,6 +251,18 @@ def clash_proxy(token: str, host: Any) -> dict[str, Any] | None:
     if protocol not in CLASH_TYPE:
         return None
     address = connect_address(host)
+    if protocol == "hy2":
+        # форма hysteria2 в Clash своя: у него нет network/opts, зато есть sni и password
+        proxy_hy2: dict[str, Any] = {
+            "name": val(host, "name"),
+            "type": "hysteria2",
+            "server": address,
+            "port": host["port"],
+            "password": hy2_auth(token, host["id"]),
+            "sni": client_sni(host, address) or address,
+            "skip-cert-verify": not (val(host, "cert_file") and val(host, "key_file")),
+        }
+        return proxy_hy2
     proxy: dict[str, Any] = {
         "name": val(host, "name"),
         "type": CLASH_TYPE[protocol],

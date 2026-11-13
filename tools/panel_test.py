@@ -800,6 +800,41 @@ def main() -> int:
         ok(freed.status_code == 201, f"порт освобождённого хопа снова свободен: {freed.json().get('detail', 'ok')}")
         client.delete(f"/api/hosts/{freed.json()['id']}")
         ok(client.delete(f"/api/chains/{route['id']}").status_code == 204, "цепочка удалена")
+
+        # --- hysteria2 в цепочке: инбаунд хопа и переход в него ---
+        hy2route = client.post("/api/chains", json={"name": "HY2-ROUTE", "hops": [
+            {"node": "vps-fi", "protocol": "vless", "network": "tcp", "security": "reality", "port": 3121},
+            {"node": "home", "protocol": "hy2", "network": "tcp", "security": "tls", "port": 3122,
+             "sni": "hy2.hop.example.net"},
+        ]}).json()
+        cfg_fi3, cfg_home3 = node_config(fi["id"]), node_config(home["id"])
+        hop_in = {i["tag"]: i for i in cfg_home3["inbounds"]}.get("HY2-ROUTE hop 2") or {}
+        hop_out = {o["tag"]: o for o in cfg_fi3["outbounds"]}.get("HY2-ROUTE -> hop 2") or {}
+        ok(hop_in.get("protocol") == "hysteria" and hop_in.get("settings", {}).get("version") == 2,
+           "hy2-хоп: инбаунд своей ноды — hysteria2 (в Xray этот протокол называется hysteria "
+           "и требует version 2)")
+        ok(hop_out.get("protocol") == "hysteria" and hop_out.get("settings", {}).get("version") == 2
+           and hop_out["settings"].get("address") == "10.8.0.1" and hop_out["settings"].get("port") == 3122,
+           "переход в hy2-хоп: форма settings своя (address/port), адрес — адрес самого хопа")
+        ok(hop_out["streamSettings"]["network"] == "hysteria"
+           and hop_out["streamSettings"]["hysteriaSettings"]["auth"] == hop_in["settings"]["users"][0]["auth"],
+           "auth перехода и auth инбаунда hy2-хопа выведены из одной цепочки: переход соберётся")
+        pinned_hy2 = hop_out["streamSettings"]["tlsSettings"].get("pinnedPeerCertSha256", "")
+        ok(len(pinned_hy2) == 64 and hop_in["streamSettings"]["tlsSettings"].get("certificates"),
+           "сертификат hy2-хопа выпускает панель и закрепляет его отпечаток за соседней нодой")
+        ok({"inboundTag": ["HY2-ROUTE"], "outboundTag": "HY2-ROUTE -> hop 2"} in cfg_fi3["routing"]["rules"],
+           "вход hy2-цепочки уходит переходом, а не наружу напрямую")
+        bad_hops = client.post("/api/chains", json={"name": "HY2-плохая", "hops": [
+            {"node": "vps-fi", "protocol": "vless", "network": "tcp", "security": "none", "port": 3131},
+            {"node": "home", "protocol": "hy2", "network": "ws", "security": "tls", "port": 3132}]})
+        ok(bad_hops.status_code == 400 and "QUIC" in bad_hops.json()["detail"],
+           f"hy2 поверх ws в цепочке отвергается: {bad_hops.json()['detail']}")
+        bad_sec = client.post("/api/chains", json={"name": "HY2-без tls", "hops": [
+            {"node": "vps-fi", "protocol": "vless", "network": "tcp", "security": "none", "port": 3133},
+            {"node": "home", "protocol": "hy2", "network": "tcp", "security": "none", "port": 3134}]})
+        ok(bad_sec.status_code == 400 and "tls" in bad_sec.json()["detail"],
+           f"hy2-хоп без tls отвергается: {bad_sec.json()['detail']}")
+        client.delete(f"/api/chains/{hy2route['id']}")
         ok(not any(tag.startswith("ROUTE-3") for tag in {i["tag"] for i in node_config(fi["id"])["inbounds"]}),
            "удаление цепочки снимает и её инбаунды, и её переходы")
 
@@ -883,7 +918,7 @@ def main() -> int:
         import json as _json
         from urllib.parse import parse_qs, urlparse
 
-        from src.core.xray_config import SS_CIPHER, ss_password, user_password, user_uuid
+        from src.core.xray_config import SS_CIPHER, hy2_auth, ss_password, user_password, user_uuid
 
         fi_link = next(l for l in client.get(f"/sub/{brother['token']}/links?raw=1").text.splitlines()
                        if l.startswith("vless://"))
@@ -972,10 +1007,48 @@ def main() -> int:
         ok(len(clash_all["proxies"]) == 5,
            f"clash yaml получает все протоколы: {sorted(by_name)}")
 
-        hy2 = client.post("/api/hosts", json={"name": "Гистерия", "node": "home", "protocol": "hy2",
-                                              "port": 9435, "network": "tcp", "security": "none"})
-        ok(hy2.status_code == 400 and "Hysteria2" in hy2.json()["detail"],
-           f"hy2 панель не заводит: {hy2.json()['detail']}")
+        # hysteria2: хост, его границы, ссылка и clash-прокси
+        hy2_h = client.post("/api/hosts", json={"name": "Hysteria2", "node": "home", "protocol": "hy2",
+                                                "port": 9435, "network": "tcp", "security": "tls",
+                                                "address": "hy2.example.net",
+                                                "sni": "hy2.example.net"}).json()
+        ok(hy2_h["protocol"] == "hy2" and hy2_h["security"] == "tls",
+           "hy2-хост заведён: панель умеет hysteria2 (в Xray — протокол hysteria v2)")
+        for name, payload in (
+            ("hy2+ws", {"name": "hy2 ws", "node": "home", "protocol": "hy2", "port": 9438,
+                        "network": "ws", "security": "tls"}),
+            ("hy2 без защиты", {"name": "hy2 none", "node": "home", "protocol": "hy2", "port": 9439,
+                                "network": "tcp", "security": "none"}),
+            ("hy2 + отпечаток", {"name": "hy2 fp", "node": "home", "protocol": "hy2", "port": 9440,
+                                 "network": "tcp", "security": "tls", "fp": "chrome"}),
+        ):
+            bad = client.post("/api/hosts", json=payload)
+            ok(bad.status_code == 400, f"{name} отвергается: {bad.json()['detail']}")
+        hy2_lines = [l for l in client.get(f"/sub/{brother['token']}/links?raw=1").text.splitlines()
+                     if l.startswith("hy2://")]
+        ok(len(hy2_lines) == 1, f"hy2-ссылка появилась в подписке: {hy2_lines}")
+        u = urlparse(hy2_lines[0])
+        ok(u.netloc.rsplit("@", 1)[0] == hy2_auth(brother["token"], hy2_h["id"])
+           and u.hostname == "hy2.example.net" and u.port == 9435,
+           "hy2-ссылка: ключ человека собран из его токена и этого хоста, адрес — адрес хоста")
+        ok(parse_qs(u.query).get("sni") == ["hy2.example.net"] and parse_qs(u.query).get("insecure") == ["1"],
+           "hy2-ссылка называет sni и insecure: сертификат хосту выпускает нода, self-signed")
+        hy2_clash = _yaml.safe_load(client.get(
+            f"/sub/{brother['token']}",
+            headers={"Accept": "*/*", "User-Agent": "clash-verge/v2.4.0"}).text)
+        hy2_proxy = next(p for p in hy2_clash["proxies"] if p["name"] == "Hysteria2")
+        ok(hy2_proxy["type"] == "hysteria2"
+           and hy2_proxy["password"] == hy2_auth(brother["token"], hy2_h["id"])
+           and hy2_proxy["sni"] == "hy2.example.net" and hy2_proxy["skip-cert-verify"] is True,
+           "clash yaml: hysteria2-прокси с паролем из токена (проверяется живым Mihomo в live_demo)")
+        shown = client.get(f"/api/nodes/{home['id']}/config").json()["config"]
+        shown_hy2 = next(i for i in shown["inbounds"] if i["tag"] == "Hysteria2")
+        ok(shown_hy2["protocol"] == "hysteria" and shown_hy2["settings"]["version"] == 2
+           and all(c["auth"] == "скрыто панелью" for c in shown_hy2["settings"]["users"])
+           and shown_hy2["streamSettings"]["network"] == "hysteria"
+           and shown_hy2["streamSettings"]["hysteriaSettings"]["masquerade"]["type"] == "404",
+           "окно «Конфиг Xray»: hy2 показан как hysteria v2 с masquerade, auth подписчиков скрыты")
+        client.delete(f"/api/hosts/{hy2_h['id']}")
         ss_tls = client.post("/api/hosts", json={"name": "ss+tls", "node": "home", "protocol": "ss",
                                                  "port": 9436, "network": "tcp", "security": "tls"})
         ok(ss_tls.status_code == 400, f"ss с tls отвергается: {ss_tls.json()['detail']}")

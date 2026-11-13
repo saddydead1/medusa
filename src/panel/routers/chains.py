@@ -21,9 +21,8 @@ import sqlite3
 
 from fastapi import APIRouter, Depends
 
-from src.core.xray_config import security_issue, unsupported_protocol, UNSUPPORTED_HINT
-from src.core.xray_config import (is_ip, reality_client_sni, security_issue, unsupported_protocol,
-                                 UNSUPPORTED_HINT)
+from src.core.xray_config import (is_ip, reality_client_sni, security_issue, transport_issue,
+                                  unsupported_hint, unsupported_protocol)
 from src.panel import config_push
 from src.panel import ports
 from src.panel.chain_hops import insert_hop
@@ -45,15 +44,18 @@ def check_hop(hop) -> None:
     которое показывает одно, а на ноде работает другое.
     """
     if unsupported_protocol(hop.protocol):
-        raise bad_request(UNSUPPORTED_HINT)
+        raise bad_request(unsupported_hint(hop.protocol))
     issue = security_issue(hop.protocol, hop.security)
     if issue:
+        raise bad_request(issue)
+    if issue := transport_issue(hop.protocol, hop.network):
         raise bad_request(issue)
     if hop.security == "reality" and hop.network == "ws":
         raise bad_request("reality не работает поверх ws")
     if hop.protocol == "ss" and hop.network != "tcp":
         raise bad_request("shadowsocks тут только через tcp")
-    issue = fields_issue(hop.security, hop.network, meaningful(hop), hop=True)
+    issue = fields_issue(hop.security, hop.network, meaningful(hop), hop=True,
+                         protocol=hop.protocol)
     if issue:
         raise bad_request(issue)
 

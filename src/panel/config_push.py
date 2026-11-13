@@ -195,8 +195,10 @@ def push_dirty(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 # что в конфиге ноды является секретом: приватные ключи reality (у хоста и у перехода
-# цепочки), пароли trojan/shadowsocks/vmess и ключи подписчиков, выведенные из токена
-SECRET_KEYS = ("privateKey", "password")
+# цепочки), пароли trojan/shadowsocks/vmess и ключи подписчиков, выведенные из токена.
+# `auth` — то же самое у hysteria2: и у инбаунда (auth каждого подписчика), и у перехода
+# цепочки (auth перехода); по ней человека можно подключиться к ноде напрямую.
+SECRET_KEYS = ("privateKey", "password", "auth")
 
 
 def mask_secrets(config: dict) -> dict:

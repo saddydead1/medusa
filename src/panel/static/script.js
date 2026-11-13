@@ -118,6 +118,7 @@ const I18N = {
     'cfg.sec.tls.hint':'Оставьте сертификаты пустыми — нода сама выпустит self-signed на sni. Есть настоящий сертификат (например, от certbot) — впишите пути к обоим файлам. Строгому клиенту нужно назвать отпечаток сертификата pinnedPeerCertSha256.',
     'cfg.sec.tls.hopHint':'Хопу цепочки сертификат выпускает панель: она обязана знать его отпечаток, чтобы закрепить его за соседней нодой. SNI здесь — имя, которое назовёт соседняя нода; пусто — адрес хопа (или адрес её ноды).',
     'cfg.protocol.short':'Протокол','cfg.port.short':'Порт',
+    'host.hy2Hint':'Hysteria2: транспорт и шифрование встроены в протокол (QUIC + TLS), hy2-хост слушает UDP, сертификат хосту выпускает нода. Ссылка hy2:// и прокси type: hysteria2 для Clash/Mihomo.',
     'th.address':'Адрес','th.node':'Нода','th.users':'Пользователей','th.traffic':'Трафик',
     'th.name':'Имя','th.title':'Название','th.status':'Статус','th.login':'Логин','th.role':'Роль',
     'th.lastLogin':'Последний вход','th.route':'Маршрут',
@@ -240,6 +241,7 @@ const I18N = {
     'cfg.sec.tls.hint':'Leave the certificate fields empty and the node issues a self-signed cert for the sni. Have a real certificate (e.g. from certbot) — give both file paths. Strict clients must pin it via pinnedPeerCertSha256.',
     'cfg.sec.tls.hopHint':'The panel issues the certificate for a chain hop: it has to know its fingerprint to pin it on the neighbouring node. SNI here is the name that neighbour will use; empty means the hop address (or its node address).',
     'cfg.protocol.short':'Protocol','cfg.port.short':'Port',
+    'host.hy2Hint':'Hysteria2: transport and encryption are built into the protocol (QUIC + TLS), a hy2 host listens on UDP, the node issues its certificate. hy2:// link and a type: hysteria2 proxy for Clash/Mihomo.',
     'th.address':'Address','th.node':'Node','th.users':'Users','th.traffic':'Traffic',
     'th.name':'Name','th.title':'Name','th.status':'Status','th.login':'Username','th.role':'Role',
     'th.lastLogin':'Last sign-in','th.route':'Route',
@@ -471,6 +473,7 @@ const mock = {
     {id:2,name:'FI TLS WS',node:'vps-fi',address:'fi.example.com',protocol:'vless',port:8443,network:'ws',security:'tls',chain:null},
     {id:3,name:'DE Reality',node:'vps-de',address:'de.example.com',protocol:'vless',port:443,network:'tcp',security:'reality',chain:null},
     {id:4,name:'Home VMess',node:'home',address:'',protocol:'vmess',port:2083,network:'ws',security:'tls',chain:null},
+    {id:5,name:'FI Hysteria2',node:'vps-fi',address:'fi.example.com',protocol:'hy2',port:4444,network:'tcp',security:'tls',chain:null},
   ],
   admins: [
     {id:1,username:'admin',role:'owner',status:'active',last:Date.now()-5*60e3,self:true},
@@ -549,13 +552,17 @@ function mockCall(method, path, body){
     const hosts = mock.hosts.filter(h=>!h.chain && h.node===node.name);
     const active = mock.users.filter(u=>u.status==='active');
     const inbounds = hosts.map(h=>{
-      const clients = active.map(u=>h.security==='reality'
-        ? {password:'••••••••', shortIds:['••••']}
+      const clients = active.map(u=>h.protocol==='hy2' ? {auth:'скрыто панелью'}
+        : h.security==='reality' ? {password:'••••••••', shortIds:['••••']}
         : {id:'••••••••-••••'});
-      const stream = {network:h.network, security:h.security};
+      // hy2 в конфиге Xray живёт под своим именем (hysteria) и со своим транспортом
+      const stream = h.protocol==='hy2'
+        ? {network:'hysteria', security:'tls', hysteriaSettings:{version:2, masquerade:{type:'404'}}}
+        : {network:h.network, security:h.security};
       if(h.security==='reality')
         stream.realitySettings = {serverNames:[h.address||'•••'], privateKey:'скрыто панелью'};
-      return {tag:'medusa-host-'+h.id, port:h.port, protocol:h.protocol, settings:{clients:clients}, streamSettings:stream};
+      return {tag:'medusa-host-'+h.id, port:h.port, protocol:h.protocol==='hy2'?'hysteria':h.protocol,
+              settings:h.protocol==='hy2' ? {version:2, users:clients} : {clients:clients}, streamSettings:stream};
     });
     return Promise.resolve({config:{log:{loglevel:'warning'}, inbounds:inbounds, outbounds:[{protocol:'freedom',tag:'direct'}]}});
   }
@@ -1128,8 +1135,10 @@ $('#uedlg').addEventListener('close', async ()=>{
 });
 
 /* ----- общие настройки инбаунда: протокол / транспорт / защита / порт ----- */
-const PROTOS = ['vless','vmess','trojan','ss'];
-const SEC_BY = {vless:['none','tls','reality'],vmess:['none','tls'],trojan:['tls','reality'],ss:['none']};
+const PROTOS = ['vless','vmess','trojan','ss','hy2'];
+const SEC_BY = {vless:['none','tls','reality'],vmess:['none','tls'],trojan:['tls','reality'],ss:['none'],
+  /* у hysteria2 защита встроена в протокол (QUIC + TLS): выбирать нечего */
+  hy2:['tls']};
 const opts = (list,label)=>list.map(v=>`<option value="${v}">${esc(label?label[v]:v)}</option>`).join('');
 const cfgHTML = ()=>`<div class="cfgwrap"><div class="cfgh"><span>${t('cfg.protocol')}</span><span>${t('cfg.transport')}</span><span>${t('cfg.security')}</span><span>${t('cfg.port')}</span></div>
   <div class="cfg"><select data-k="protocol" aria-label="${t('cfg.protocol')}">${opts(PROTOS,PROTO)}</select>
@@ -1141,7 +1150,9 @@ function syncCfg(root){
   const sec = K(root,'security'), net = K(root,'network'), proto = K(root,'protocol').value, ok = SEC_BY[proto];
   [...sec.options].forEach(o=>o.disabled = !ok.includes(o.value));
   if(!ok.includes(sec.value)) sec.value = ok[0];
-  [...net.options].forEach(o=>o.disabled = (sec.value==='reality' && o.value==='ws') || (proto==='ss' && o.value!=='tcp'));
+  /* у ss и у hy2 транспорта на выбор нет: hy2 сам и есть транспорт (QUIC/HTTP3) */
+  [...net.options].forEach(o=>o.disabled = (sec.value==='reality' && o.value==='ws')
+    || (proto==='ss' && o.value!=='tcp') || (proto==='hy2' && o.value!=='tcp'));
   if(net.selectedOptions[0].disabled) net.value = [...net.options].find(o=>!o.disabled).value;
 }
 function initCfg(root, onChange){
@@ -1175,7 +1186,8 @@ function renderHopCfg(row){
   /* пустое значение при правке — «сбросить к разумному по умолчанию»: рендер сам знает,
      что поставить вместо пустого пути или пустой маскировки */
   secBox.innerHTML = secHTML(sec, values, true);
-  advBox.innerHTML = advHTML(net, values, sec);
+  advBox.innerHTML = advHTML(net, values, sec, K(row,'protocol').value);
+  if(K(row,'protocol').value === 'hy2') secBox.innerHTML += `<p class="hint">${esc(t('host.hy2Hint'))}</p>`;
   if(K(advBox,'fp')) K(advBox,'fp').value = values.fp || 'chrome';
 }
 function hopCfgBody(row){
@@ -1237,10 +1249,12 @@ const ADV_BY = {
     <label><span>${t('cfg.adv.grpc.authority')}</span><input data-k="grpcAuthority" maxlength="63" placeholder="grpc.example.net" value="${esc(h.grpcAuthority||'')}"></label>`,
 };
 const fpField = h=>`<label><span>${t('cfg.sec.fp')}</span><select data-k="fp">${opts(FPS)}</select></label>`;
-const advHTML = (net, h = {}, sec = 'none') => {
+const advHTML = (net, h = {}, sec = 'none', proto = '') => {
   const parts = [];
   if(ADV_BY[net]) parts.push(ADV_BY[net](h));
-  if(sec==='tls' || sec==='reality') parts.push(fpField(h));
+  /* отпечаток клиента (utls) — про ClientHello браузера; hy2-клиент рукопожатие QUIC
+     делает сам, и панели там подставлять нечего */
+  if((sec==='tls' || sec==='reality') && proto!=='hy2') parts.push(fpField(h));
   return parts.length ? `<details class="adv"><summary>${esc(t('cfg.adv'))}</summary><div class="advf">${parts.join('')}</div></details>` : '';
 };
 function advBody(cfg, root){
@@ -1427,8 +1441,9 @@ let hostEditing = null;
 const setCfg = (k,v)=>{ const el = K($('#hcfg'),k); if(v!=null && v!=='') el.value = v; };
 function renderHostExtras(h){
   const sec = K($('#hcfg'),'security').value, net = K($('#hcfg'),'network').value;
-  $('#hsec').innerHTML = secHTML(sec, h);
-  $('#hadv').innerHTML = advHTML(net, h, sec);
+  const proto = K($('#hcfg'),'protocol').value;
+  $('#hsec').innerHTML = secHTML(sec, h) + (proto==='hy2' ? `<p class="hint">${esc(t('host.hy2Hint'))}</p>` : '');
+  $('#hadv').innerHTML = advHTML(net, h, sec, proto);
   if(K($('#hadv'),'fp')) K($('#hadv'),'fp').value = h.fp || 'chrome';
 }
 function hostDialogShell(){

@@ -20,9 +20,11 @@
 использует, чтобы достучаться до самой ноды; клиент подключается к адресу хоста.
 Пустой адрес хоста означает «подключаться к адресу ноды».
 
-Рендерятся vless, vmess, trojan и shadowsocks. Hysteria2 (hy2) — в очереди: он требует
-TLS у инбаунда в обязательном порядке и собственного формата ссылки, которого у панели
-пока нет, поэтому хост hy2 панель не создаёт (400), а не создаёт «хост, который не поднимется».
+Рендерятся vless, vmess, trojan, shadowsocks и hysteria2. Hysteria2 в Xray 26 живёт не
+под именем `hy2` (такого протокола в официальных сборках нет вовсе), а как протокол
+`hysteria` версии 2 с транспортом `hysteria` (QUIC/HTTP3), обязательным TLS и masquerade;
+панель называет его `hy2`, потому что именно так его зовут подписчики (`hy2://`).
+
 """
 from __future__ import annotations
 
@@ -53,7 +55,7 @@ REALITY_DEST = "www.microsoft.com:443"
 # не прибавив к защите. Настоящий ценз Xray >= 26.9.8 держит другое: обязательный гибрид
 # X25519MLKEM768 в ClientHello (о нём — в AGENTS.md).
 
-SUPPORTED_PROTOCOLS = ("vless", "vmess", "trojan", "ss")
+SUPPORTED_PROTOCOLS = ("vless", "vmess", "trojan", "ss", "hy2")
 
 # --- счётчики трафика -----------------------------------------------------------------
 # Xray считает трафик по «почте» подписчика (email в клиентах инбаунда): без него
@@ -89,18 +91,53 @@ SECURITY_BY_PROTOCOL = {
     "vmess": ("none", "tls"),
     "trojan": ("none", "tls", "reality"),
     "ss": ("none",),
+    # у hysteria2 шифрование встроено в протокол (QUIC + TLS): варианта «без защиты» нет
+    "hy2": ("tls",),
 }
 
-# Hysteria2 панель пока не поднимает: у него TLS у инбаунда обязателен, нужен
-# отдельный hub-obfs и своя форма ссылки, которой у панели нет. Честный отказ лучше
-# хоста, который молча не доехал бы ни до конфига, ни до подписчика.
-UNSUPPORTED_PROTOCOLS = ("hy2",)
-UNSUPPORTED_HINT = ("Hysteria2 панель пока не поднимает: выберите vless, vmess, trojan "
-                    "или shadowsocks")
+# транспорт, который бывает у протокола. У hy2 его выбирать нечего — hy2 и есть транспорт
+TRANSPORT_BY_PROTOCOL = {
+    "hy2": ("tcp",),
+}
+
+TRANSPORT_HINTS = {
+    "hy2": "у hysteria2 транспорт один — сам hy2 поверх QUIC: tcp, ws или grpc к нему панель не добавляет",
+}
+
+
+def unsupported_hint(protocol: str) -> str:
+    """Текст отказа для протокола, которого панель не умеет ни в конфиге, ни в ссылке."""
+    return (f"протокол «{protocol}» панель не поднимает: для него нет ни конфига Xray, ни ссылки, "
+            f"ни приложения подписчика; панель умеет {', '.join(SUPPORTED_PROTOCOLS)}")
+
+
+def transport_issue(protocol: str, network: str) -> str | None:
+    """Транспорт, которого у этого протокола не бывает (текст — и в окне, и в отказе API)."""
+    allowed = TRANSPORT_BY_PROTOCOL.get(protocol)
+    if allowed and network not in allowed:
+        return TRANSPORT_HINTS[protocol]
+    return None
+
+# Как Xray 26 называет hysteria2 внутри конфига. Проверено живым `xray -test` и туннелем
+# (Xray-клиент и Mihomo): протокола `hy2` в официальных сборках нет — есть протокол
+# `hysteria` с `settings.version = 2` и обязательным транспортом `hysteria` (QUIC/HTTP3),
+# который сам и несёт TLS. Поэтому у hy2 нет выбора транспорта и нет выбора защиты:
+# панель называет их за человека и отвергает любые другие combos.
+HY2_XRAY_PROTOCOL = "hysteria"
+HY2_TRANSPORT = "hysteria"
+HY2_VERSION = 2
+# masquerade — что нода изображает, если рукопожатие hy2 не прошло. "404" — честная
+# заглушка: чужого сайта панель не выбирает и не обещает, что он жив
+HY2_MASQUERADE_TYPE = "404"
+HY2_LINK_SCHEME = "hy2"
+
+# как панельный протокол называется внутри конфига Xray (панель называет людей понятно,
+# Xray — как ему принято)
+PROTOCOL_NAMES = {"ss": "shadowsocks", "hy2": HY2_XRAY_PROTOCOL}
 
 
 def unsupported_protocol(protocol: str) -> bool:
-    return protocol in UNSUPPORTED_PROTOCOLS
+    return protocol not in SUPPORTED_PROTOCOLS
 
 
 def security_issue(protocol: str, security: str) -> str | None:
@@ -112,6 +149,9 @@ def security_issue(protocol: str, security: str) -> str | None:
     if protocol == "vmess" and security == "reality":
         return ("vmess поверх reality панель не раздаёт: vmess-ссылка не умеет передавать "
                 "reality-ключ и короткий id — берите vless или trojan")
+    if protocol == "hy2" and security != "tls":
+        return ("у hysteria2 шифрование встроено в протокол (QUIC + TLS): панели нечем "
+                "поднять такой хост без tls")
     return None
 
 
@@ -132,6 +172,18 @@ def user_password(token: str, salt: str = "") -> str:
 def ss_password(token: str, host_id: int) -> str:
     """Пароль shadowsocks-подписчика на конкретном хосте: он же AEAD-ключ этого порта."""
     return user_password(token, f"ss:{host_id}")
+
+
+def hy2_auth(token: str, host_id: int) -> str:
+    """Ключ hysteria2-подписчика на конкретном хосте.
+
+    В hy2 Xray узнаёт человека по auth-строке (она уходит в заголовок QUIC-рукопожатия),
+    и она обязана различаться у людей на одном инбаунде — иначе два подписчика были бы одним
+    человеком. Как и у shadowsocks, ключ привязан к хосту: ссылку на другой hy2-хост панель
+    выдаёт с другим ключом. Проверено живым Xray: инбаунд с `users[].auth` различает людей
+    и считает их трафик по меткам `email`.
+    """
+    return user_password(token, f"hy2:{host_id}")
 
 
 def reality_short_id(token: str) -> str:
@@ -210,6 +262,10 @@ def clients_for(users: list[dict], protocol: str, host: dict | None = None) -> l
         salt = f"ss:{host['id']}" if host else "ss"
         return [{"password": user_password(u["token"], salt), "method": SS_CIPHER,
                  "email": user_email(u)} for u in users]
+    if protocol == "hy2":
+        # у hy2 нет uuid и нет пароля в смысле шифрования: есть auth-строка на человека
+        salt = f"hy2:{host['id']}" if host else "hy2"
+        return [{"auth": user_password(u["token"], salt), "email": user_email(u)} for u in users]
     clients = []
     for u in users:
         client = {"id": user_uuid(u["token"]), "email": user_email(u)}
@@ -274,6 +330,10 @@ def hop_clients(chain_id: int, hop_number_: int, protocol: str) -> list[dict]:
     if protocol == "ss":
         return [{"password": hop_password(chain_id, hop_number_), "method": SS_CIPHER,
                  "email": label}]
+    if protocol == "hy2":
+        # переход hy2: auth одна на весь переход (как пароль у trojan-перехода), метка —
+        # чтобы Xray завёл счётчик трафика хопа
+        return [{"auth": hop_password(chain_id, hop_number_), "email": label}]
     client = {"id": hop_uuid(chain_id, hop_number_), "email": label}
     if protocol == "vmess":
         client["security"] = VMESS_CIPHER
@@ -309,6 +369,27 @@ def hop_out_tag(chain_name: str, target: dict) -> str:
     return f"{chain_name} -> hop {hop_number(target) + 1}"
 
 
+def hy2_hop_outbound(chain: dict, target: dict) -> dict[str, Any]:
+    """Переход цепочки в hy2-хоп: форма settings у Xray своя (не vnext и не servers).
+
+    Проверено живым Xray 26: outbound hysteria2 — это `protocol: hysteria`,
+    `settings {version, address, port}` и транспорт hysteria, где auth перехода лежит в
+    `hysteriaSettings.auth`, а самоподписанный сертификат принимается только по
+    `pinnedPeerCertSha256` (его панель знает, потому что сертификат хопа выпустила сама).
+    """
+    chain_id, number = chain["id"], hop_number(target)
+    address = connect_address(target)
+    tls: dict[str, Any] = {"serverName": (target.get("sni") or "").strip() or address}
+    if target.get("cert_sha256"):
+        tls["pinnedPeerCertSha256"] = target["cert_sha256"]
+    return {"tag": hop_out_tag(chain["name"], target), "protocol": HY2_XRAY_PROTOCOL,
+            "settings": {"version": HY2_VERSION, "address": address, "port": target["port"]},
+            "streamSettings": {"network": HY2_TRANSPORT, "security": "tls",
+                               "hysteriaSettings": {"version": HY2_VERSION,
+                                                    "auth": hop_password(chain_id, number)},
+                               "tlsSettings": tls}}
+
+
 def hop_outbound(chain: dict, target: dict) -> dict[str, Any]:
     """Outbound ноды в следующий хоп цепочки.
 
@@ -322,6 +403,9 @@ def hop_outbound(chain: dict, target: dict) -> dict[str, Any]:
     only one member).
     """
     chain_id, number = chain["id"], hop_number(target)
+    if target["protocol"] == "hy2":
+        # форма settings у hy2 своя, и транспорт выбирать нечего
+        return hy2_hop_outbound(chain, target)
     protocol = "shadowsocks" if target["protocol"] == "ss" else target["protocol"]
     address = connect_address(target)
     port = target["port"]
@@ -432,8 +516,30 @@ def cert_files(host: dict) -> tuple[str, str]:
     return cert_paths(host["id"])
 
 
+def hy2_stream(host: dict) -> dict[str, Any]:
+    """Транспорт hy2: выбирать нечего — QUIC/HTTP3 и TLS внутри него.
+
+    masquerade панель держит заглушкой 404: чужой сайт для маскировки панель не выбирает
+    (в отличие от reality, где маска названа и живёт в `dest`), а без маскировки hy2 был бы
+    просто голым QUIC-портом.
+    """
+    crt, key = cert_files(host)
+    sni = (host.get("sni") or "").strip() or connect_address(host)
+    tls: dict[str, Any] = {"serverName": sni,
+                           "certificates": [{"certificateFile": crt, "keyFile": key}]}
+    if host.get("reject_unknown_sni"):
+        tls["rejectUnknownSni"] = True
+    return {"network": HY2_TRANSPORT, "security": "tls",
+            "hysteriaSettings": {"version": HY2_VERSION,
+                                 "masquerade": {"type": HY2_MASQUERADE_TYPE}},
+            "tlsSettings": tls}
+
+
 def stream_settings(host: dict) -> dict[str, Any]:
     address = connect_address(host)
+    if host["protocol"] == "hy2":
+        # отдельная ветка нарочно: у hy2 нет ни транспорта на выбор, ни reality, ни fp
+        return hy2_stream(host)
     stream: dict[str, Any] = {"network": host["network"], "security": host["security"]}
     stream.update(transport_settings(host))
     # отпечаток клиента (utls): куда нода притворяется браузером — работает при
@@ -478,12 +584,18 @@ def inbound(host: dict, users: list[dict], tag: str) -> dict[str, Any]:
     else:
         clients = clients_for(users, protocol, host)
     # у shadowsocks клиенты живут в `users` (Xray зовёт это мультипользовательским ss:
-    # инбаунд различает людей по их ключам) и шифр называется у каждого клиента свой
-    settings: dict[str, Any] = {"users": clients} if protocol == "ss" else {"clients": clients}
+    # инбаунд различает людей по их ключам) и шифр называется у каждого клиента свой;
+    # у hysteria2 клиенты тоже в `users`, и им нужен номер версии протокола
+    if protocol == "hy2":
+        settings: dict[str, Any] = {"version": HY2_VERSION, "users": clients}
+    elif protocol == "ss":
+        settings = {"users": clients}
+    else:
+        settings = {"clients": clients}
     entry: dict[str, Any] = {
         "tag": tag,
         "port": host["port"],
-        "protocol": protocol if protocol != "ss" else "shadowsocks",
+        "protocol": PROTOCOL_NAMES.get(protocol, protocol),
         "settings": settings,
         "streamSettings": stream_settings(host),
     }

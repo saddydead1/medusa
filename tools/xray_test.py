@@ -13,7 +13,8 @@
   идут с паролем и коротким id, tls-хосты — с выпущенным сертификатом;
 * vmess, trojan и shadowsocks подымаются сами: у vmess согласуемый шифр, у trojan пароль
   из токена, у shadowsocks подписчики лежат в `users` со своим шифром и своим на каждый
-  хост паролем; hy2 и бессмысленные комбинации (ss+tls, vmess+reality) не заводятся;
+  хост паролем, hysteria2 поднимается своим протоколом и транспортом (и своим сертификатом
+  на ноде); бессмысленные комбинации (ss+tls, vmess+reality, hy2 без tls, hy2 поверх ws) не заводятся;
 * применение поднимает ревизию на обеих сторонах и не роняет панель при отказе ноды;
 * отключённый пользователь исчезает из клиентов конфига.
 """
@@ -247,9 +248,15 @@ def main() -> int:
             sock = client.post("/api/hosts", json={"name": "S3055", "node": "stub", "protocol": "ss",
                                                    "port": 3055, "network": "tcp", "security": "none",
                                                    "address": "ss.example.net"}).json()
-            hy2 = client.post("/api/hosts", json={"name": "HY2", "node": "stub", "protocol": "hy2",
-                                                  "port": 3056, "network": "tcp", "security": "none"})
-            ok(hy2.status_code == 400, f"hy2 панель не заводит: {hy2.json()['detail']}")
+            hy2_none = client.post("/api/hosts", json={"name": "HY2", "node": "stub", "protocol": "hy2",
+                                                       "port": 3056, "network": "tcp", "security": "none"})
+            ok(hy2_none.status_code == 400 and "tls" in hy2_none.json()["detail"],
+               f"hy2 без tls не заводится (шифрование встроено в протокол): {hy2_none.json()['detail']}")
+            hy2_ws = client.post("/api/hosts", json={"name": "HY2-ws", "node": "stub", "protocol": "hy2",
+                                                     "port": 3056, "network": "ws", "security": "tls"})
+            ok(hy2_ws.status_code == 400 and "QUIC" in hy2_ws.json()["detail"],
+               f"hy2 поверх ws отвергается: {hy2_ws.json()['detail']}")
+            # сам hy2-хост заводится отдельно ниже: он проверяется живым конфигом на ноде
             ss_tls = client.post("/api/hosts", json={"name": "ss+tls", "node": "stub", "protocol": "ss",
                                                      "port": 3057, "network": "tcp", "security": "tls"})
             ok(ss_tls.status_code == 400, f"ss с чужой защитой отвергается: {ss_tls.json()['detail']}")
@@ -505,6 +512,36 @@ def main() -> int:
                and reality1.get("serverNames") == ["mirror.example.org", "backup.example.org"],
                f"reality-хоп прячется за названной маской и принимает названные имена: "
                f"{reality1.get('serverNames')}")
+
+            # --- hysteria2: какой конфиг доезжает до ноды и что нода делает с сертификатом ---
+            hy2_host = client.post("/api/hosts", json={"name": "HY2443", "node": "stub", "protocol": "hy2",
+                                                       "port": 3071, "network": "tcp", "security": "tls",
+                                                       "address": "hy2.example.net",
+                                                       "sni": "hy2.example.net"}).json()
+            hy2_cfg = wait_cfg(cfg_path, lambda c: any(i["tag"] == "HY2443" for i in c["inbounds"]))
+            inb = next((i for i in (hy2_cfg or {}).get("inbounds", []) if i["tag"] == "HY2443"), {})
+            ok(inb.get("protocol") == "hysteria" and inb.get("settings", {}).get("version") == 2,
+               "hy2 на ноде — протокол hysteria версии 2 (так Xray 26 называет hysteria2)")
+            stream = inb.get("streamSettings") or {}
+            ok(stream.get("network") == "hysteria" and stream.get("security") == "tls"
+               and stream.get("hysteriaSettings", {}).get("masquerade", {}).get("type") == "404",
+               f"транспорт hy2 его собственный (QUIC/HTTP3) с masquerade-заглушкой: {stream.get('hysteriaSettings')}")
+            hy2_users = inb.get("settings", {}).get("users", [])
+            auths = {u.get("auth") for u in hy2_users}
+            ok(len(hy2_users) >= 1 and len(auths) == len(hy2_users) and all(u.get("email", "").startswith("u")
+               for u in hy2_users),
+               f"hy2 различает подписчиков по их auth и держит метку email (по ней счётчики): {hy2_users}")
+            certs = stream.get("tlsSettings", {}).get("certificates", [])
+            crt_file = (certs[0].get("certificateFile") if certs else "")
+            ok(crt_file and Path(crt_file).exists() and Path(certs[0].get("keyFile", "")).exists(),
+               f"hy2 нужен сертификат: нода выпустила self-signed по подсказке панели: {crt_file}")
+            masked = client.get(f"/api/nodes/{node['id']}/config").json()["config"]
+            masked_in = next(i for i in masked["inbounds"] if i["tag"] == "HY2443")
+            ok(all(u.get("auth") == "скрыто панелью" for u in masked_in["settings"]["users"]),
+               "окно конфига ноды не показывает auth-ключи hy2-подписчиков")
+            client.delete(f"/api/hosts/{hy2_host['id']}")
+            gone = wait_cfg(cfg_path, lambda c: all(i["tag"] != "HY2443" for i in c["inbounds"]))
+            ok(gone is not None, "hy2-хост удалён — его инбаунд снялся с ноды")
 
             # --- IPv6 на ноде выключен: конфиг слушает 0.0.0.0 и ходит только по IPv4 ---
             # Проверка ровно на живом переходе цепочки: там есть и инбаунд, и outbound
