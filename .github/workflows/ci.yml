@@ -186,7 +186,11 @@ jobs:
           unzip -o xray.zip -d bin
           chmod +x bin/xray
           bin/xray version
+      # continue-on-error на самом шаге: живой прогон зависит от того, пройдёт ли внешний
+      # трафик через каждый туннель на общем раннере (на своём железе он честный). Проваленные
+      # строки всё равно видны аннотациями, но справочный джоб не красит весь прогон.
       - name: tools/live_demo.py
+        continue-on-error: true
         env:
           MEDUSA_LIVE: "1"
         run: |
