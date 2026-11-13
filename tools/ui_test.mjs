@@ -31,7 +31,16 @@ const annotate = (msg) => {
   if(process.env.GITHUB_STEP_SUMMARY){ try{ appendFileSync(process.env.GITHUB_STEP_SUMMARY, line + '\n'); }catch{ /* сводка не обязательна */ } }
 };
 const ok = (cond, msg) => { console.log((cond ? 'PASS  ' : 'FAIL  ') + msg); if(!cond){ fails++; annotate('FAIL  ' + msg); } };
-process.on('uncaughtException', e => { console.log('FAIL  неожиданная ошибка теста: ' + e.message); annotate('FAIL  неожиданная ошибка теста: ' + e.message); process.exit(1); });
+/* тест весь построен на верхнем await: невыполненное обещание (например waitForFunction
+   не дождался) приходит именно как unhandledRejection, а не как uncaughtException */
+const die = (label, err) => {
+  const msg = err && err.message ? err.message : String(err);
+  console.log('FAIL  ' + label + ': ' + msg);
+  annotate('FAIL  ' + label + ': ' + msg);
+  process.exit(1);
+};
+process.on('uncaughtException', e => die('неожиданная ошибка теста', e));
+process.on('unhandledRejection', e => die('обещание теста не дождалось', e));
 const text = () => page.textContent('#view');
 const toastText = () => page.textContent('#toast');
 const wait = (fn, arg, opts) => page.waitForFunction(fn, arg, {timeout: 30000, ...(opts || {})});

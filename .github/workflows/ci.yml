@@ -101,8 +101,17 @@ jobs:
           echo "тестовая панель не поднялась на порту $MEDUSA_UI_PORT:"; tail -30 "$MEDUSA_CI_TMP/panel.log"
           exit 1
 
+      # шаг не должен заканчиваться «просто failure»: последние строки теста уходят аннотациями,
+      # их видно в интерфейсе Actions без доступа к логам шага
       - name: фронт против живого API (Playwright)
-        run: node tools/ui_test.mjs
+        run: |
+          set +e
+          node tools/ui_test.mjs 2>&1 | tee "$MEDUSA_CI_TMP/ui.log"
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            tail -8 "$MEDUSA_CI_TMP/ui.log" | sed 's/^/::error::ui_test: /'
+          fi
+          exit "$code"
 
       - name: моковые сценарии интерфейса
         run: |
@@ -176,4 +185,12 @@ jobs:
       - name: tools/live_demo.py
         env:
           MEDUSA_LIVE: "1"
-        run: .venv/bin/python tools/live_demo.py
+        run: |
+          set +e
+          mkdir -p /tmp/medusa-live
+          .venv/bin/python tools/live_demo.py 2>&1 | tee /tmp/medusa-live/live.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            tail -8 /tmp/medusa-live/live.log | sed 's/^/::error::live_demo: /'
+          fi
+          exit "$code"
