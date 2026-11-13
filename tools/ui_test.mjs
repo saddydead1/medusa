@@ -130,7 +130,13 @@ ok((await page.textContent('#acctrole')).includes('Владелец'), `и её 
 /* ---------- обзор на живых данных ---------- */
 ok((await page.textContent('#pname')).trim() === 'Medusa', 'панель загрузилась без мока');
 ok((await text()).includes('Не удалось загрузить') === false, 'данные взял бэкенд, а не мок');
-ok(await page.locator('#view .syscard').count() === 3, 'блок сервера: ЦП, память и диски с живых метрик');
+/* карточек «Сервер» ровно три только там, где три диска: на GitHub-раннере их
+   две (корень и временный диск), поэтому проверяем состав, а не количество. */
+const sysTitles = await page.evaluate(() => [...document.querySelectorAll('#view .syscard .systitle')]
+  .map(x => x.textContent.trim()));
+ok(sysTitles.length >= 3 && sysTitles.some(x => /ЦП/.test(x)) && sysTitles.some(x => /ОЗУ/.test(x))
+   && sysTitles.some(x => /Диск/.test(x)),
+   `блок сервера: ЦП, память и диски с живых метрик: ${sysTitles.join(' | ')}`);
 const cpu = (await page.locator('.syscard .sysval').first().textContent()).trim();
 ok(/%$/.test(cpu), `ЦП с живых метрик: ${cpu}`);
 ok((await page.evaluate(() => savedSettings.panelName)) === 'Medusa', 'настройки пришли с бэкенда');

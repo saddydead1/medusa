@@ -828,9 +828,11 @@ docker compose -f deploy/docker-compose.yaml up --build      # панель + н
 
 **`ci.yml` — проверки при пуше** (`develop`, `main`, pull request в них, и вручную):
 
-* `tests` — `./tools/run_all.sh` целиком: границы монолита, нода, рендер конфига Xray и
-  применение к тестовой ноде, права/сессии/FIDO2, панельный API с живой связкой, фронт против
-  живого API (`ui_test.mjs`) и моковые сценарии. Python — `actions/setup-python` с 3.14, затем
+* `tests` — те же наборы, что гоняет `./tools/run_all.sh` (границы монолита, нода, рендер
+  конфига Xray и применение к тестовой ноде, права/сессии/FIDO2, панельный API с живой связкой,
+  фронт против живого API (`ui_test.mjs`) и моковые сценарии), но **каждым шагом отдельно**:
+  в интерфейсе Actions сразу видно, какой набор упал, вместо «умерла одна большая инструкция».
+  Python — `actions/setup-python` с 3.14, затем
   `pip install uv && uv sync --frozen` (`.venv` в корне — его и зовёт run_all.sh); Playwright
   ставится в самом джобе (`npm ci` в `tools/` + `npx playwright install --with-deps chromium`).
   `astral-sh/setup-uv` не используется: у него нет тега `v8`/`v9`/`v10` целиком, только

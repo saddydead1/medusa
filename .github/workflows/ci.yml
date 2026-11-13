@@ -18,10 +18,25 @@ concurrency:
 
 jobs:
   # весь панельный и нодовый прогон: границы монолита, нода, рендер конфига Xray и
-  # применение к ноде, права/сессии/FIDO2, панельный API, фронт против живого API, моковые сценарии
+  # применение к ноде, права/сессии/FIDO2, панельный API, фронт против живого API, моковые сценарии.
+  # Проверки разбиты по этапам, а не гоняются одним run_all.sh: в UI сразу видно, какой
+  # набор упал, вместо «упала одна большая инструкция». Порядок тот же, что у run_all.sh.
   tests:
     name: Панель, нода, конфиг Xray и фронт
     runs-on: ubuntu-latest
+    env:
+      MEDUSA_CI_TMP: /tmp/medusa-ci
+      MEDUSA_DB: /tmp/medusa-ci/panel.db
+      MEDUSA_DEMO: "1"
+      MEDUSA_ADMIN_USER: admin
+      MEDUSA_ADMIN_PASSWORD: testpass12345
+      MEDUSA_TEST_NODE_KEY: sk-api-runall0123456789abcdef00
+      MEDUSA_TEST_NODE_PORT: "9443"
+      MEDUSA_NODE_API_KEY: sk-api-runall0123456789abcdef00
+      MEDUSA_NODE_PORT: "9443"
+      MEDUSA_NODE_STATE: /tmp/medusa-ci/node-state.json
+      MEDUSA_UI_PORT: "8123"
+      MEDUSA_UI_URL: http://127.0.0.1:8123/
     steps:
       - uses: actions/checkout@v7
 
@@ -33,7 +48,7 @@ jobs:
         with:
           node-version: 22
 
-      # run_all.sh зовёт .venv/bin/python, поэтому окружение заводится ровно так,
+      # каждый тест зовёт .venv/bin/python, поэтому окружение заводится ровно так,
       # как его заводит разработчик: uv sync в ./venv репозитория
       - name: Python (pyproject требует 3.14)
         run: python -m pip install --upgrade uv && uv sync --frozen
@@ -44,9 +59,67 @@ jobs:
           cd tools
           npm ci || npm install
           npx playwright install --with-deps chromium
+          cd ..
 
-      - name: ./tools/run_all.sh
-        run: ./tools/run_all.sh
+      - name: границы монолита (панель/нода/ядро)
+        run: .venv/bin/python tools/arch_test.py
+
+      - name: "нода: API-ключ, файл состояния и трафик"
+        run: .venv/bin/python tools/node_test.py
+
+      - name: "конфиг Xray: панель -> нода -> xray (заглушка)"
+        run: .venv/bin/python tools/xray_test.py
+
+      # тестовая нода на своём порту: ей пользуются и auth_test, и panel_test (живая связка)
+      - name: поднять тестовую ноду
+        run: |
+          mkdir -p "$MEDUSA_CI_TMP"
+          nohup .venv/bin/python -m uvicorn src.node.main:app --host 127.0.0.1 \
+            --port "$MEDUSA_TEST_NODE_PORT" >"$MEDUSA_CI_TMP/node.log" 2>&1 &
+          for _ in $(seq 120); do
+            curl -sf "http://127.0.0.1:${MEDUSA_TEST_NODE_PORT}/node/health" >/dev/null && exit 0
+            sleep 0.25
+          done
+          echo "тестовая нода не поднялась на порту $MEDUSA_TEST_NODE_PORT:"; tail -30 "$MEDUSA_CI_TMP/node.log"
+          exit 1
+
+      - name: права, сессии и вход по аппаратному ключу
+        run: .venv/bin/python tools/auth_test.py
+
+      - name: панельный API, включая живую связку с нодой
+        run: .venv/bin/python tools/panel_test.py
+
+      - name: поднять панель для UI-проверок
+        run: |
+          mkdir -p "$MEDUSA_CI_TMP"
+          nohup .venv/bin/python -m uvicorn src.panel.main:app --host 127.0.0.1 \
+            --port "$MEDUSA_UI_PORT" >"$MEDUSA_CI_TMP/panel.log" 2>&1 &
+          for _ in $(seq 120); do
+            curl -sf "$MEDUSA_UI_URL/api/meta" >/dev/null && exit 0
+            sleep 0.25
+          done
+          echo "тестовая панель не поднялась на порту $MEDUSA_UI_PORT:"; tail -30 "$MEDUSA_CI_TMP/panel.log"
+          exit 1
+
+      - name: фронт против живого API (Playwright)
+        run: node tools/ui_test.mjs
+
+      - name: моковые сценарии интерфейса
+        run: |
+          for suite in live overview clients i18n keys; do
+            node "tools/mock/$suite.mjs"
+          done
+
+      # логи тестовых сервисов — в сводку шага: без них «упало» ничего не объясняет
+      - name: логи тестовых ноды и панели (только при падении)
+        if: failure()
+        run: |
+          {
+            echo '### node.log'
+            tail -40 "$MEDUSA_CI_TMP/node.log" 2>/dev/null || echo '(нет файла)'
+            echo '### panel.log'
+            tail -40 "$MEDUSA_CI_TMP/panel.log" 2>/dev/null || echo '(нет файла)'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Dockerfile.panel и Dockerfile.node: сборка без публикации. Границы половин
   # (панель не видит src/node, нода не видит src/panel) здесь тоже проверяются —
