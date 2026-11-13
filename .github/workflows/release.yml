@@ -72,6 +72,29 @@ jobs:
             dockerfile: deploy/Dockerfile.node
     steps:
       - uses: actions/checkout@v7
+
+      # «Password required» ничего не объясняет: проверяем логин/пароль до docker login
+      # и заодно говорим, если сам реестр недоступен раннеру (порт или сертификат)
+      - name: Логин и пароль к реестру заданы?
+        env:
+          REG_HOST: ${{ vars.REGISTRY || 'docker.sonoma.su' }}
+          REG_USER: ${{ vars.REGISTRY_USERNAME || secrets.REGISTRY_USERNAME }}
+          REG_PASSWORD_SET: ${{ secrets.REGISTRY_PASSWORD != '' }}
+        run: |
+          set -euo pipefail
+          miss=""
+          [ -n "$REG_USER" ] || miss="$miss REGISTRY_USERNAME (переменная или секрет с таким именем)"
+          [ "$REG_PASSWORD_SET" = "true" ] || miss="$miss REGISTRY_PASSWORD (секрет)"
+          if [ -n "$miss" ]; then
+            echo "::error::для реестра $REG_HOST не задано:${miss}. Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+          code=$(curl -sS -m 25 -o /dev/null -w '%{http_code}' "https://$REG_HOST/v2/" || echo 000)
+          case "$code" in
+            200|401|403) echo "реестр $REG_HOST отвечает (/v2/ -> $code)" ;;
+            *) echo "::warning::$REG_HOST/v2/ не отвечает (код $code): docker login может упасть — проверь порт 443 и что сертификат выдан публичным CA, а не самоподписанным" ;;
+          esac
+
       - uses: docker/setup-buildx-action@v4
 
       - name: Вход в реестр
@@ -120,6 +143,9 @@ jobs:
   release:
     name: Тег и релиз GitHub
     needs: [version, images]
+    # !cancelled(): релиз и тег нужны даже тогда, когда публикация образов не удалась
+    # (например, не задан секрет реестра). Иначе «merge в main есть, а релиза нет».
+    if: ${{ !cancelled() && needs.version.outputs.version != '' }}
     runs-on: ubuntu-latest
     env:
       REGISTRY: ${{ vars.REGISTRY || 'docker.sonoma.su' }}
@@ -139,6 +165,43 @@ jobs:
           git tag "$TAG" "${{ github.sha }}"
           git push origin "$TAG"
 
+      # текст релиза собирается в файле: так в нём живёт и предупреждение о том, что
+      # образы не выложились, и команды запуска — без длинных выражений внутри YAML
+      - name: Собрать текст релиза
+        run: |
+          set -euo pipefail
+          {
+            if [ "${{ needs.images.result }}" != "success" ]; then
+              echo "⚠ **Образы не выложены**: джоб публикации образов завершился со статусом \`${{ needs.images.result }}\`. Тег и релиз при этом на месте — причину смотри в шагах «Логин и пароль к реестру заданы?» и «Вход в реестр»."
+              echo
+            fi
+            echo "## Образы: \`$REGISTRY/$REGISTRY_NAMESPACE\`"
+            echo
+            echo "Реестр закрытый, поэтому сначала вход по логину и паролю:"
+            echo
+            echo '```bash'
+            echo "docker login $REGISTRY"
+            echo
+            echo "# панель"
+            echo 'docker run -d --name medusa-panel --restart unless-stopped \'
+            echo '  -p 8000:8000 -v medusa-panel:/data \'
+            echo '  -e MEDUSA_ADMIN_USER=admin \'
+            echo "  $REGISTRY/$REGISTRY_NAMESPACE/panel:$VERSION"
+            echo "docker logs medusa-panel     # панель напечатает пароль владельца"
+            echo
+            echo "# нода (ей нужен host-сеть: API-порт и порты Xray)"
+            echo 'docker run -d --name medusa-node --restart unless-stopped \'
+            echo '  --network host \'
+            echo '  -v medusa-node:/var/lib/medusa-node \'
+            echo '  -e MEDUSA_NODE_PORT=9443 \'
+            echo "  $REGISTRY/$REGISTRY_NAMESPACE/node:$VERSION"
+            echo "docker logs medusa-node      # нода напечатает свой API-ключ: взять его в панель"
+            echo '```'
+            echo
+            echo "Внутрь образа ноды положен \`$XRAY_IMAGE\`."
+          } > release-body.md
+          cat release-body.md
+
       - name: Релиз ${{ env.TAG }}
         uses: softprops/action-gh-release@v3
         with:
@@ -147,28 +210,4 @@ jobs:
           name: Medusa ${{ env.VERSION }}
           generate_release_notes: true
           append_body: true
-          body: |
-            ## Образы: `${{ env.REGISTRY }}/${{ env.REGISTRY_NAMESPACE }}`
-
-            Реестр закрытый, поэтому сначала вход по логину и паролю:
-
-            ```bash
-            docker login ${{ env.REGISTRY }}
-
-            # панель
-            docker run -d --name medusa-panel --restart unless-stopped \
-              -p 8000:8000 -v medusa-panel:/data \
-              -e MEDUSA_ADMIN_USER=admin \
-              ${{ env.REGISTRY }}/${{ env.REGISTRY_NAMESPACE }}/panel:${{ env.VERSION }}
-            docker logs medusa-panel     # панель напечатает пароль владельца
-
-            # нода (ей нужен host-сеть: API-порт и порты Xray)
-            docker run -d --name medusa-node --restart unless-stopped \
-              --network host \
-              -v medusa-node:/var/lib/medusa-node \
-              -e MEDUSA_NODE_PORT=9443 \
-              ${{ env.REGISTRY }}/${{ env.REGISTRY_NAMESPACE }}/node:${{ env.VERSION }}
-            docker logs medusa-node      # нода напечатает свой API-ключ: взять его в панель
-            ```
-
-            Внутрь образа ноды положен `${{ env.XRAY_IMAGE }}`.
+          body_path: release-body.md
