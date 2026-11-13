@@ -33,6 +33,8 @@ import re
 import uuid
 from typing import Any
 
+from src.core.addresses import is_ipv6_literal
+
 # свой namespace: uuid5 чужого namespace дал бы чужим системам те же id бесплатно
 USER_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_DNS, "medusa.user")
 
@@ -498,6 +500,57 @@ def inbound(host: dict, users: list[dict], tag: str) -> dict[str, Any]:
     return entry
 
 
+IPV4_LISTEN = "0.0.0.0"
+IPV4_STRATEGY = "UseIPv4"
+
+
+def node_without_ipv6(node: dict) -> bool:
+    """Выключен ли на ноде IPv6 (колонка `ipv6_disabled` или поле API-словаря)."""
+    return bool(node.get("ipv6_disabled") or node.get("ipv6Disabled"))
+
+
+def _sockopt(outbound: dict) -> dict:
+    """sockopt аутбаунда, создавая при необходимости streamSettings.
+
+    Xray 26 держит стратегию разрешения имён в `sockopt.domainStrategy` (у freedom её
+    перенесли туда из `settings.domainStrategy`), и она работает на любом аутбаунде —
+    и на выходе наружу, и на переходе цепочки.
+    """
+    stream = dict(outbound.get("streamSettings") or {})
+    sockopt = dict(stream.get("sockopt") or {})
+    stream["sockopt"] = sockopt
+    return stream
+
+
+def apply_ipv6_policy(config: dict, node: dict, ipv6_tags: set[str] | None = None) -> dict:
+    """Что значит «на этой ноде IPv6 выключен» для конфига Xray.
+
+    * инбаунды слушают `0.0.0.0`: на машине без рабочего IPv6 dual-stack bind либо
+      падает (`address family not supported`), либо молча даёт полуработающий слушающий
+      сокет — Xray тогда не поднимается вовсе и у ноды останавливаются все хосты;
+    * наружу и в переходы цепочек нода ходит по IPv4 (`sockopt.domainStrategy: UseIPv4`):
+      домен, у которого есть AAAA, не утащит ноду в IPv6-попытку, которая на такой
+      машине заканчивается таймаутом.
+
+    Инбаунд хоста с IPv6-адресом из правила исключается (`ipv6_tags`): эндпоинты такой
+    комбинации не допускают, но если она осталась в прежней базе, ломать её инбаунд
+    молча хуже, чем оставить как было.
+
+    Сервис счётчиков здесь не трогается: он и так слушает петлюбочный адрес.
+    """
+    for inbound in config.get("inbounds", []):
+        if inbound.get("tag") == STATS_TAG or inbound.get("tag") in (ipv6_tags or set()):
+            continue
+        inbound["listen"] = IPV4_LISTEN
+    for outbound in config.get("outbounds", []):
+        if outbound.get("protocol") == "blackhole":
+            continue        # отвечать сервису счётчиков некуда, разрешение имён там не нужно
+        stream = _sockopt(outbound)
+        stream["sockopt"]["domainStrategy"] = IPV4_STRATEGY
+        outbound["streamSettings"] = stream
+    return config
+
+
 def render_node_config(node: dict, hosts: list[dict], users: list[dict],
                        chains: list[dict] | None = None) -> dict:
     """Один узел = один конфиг.
@@ -555,6 +608,10 @@ def render_node_config(node: dict, hosts: list[dict], users: list[dict],
         config["outbounds"] = outbounds + [{"protocol": "blackhole", "tag": STATS_TAG}]
         config.setdefault("routing", {})["rules"] = [{"inboundTag": [STATS_TAG],
                                                       "outboundTag": STATS_TAG}] + rules
+    if node_without_ipv6(node):
+        # инбаунды хопа с IPv6-адресом правила не касаются (см. apply_ipv6_policy)
+        v6_tags = {tags[host["id"]] for host in hosts if is_ipv6_literal(connect_address(host))}
+        apply_ipv6_policy(config, node, v6_tags)
     return config
 
 

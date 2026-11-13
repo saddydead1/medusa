@@ -504,6 +504,9 @@ tbody tr:hover{background:var(--surface-2);box-shadow:inset 3px 0 0 var(--accent
 .secbox .hint{margin:2px 0 0;font-size:12px}
 .secbox .chk{display:flex;align-items:center;gap:8px;font-weight:550;color:var(--muted)}
 .secbox .chk input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent)}
+/* та же галочка в диалогах ноды (IPv6): один вид на весь интерфейс */
+#nform .chk,#neform .chk{display:flex;align-items:center;gap:8px;font-weight:550;color:var(--ink-2);margin:12px 0 0}
+#nform .chk input[type=checkbox],#neform .chk input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent)}
 /* «Дополнительные настройки»: свёрнутый блок, появляется только у транспорта, где есть что настройки */
 #hadv:empty,.hopadv:empty{display:none}
 #hdlg details.adv,.hopbox details.adv{margin:10px 0 0;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface-2)}

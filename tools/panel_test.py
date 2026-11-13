@@ -545,6 +545,14 @@ def main() -> int:
         masha = client.post("/api/users", json={"name": "masha", "client": "clash-verge"}).json()
         brother = client.post("/api/users", json={"name": "brother", "client": "clash-meta"}).json()
         ok(masha["client"] == "clash-verge", "поле client сохранилось")
+        # приложение клиента — статистика на «Обзоре»: своё название должно сохраняться,
+        # а пустая строка обязана означать «приложения нет» (тогда подписчик в «прочих»)
+        relabeled = client.patch(f"/api/users/{brother['id']}",
+                                 json={"client": "Foxv2ray", "name": "brother2"}).json()
+        ok(relabeled["client"] == "Foxv2ray" and relabeled["name"] == "brother2",
+           f"правка пользователя сохраняет имя и своё название приложения: {relabeled['name']}/{relabeled['client']}")
+        cleared = client.patch(f"/api/users/{brother['id']}", json={"client": ""}).json()
+        ok(cleared["client"] in (None, ""), f"приложение снимается пустой строкой: {cleared['client']!r}")
         ok(client.patch(f"/api/users/{masha['id']}", json={"status": "disabled"}).json()["status"] == "disabled", "отключить пользователя")
         ok(client.delete(f"/api/users/{created['id']}").status_code == 204, "удалить пользователя")
         ok(client.patch("/api/users/999999", json={"status": "active"}).status_code == 404, "несуществующий пользователь -> 404")
@@ -558,6 +566,34 @@ def main() -> int:
         ok(client.post("/api/nodes", json={"name": "home", "address": "10.8.0.9",
                                           "apiKey": "sk-api-home00000000000000000"}).status_code == 409, "повтор ноды -> 409")
         ok(client.patch(f"/api/nodes/{home['id']}", json={"online": True}).json()["online"] is True, "онлайн ноды переключается")
+
+        # --- IPv6 на ноде: галочка, её границы и следует из неё или нет ---
+        nov6 = client.post("/api/nodes", json={"name": "nov6", "address": "10.8.0.7",
+                                               "apiKey": "sk-api-nov60000000000000000000",
+                                               "ipv6Disabled": True}).json()
+        ok(nov6["ipv6Disabled"] is True, "нода заведена с выключенным IPv6")
+        ok(client.post("/api/nodes", json={"name": "v6node", "address": "2001:db8::7",
+                                           "apiKey": "sk-api-v6node0000000000000000",
+                                           "ipv6Disabled": True}).status_code == 400,
+           "нельзя выключить IPv6 на ноде, чей адрес сам IPv6 (по нему ходит и панель, и подписчики)")
+        v6host = client.post("/api/hosts", json={"name": "v6-host", "node": "nov6", "protocol": "vless",
+                                                 "port": 8443, "address": "2001:db8::7"})
+        ok(v6host.status_code == 400, f"хост с IPv6-адресом на ноде без IPv6 отвергнут: {v6host.json()['detail']}")
+        v6hop = client.post("/api/chains", json={"name": "v6-chain", "hops": [
+            {"node": "nov6", "protocol": "vless", "port": 8444, "address": "2001:db8::7"},
+            {"node": "home", "protocol": "vless", "port": 8445, "address": "10.8.0.1"}]})
+        ok(v6hop.status_code == 400, f"hop цепочки с IPv6-адресом на такой ноде отвергнут: {v6hop.json()['detail']}")
+        back = client.patch(f"/api/nodes/{nov6['id']}", json={"ipv6Disabled": False}).json()
+        ok(back["ipv6Disabled"] is False, "галочка снимается")
+        with_v6 = client.post("/api/hosts", json={"name": "v6-ok", "node": "nov6", "protocol": "vless",
+                                                  "port": 8443, "address": "2001:db8::7"})
+        ok(with_v6.status_code == 201, "а при включённом IPv6 такой хост легален")
+        denied = client.patch(f"/api/nodes/{nov6['id']}", json={"ipv6Disabled": True})
+        ok(denied.status_code == 409, f"выключить IPv6, если у ноды уже есть хост с IPv6-адресом: {denied.json()['detail']}")
+        ok(client.delete(f"/api/hosts/{with_v6.json()['id']}").status_code == 204, "хост убрали")
+        ok(client.patch(f"/api/nodes/{nov6['id']}", json={"ipv6Disabled": True}).json()["ipv6Disabled"] is True,
+           "теперь IPv6 выключается: мешающего хоста больше нет")
+        ok(client.delete(f"/api/nodes/{nov6['id']}").status_code == 204, "тестовую ноду убрали")
 
         # --- API-ключ: создаёт его нода, панель только хранит и предъявляет ---
         keyed = client.post("/api/nodes", json={"name": "link", "address": "127.0.0.1",
@@ -1213,6 +1249,15 @@ def main() -> int:
         with_auth = client.post("/api/users", json={"name": "anonymous2"}, headers=auth)
         ok(with_auth.status_code == 201, f"под владельцем запись проходит ({with_auth.status_code} {with_auth.json()})")
         ok(client.get("/api/users", headers=anon).status_code == 401, "и читать без сессии нельзя")
+
+        # --- метрики сервера: на «Обзоре» основной раздел, а не все монтирования ---
+        sysinfo = client.get("/api/system").json()
+        mounts = [d["mount"] for d in sysinfo["disks"]]
+        ok(len(sysinfo["disks"]) <= 2 and ("/" in mounts or len(mounts) == 1),
+           f"блок «Сервер» показывает основной диск (плюс диск базы панели, только если он на другом устройстве): {mounts}")
+        ok(all(d["total"] > 0 and 0 <= d["percent"] <= 100 and d["free"] <= d["total"] for d in sysinfo["disks"]),
+           "диск с честной ёмкостью и процентом")
+        ok(sysinfo["cpu"]["cores"] and sysinfo["memory"]["total"], "ЦП и память живые")
 
         meta = client.get("/api/meta").json()
         # версия проверяется та же, что лежит в pyproject.toml: иначе правка версии

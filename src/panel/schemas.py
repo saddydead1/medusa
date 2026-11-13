@@ -52,6 +52,8 @@ class NodeCreate(BaseModel):
     # socks5-прокси, через который панель доезжает до API этой ноды (нода за NAT или
     # доступна только через прыжок); форму проверяет proxy_url.normalize_proxy
     proxy: str | None = Field(default=None, max_length=200)
+    # выключить IPv6 на этой ноде: Xray будет слушать 0.0.0.0 и ходить наружу только по IPv4
+    ipv6Disabled: bool | None = None
 
 
 class NodePatch(BaseModel):
@@ -65,6 +67,7 @@ class NodePatch(BaseModel):
     apiKey: Annotated[str | None, Field(min_length=12, max_length=128, pattern=r"^[A-Za-z0-9_.\-]+$")] = None
     # пустая строка — прокси снять, нода ходит напрямую
     proxy: str | None = Field(default=None, max_length=200)
+    ipv6Disabled: bool | None = None
 
 
 class HostCreate(BaseModel):

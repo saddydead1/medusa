@@ -30,6 +30,7 @@ from src.panel.chain_hops import insert_hop
 from src.panel.db import get_conn, now_ms
 from src.panel.deps import bad_request, conflict, fetch_one, writer
 from src.panel.field_rules import fields_issue, meaningful
+from src.panel.ipv6_rule import address_conflict
 from src.panel.schemas import ChainCreate
 
 router = APIRouter(prefix="/api/chains", tags=["chains"])
@@ -122,7 +123,8 @@ def resolve_hops(conn: sqlite3.Connection, body: ChainCreate, skip_chain: int | 
     nodes = {}
     for hop in body.hops:
         check_hop(hop)
-        row = conn.execute("SELECT id, name, address FROM nodes WHERE name = ?", (hop.node,)).fetchone()
+        row = conn.execute("SELECT id, name, address, ipv6_disabled FROM nodes WHERE name = ?",
+                           (hop.node,)).fetchone()
         if row is None:
             raise bad_request(f"ноды «{hop.node}» нет")
         nodes[hop.node] = row
@@ -130,6 +132,16 @@ def resolve_hops(conn: sqlite3.Connection, body: ChainCreate, skip_chain: int | 
     for a, b in zip(body.hops, body.hops[1:], strict=False):
         if a.node == b.node:
             raise bad_request("соседние хопы должны быть на разных нодах")
+
+    # hop на ноде без IPv6 не может прятаться на IPv6-адресе: ни соседняя нода, ни подписчик
+    # входа туда не доедут — Xray такой ноды слушает только IPv4
+    for hop in body.hops:
+        node = nodes[hop.node]
+        if not node["ipv6_disabled"]:
+            continue
+        if issue := address_conflict(node["name"], ports.norm(hop.address) or node["address"],
+                                     "адрес хопа"):
+            raise bad_request(issue)
 
     resolved = [{"node_id": nodes[h.node]["id"], "node": h.node, "protocol": h.protocol,
                  "network": h.network, "security": h.security, "port": h.port,

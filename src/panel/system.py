@@ -114,52 +114,100 @@ def memory() -> dict | None:
     }
 
 
-def disks(limit: int = 4) -> list[dict]:
-    """Диски по реальным монтированиям; если что-то пошло не так — минимум с '/'."""
-    mounts: list[tuple[str, str]] = []
+def _disk_of(mount: str, device: str = "") -> dict | None:
+    """Одна карточка диска по монтированию; None, если statvfs не удался или ёмкости нет.
+
+    Устройство берётся из os.stat: u statvfs есть f_fsid, но он непрозрачен и на части
+    систем совпадает у разных монтирований одного устройства, а st_dev — ровно то, что
+    нужно, чтобы понять «это тот же диск или другой».
+    """
     try:
-        for line in MOUNTS.read_text().splitlines():
-            parts = line.split()
-            if len(parts) < 3:
-                continue
-            device, mount, fstype = parts[0], _unescape(parts[1]), parts[2]
-            if fstype not in REAL_FS:
-                continue
-            if mount.startswith(SKIP_MOUNTS):
-                continue
-            mounts.append((device, mount))
+        st = os.statvfs(mount)
+        dev = os.stat(mount).st_dev
     except OSError:
-        mounts = []
+        return None
+    total = st.f_blocks * st.f_frsize
+    if total <= 0:
+        return None
+    used = total - st.f_bfree * st.f_frsize
+    return {
+        "mount": mount,
+        "device": device,
+        "total": total,
+        "used": used,
+        "free": st.f_bavail * st.f_frsize,
+        "percent": round(used / total * 100, 1),
+        "_dev": dev,
+    }
 
-    if not any(mount == "/" for _, mount in mounts):
-        mounts.insert(0, ("", "/"))
 
-    seen: set[tuple[str, str]] = set()
+def _real_mounts() -> dict[str, str]:
+    """mont -> device только по «настоящим» файловым системам (из /proc/mounts)."""
+    found: dict[str, str] = {}
+    try:
+        lines = MOUNTS.read_text().splitlines()
+    except OSError:
+        return found
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        device, mount, fstype = parts[0], _unescape(parts[1]), parts[2]
+        if fstype not in REAL_FS:
+            continue
+        if mount.startswith(SKIP_MOUNTS):
+            continue
+        found.setdefault(mount, device)
+    return found
+
+
+def _mount_for(path: Path, mounts: dict[str, str]) -> str:
+    """Самое длинное монтирование, которому принадлежит путь (для базы панели)."""
+    best = ""
+    try:
+        resolved = str(path.resolve())
+    except OSError:
+        resolved = str(path)
+    for mount in mounts:
+        if (resolved == mount or resolved.startswith(mount.rstrip("/") + "/")) and len(mount) > len(best):
+            best = mount
+    return best or "/"
+
+
+def disks(db_path: str | Path | None = None) -> list[dict]:
+    """Основной диск машины — и только он.
+
+    На сервере обычно несколько монтирований (/, /home, /boot, /var/lib/docker, снапшоты,
+    контейнерные overlay), и показывать их списком на «Обзоре» бессмысленно: человек видит
+    «четыре диска» там, где у него один физический диск. Поэтому карточка одна — по '/'.
+
+    Одно исключение, и оно не косметика: если файл базы панели лежит на другом устройстве,
+    чем '/' (отдельный data-диск, сетевой том), добавляется вторая карточка — именно та,
+    чью ёмкость реально расходует панель. Прочие разделы панели не нужны.
+    """
+    mounts = _real_mounts()
     out: list[dict] = []
-    for device, mount in mounts:
-        key = (device, mount)
-        if key in seen:
-            continue
-        seen.add(key)
-        try:
-            st = os.statvfs(mount)
-        except OSError:
-            continue
-        total = st.f_blocks * st.f_frsize
-        if total <= 0:
-            continue
-        free = st.f_bavail * st.f_frsize
-        used = total - st.f_bfree * st.f_frsize
-        out.append({
-            "mount": mount,
-            "device": device,
-            "total": total,
-            "used": used,
-            "free": free,
-            "percent": round(used / total * 100, 1),
-        })
-    out.sort(key=lambda x: x["total"], reverse=True)
-    return out[:limit]
+
+    root = _disk_of("/", mounts.get("/", ""))
+    if root is None:
+        # '/' недоступен (редкость): берём самое ёмкое реальное монтирование, чтобы блок
+        # не становился пустым вместо честной цифры
+        candidates = [d for d in (_disk_of(m, dev) for m, dev in mounts.items()) if d]
+        candidates.sort(key=lambda d: d["total"], reverse=True)
+        if candidates:
+            out.append(candidates[0])
+    else:
+        out.append(root)
+        if db_path is not None:
+            mount = _mount_for(Path(db_path), mounts)
+            if mount != "/":
+                extra = _disk_of(mount, mounts.get(mount, ""))
+                if extra and extra["_dev"] != root["_dev"]:
+                    out.append(extra)
+
+    for d in out:
+        d.pop("_dev", None)
+    return out
 
 
 def uptime_seconds() -> float | None:
@@ -169,7 +217,7 @@ def uptime_seconds() -> float | None:
         return None
 
 
-def system_info(use_cache: bool = True) -> dict:
+def system_info(use_cache: bool = True, db_path: str | Path | None = None) -> dict:
     global _cache
     now = time.monotonic()
     if use_cache and _cache[1] and now - _cache[0] < _CACHE_TTL:
@@ -186,7 +234,7 @@ def system_info(use_cache: bool = True) -> dict:
         "platform": kernel,
         "cpu": cpu(),
         "memory": memory(),
-        "disks": disks(),
+        "disks": disks(db_path),
         "uptime": uptime_seconds(),
         "collectedAt": int(time.time()),
     }

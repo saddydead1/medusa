@@ -11,6 +11,7 @@ from src.panel import config_push, ports
 from src.panel.chain_hops import reissue_hop_certs
 from src.panel.db import get_conn, now_ms
 from src.panel.deps import bad_request, conflict, current_admin, fetch_one, writer
+from src.panel.ipv6_rule import host_conflict, node_conflict
 from src.panel.node_check import check_node as run_check
 from src.panel.nodes_rows import NODE_COLUMNS, as_dict
 from src.panel.proxy_url import ProxySettingError, normalize_proxy
@@ -44,12 +45,16 @@ def create_node(
 ) -> dict:
     check_api_port(conn, None, body.address, body.apiPort or 9443)
     proxy = checked_proxy(body.proxy)
+    no_ipv6 = 1 if body.ipv6Disabled else 0
+    if issue := node_conflict(body.address, bool(no_ipv6)):
+        raise bad_request(issue)
     try:
         conn.execute(
             """INSERT INTO nodes (name, address, online, xray_version, traffic_bytes,
-                                   api_port, api_key, api_proxy, created_at)
-               VALUES (?,?,0,?,0,?,?,?,?)""",        # трафик и подписчиков считает нода, не INSERT
-            (body.name, body.address, body.xray, body.apiPort or 9443, body.apiKey, proxy, now_ms()),
+                                   api_port, api_key, api_proxy, ipv6_disabled, created_at)
+               VALUES (?,?,0,?,0,?,?,?,?,?)""",        # трафик и подписчиков считает нода, не INSERT
+            (body.name, body.address, body.xray, body.apiPort or 9443, body.apiKey, proxy,
+             no_ipv6, now_ms()),
         )
     except sqlite3.IntegrityError:
         raise conflict(f"нода «{body.name}» уже есть")
@@ -76,11 +81,12 @@ def patch_node(
     if "proxy" in changes:
         changes["proxy"] = checked_proxy(changes["proxy"])
     columns = {"name": "name", "address": "address", "online": "online", "xray": "xray_version",
-               "apiPort": "api_port", "apiKey": "api_key", "proxy": "api_proxy"}
+               "apiPort": "api_port", "apiKey": "api_key", "proxy": "api_proxy",
+               "ipv6Disabled": "ipv6_disabled"}
     if not changes:
         return as_dict(fetch_one(conn, f"SELECT {NODE_COLUMNS} FROM nodes WHERE id = ?", (node_id,)))
     sets = ", ".join(f"{columns[k]} = ?" for k in changes)
-    values = [int(v) if k == "online" else v for k, v in changes.items()]
+    values = [int(v) if k in ("online", "ipv6Disabled") else v for k, v in changes.items()]
     # «связь есть» перестаёт быть честным, только если адрес, порт или API-ключ правда
     # поменялись. Форма присылает их всегда одними и теми же — значит, и сбрасывать
     # ничего не надо: иначе каждый сохранённый диалог ронял бы ноду в «недоступна».
@@ -93,11 +99,24 @@ def patch_node(
     address = changes.get("address", before["address"])
     api_port = int(changes.get("apiPort", before["api_port"]))
     check_api_port(conn, node_id, address, api_port)
+    # IPv6 выключается только там, где он не нужен нигде: адрес самой ноды при этом не должен
+    # быть IPv6 (по нему ходит и панель, и хосты, и подписчики)
+    no_ipv6 = bool(int(changes.get("ipv6Disabled", before["ipv6_disabled"])))
+    if "ipv6Disabled" in changes or "address" in changes:
+        if issue := node_conflict(address, no_ipv6):
+            raise bad_request(issue)
     for host in conn.execute("SELECT id, name, port FROM hosts WHERE node_id = ?", (node_id,)).fetchall():
         issue = ports.port_conflict(conn, address, int(host["port"]),
                                     skip_node=node_id, skip_host=int(host["id"]))
         if issue:
             raise conflict(f"хост «{host['name']}»: {issue}")
+    # хосты этой же ноды с IPv6-адресом при выключенном IPv6 остаться не могут
+    if no_ipv6:
+        for host in conn.execute("SELECT id, name, address FROM hosts WHERE node_id = ?",
+                                 (node_id,)).fetchall():
+            if issue := host_conflict({"name": before["name"], "ipv6_disabled": 1},
+                                      host["address"] or address, f"адрес хоста «{host['name']}»"):
+                raise conflict(issue)
 
     tls_chains: list[int] = []
     if "address" in changes and changes["address"] != before["address"]:

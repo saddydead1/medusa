@@ -20,6 +20,7 @@ from src.panel.db import get_conn, now_ms
 from src.panel.host_keys import new_reality_keys
 from src.panel.deps import bad_request, conflict, fetch_one, node_by_name, writer
 from src.panel.field_rules import fields_issue, meaningful
+from src.panel.ipv6_rule import address_conflict
 from src.panel.schemas import HostCreate, HostPatch
 
 router = APIRouter(prefix="/api/hosts", tags=["hosts"])
@@ -72,7 +73,8 @@ def clean(value: object) -> str:
 
 
 def check_combination(protocol: str, network: str, security: str, address: str, node_address: str,
-                      server_names: str = "", dest: str = "") -> None:
+                      server_names: str = "", dest: str = "",
+                      no_ipv6: bool = False, node_name: str = "") -> None:
     """Смысл combos один на create и patch: набор «reality поверх ws» или reality на IP
     одинаково бессмысленен при создании и при правке.
 
@@ -94,6 +96,11 @@ def check_combination(protocol: str, network: str, security: str, address: str, 
         # маску; вот она обязана быть доменом — IP в SNI клиент подставить не умеет
         raise bad_request("reality прячется за доменом: маскированный адрес (или список "
                           "принимаемых SNI) обязан быть доменом, а не IP")
+    if no_ipv6:
+        # адрес, по которому подписчик придёт к этому хосту (свой адрес хоста, иначе адрес
+        # ноды), не может быть IPv6: Xray такой ноды слушает только IPv4
+        if issue := address_conflict(node_name, address or node_address):
+            raise bad_request(issue)
 
 
 def check_fields(body: HostCreate | HostPatch, security: str, network: str) -> None:
@@ -147,7 +154,8 @@ def create_host(
     node = node_by_name(conn, body.node)
     address = clean(body.address)
     check_combination(body.protocol, body.network, body.security, address, node["address"],
-                      clean(body.serverNames), clean(body.dest))
+                      clean(body.serverNames), clean(body.dest),
+                      no_ipv6=bool(node["ipv6_disabled"]), node_name=node["name"])
     check_fields(body, body.security, body.network)
     check_cert_pair(clean(body.certFile), clean(body.keyFile))
     check_port(conn, node["id"], body.port)
@@ -192,7 +200,7 @@ def patch_host(
     node_id = row["node_id"]
     if body.node is not None:
         node_id = node_by_name(conn, body.node)["id"]
-    node = fetch_one(conn, "SELECT name, address FROM nodes WHERE id = ?", (node_id,))
+    node = fetch_one(conn, "SELECT name, address, ipv6_disabled FROM nodes WHERE id = ?", (node_id,))
 
     merged = {
         "name": body.name if body.name is not None else row["name"],
@@ -217,7 +225,8 @@ def patch_host(
     }
 
     check_combination(merged["protocol"], merged["network"], merged["security"], merged["address"],
-                      node["address"], merged["server_names"], merged["dest"])
+                      node["address"], merged["server_names"], merged["dest"],
+                      no_ipv6=bool(node["ipv6_disabled"]), node_name=node["name"])
     check_fields(body, merged["security"], merged["network"])
     check_cert_pair(merged["cert_file"], merged["key_file"])
     check_port(conn, node_id, merged["port"], own_id=host_id)

@@ -63,7 +63,7 @@ def api_system(_: sqlite3.Row | None = Depends(current_admin)) -> dict:
     Обычный def (не async): внутри есть короткий сэмпл /proc/stat и вызовы statvfs,
     FastAPI выполнит это в threadpool и не заблокирует event loop.
     """
-    return system_info()
+    return system_info(db_path=DB_PATH)
 
 
 # Статика монтируется последним — так /api/... не перекрывается catch-all'ом.

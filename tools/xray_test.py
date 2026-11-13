@@ -506,6 +506,29 @@ def main() -> int:
                f"reality-хоп прячется за названной маской и принимает названные имена: "
                f"{reality1.get('serverNames')}")
 
+            # --- IPv6 на ноде выключен: конфиг слушает 0.0.0.0 и ходит только по IPv4 ---
+            # Проверка ровно на живом переходе цепочки: там есть и инбаунд, и outbound
+            # в соседнюю ноду — оба должны перестать цепляться за IPv6.
+            client.patch(f"/api/nodes/{node['id']}", json={"ipv6Disabled": True})
+            v6cfg = wait_cfg(cfg_path, lambda c: all(i.get("listen") == "0.0.0.0"
+                                                     for i in c["inbounds"]
+                                                     if i.get("protocol") != "dokodemo-door"))
+            ok(v6cfg is not None,
+               "инбаунды ноды без IPv6 слушают 0.0.0.0: dual-stack bind на такой машине роняет Xray целиком")
+            hop_tags = {o["tag"] for o in v6cfg["outbounds"] if o["tag"].startswith("XRAY-CHAIN")}
+            ok(hop_tags, "переход цепочки на месте — проверяем стратегию и на нём")
+            strategic = [o for o in v6cfg["outbounds"] if o["protocol"] != "blackhole"]
+            ok(all(o.get("streamSettings", {}).get("sockopt", {}).get("domainStrategy") == "UseIPv4"
+                   for o in strategic),
+               f"наружу и в переходы нода ходит по IPv4: "
+               f"{[(o['tag'], o.get('streamSettings', {}).get('sockopt', {}).get('domainStrategy')) for o in strategic]}")
+            client.patch(f"/api/nodes/{node['id']}", json={"ipv6Disabled": False})
+            plain = wait_cfg(cfg_path, lambda c: all("sockopt" not in (o.get("streamSettings") or {})
+                                                     or not (o["streamSettings"].get("sockopt") or {}).get("domainStrategy")
+                                                     for o in c["outbounds"]) and
+                            all(i.get("protocol") == "dokodemo-door" or "listen" not in i for i in c["inbounds"]))
+            ok(plain is not None, "галочку сняли — конфиг вернулся к обычному слушанию и разрешению имён")
+
             client.delete(f"/api/chains/{route['id']}")
             cfg = wait_cfg(cfg_path, lambda c: all(not i["tag"].startswith("XRAY-CHAIN") for i in c["inbounds"]))
             cfg2 = wait_cfg(cfg2_path, lambda c: all(not i["tag"].startswith("XRAY-CHAIN") for i in c["inbounds"]))

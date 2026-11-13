@@ -285,6 +285,10 @@ COLUMNS = {
         "apply_error": "TEXT",
         # отпечаток последнего отправленного конфига: совпал — ноду не дёргаем
         "config_hash": "TEXT NOT NULL DEFAULT ''",
+        # на этой ноде IPv6 выключен: рендер заставляет Xray слушать 0.0.0.0 и ходить
+        # наружу/в переходы только по IPv4 (sockopt.domainStrategy) — иначе на машине
+        # без IPv6 dual-stack bind роняет всю ноду
+        "ipv6_disabled": "INTEGER NOT NULL DEFAULT 0 CHECK (ipv6_disabled IN (0,1))",
     },
     "hosts": {
         # адрес, к которому подключается подписчик; адрес ноды — только для панели

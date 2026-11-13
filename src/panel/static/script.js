@@ -81,6 +81,8 @@ const I18N = {
     'dlg.node.apiPort':'Порт API ноды','dlg.node.key':'API-ключ ноды',
     'dlg.node.keyHint':'API-ключ нода печатает в консоль при первом запуске.',
     'dlg.node.proxy':'SOCKS5-прокси (необязательно)',
+    'dlg.node.ipv6':'Выключить IPv6 на этой ноде',
+    'dlg.node.ipv6Hint':'Нужно, если у машины ноды нет рабочего IPv6: Xray будет слушать 0.0.0.0 и ходить наружу и в переходы цепочек только по IPv4. Хост или хоп с IPv6-адресом на такой ноде остаться не смогут.',
     'dlg.nodeEdit.proxy':'SOCKS5-прокси для связи',
     'node.openTip':'Изменить ноду','node.version':'Версия ноды','node.notReported':'неизвестно',
     'dlg.nodeEdit.apiKey':'API-ключ','dlg.nodeEdit.check':'Связь с панелью',
@@ -100,6 +102,7 @@ const I18N = {
     'btn.newHost':'Добавить хост',
     'btn.newChain':'Создать цепочку','btn.chain':'Цепочка','btn.discard':'Отменить','btn.addhop':'Добавить хоп',
     'dlg.user.title':'Новый пользователь','dlg.user.name':'Имя (email в Xray)',
+    'dlg.user.client':'Приложение клиента','dlg.user.clientHint':'Нужно только для статистики на «Обзоре»: сама панель приложение не определяет, а по имени приложения видна доля подписок и трафика.',
     'dlg.admin.title':'Новый администратор','dlg.admin.login':'Логин',
     'dlg.admin.password':'Пароль (минимум 8 символов)',
     'dlg.admin.hint':'Администратор управляет пользователями, хостами, цепочками и нодами. Настройки и других администраторов меняет владелец.',
@@ -128,6 +131,8 @@ const I18N = {
     'overview.clients':'Приложения клиентов','overview.clientsAria':'Распределение подписок по приложениям клиентов',
     'subs.one':'подписка','subs.few':'подписки','subs.many':'подписок',
     'clients.activeTitle':'активных подписок','client.unknown':'прочие',
+    'client.none':'не указано','dlg.userEdit.title':'Пользователь: изменение',
+    'dlg.userEdit.hint':'Имя — это метка в Xray и то, что видит подписчик; приложение нужно для статистики на «Обзоре». Смена имени трафик не теряет: счётчики привязаны к человеку, а не к имени.',
     'empty.nodes':'Нод пока нет. Панель ещё ни к одной ноде не подключилась.',
     'sys.server':'Сервер','sys.cpu':'ЦП','sys.ram':'ОЗУ','sys.disk':'Диск','sys.diskMount':'Диск {mount}',
     'sys.updated':'обновлено в {time}','sys.mocked':'тестовые данные, обновлено в {time}',
@@ -154,7 +159,7 @@ const I18N = {
     'settings.unsaved':'Есть несохранённые изменения',
     'ago.never':'Никогда','ago.now':'Только что','ago.min':'{n} мин назад','ago.hour':'{n} ч назад','ago.day':'{n} дн. назад',
     'toast.saved':'Настройки сохранены','toast.discarded':'Изменения отменены','toast.passwordChanged':'Пароль изменён',
-    'toast.adminCreated':'Администратор создан','toast.chainCreated':'Цепочка создана','toast.userCreated':'Пользователь создан',
+    'toast.adminCreated':'Администратор создан','toast.chainCreated':'Цепочка создана','toast.userCreated':'Пользователь создан','toast.userSaved':'Пользователь обновлён',
     'toast.deleted':'Удалён','toast.chainDeleted':'Удалена','toast.chainEdited':'Цепочка изменена','toast.subCopied':'Ссылка подписки скопирована',
     'toast.error':'Ошибка: {msg}','toast.loadSettings':'Не удалось получить настройки: {msg}',
     'auth.login':'Вход в панель','auth.user':'Логин','auth.password':'Пароль','auth.btn':'Войти','auth.key':'Войти ключом',
@@ -198,6 +203,8 @@ const I18N = {
     'dlg.node.apiPort':'Node API port','dlg.node.key':'Node API key',
     'dlg.node.keyHint':'The node prints its API key to the console on first start.',
     'dlg.node.proxy':'SOCKS5 proxy (optional)',
+    'dlg.node.ipv6':'Disable IPv6 on this node',
+    'dlg.node.ipv6Hint':'For a node machine without working IPv6: Xray will listen on 0.0.0.0 and go out — including chain hops — over IPv4 only. A host or hop with an IPv6 address cannot stay on such a node.',
     'dlg.nodeEdit.proxy':'SOCKS5 proxy for the link',
     'node.openTip':'Edit this node','node.version':'Node version','node.notReported':'unknown',
     'dlg.nodeEdit.apiKey':'API key','dlg.nodeEdit.check':'Panel link',
@@ -217,6 +224,7 @@ const I18N = {
     'btn.newHost':'Add host',
     'btn.newChain':'Create chain','btn.chain':'Chain','btn.discard':'Discard','btn.addhop':'Add hop',
     'dlg.user.title':'New user','dlg.user.name':'Name (email in Xray)',
+    'dlg.user.client':'Client app','dlg.user.clientHint':'Only for the Overview statistics: the panel cannot detect the app itself, and the app name is what splits subscriptions and traffic.',
     'dlg.admin.title':'New administrator','dlg.admin.login':'Username',
     'dlg.admin.password':'Password (at least 8 characters)',
     'dlg.admin.hint':'An administrator manages users, hosts, chains and nodes. Only the owner can change settings and other administrators.',
@@ -245,6 +253,8 @@ const I18N = {
     'overview.clients':'Client apps','overview.clientsAria':'Subscription split by client app',
     'subs.one':'subscription','subs.few':'subscriptions','subs.many':'subscriptions',
     'clients.activeTitle':'active subscriptions','client.unknown':'other',
+    'client.none':'not specified','dlg.userEdit.title':'User: edit',
+    'dlg.userEdit.hint':'The name is the Xray label and what the subscriber sees; the app is for the Overview statistics. Renaming keeps the traffic: counters follow the person, not the name.',
     'empty.nodes':'No nodes yet. The panel has not connected to any node.',
     'sys.server':'Server','sys.cpu':'CPU','sys.ram':'RAM','sys.disk':'Disk','sys.diskMount':'Disk {mount}',
     'sys.updated':'updated at {time}','sys.mocked':'demo data, updated at {time}',
@@ -271,7 +281,7 @@ const I18N = {
     'settings.unsaved':'There are unsaved changes',
     'ago.never':'Never','ago.now':'Just now','ago.min':'{n} min ago','ago.hour':'{n} h ago','ago.day':'{n} d ago',
     'toast.saved':'Settings saved','toast.discarded':'Changes discarded','toast.passwordChanged':'Password changed',
-    'toast.adminCreated':'Administrator created','toast.chainCreated':'Chain created','toast.userCreated':'User created',
+    'toast.adminCreated':'Administrator created','toast.chainCreated':'Chain created','toast.userCreated':'User created','toast.userSaved':'User updated',
     'toast.deleted':'Deleted','toast.chainDeleted':'Deleted','toast.chainEdited':'Chain updated','toast.subCopied':'Subscription link copied',
     'toast.error':'Error: {msg}','toast.loadSettings':'Could not load settings: {msg}',
     'auth.login':'Sign in to the panel','auth.user':'Login','auth.password':'Password','auth.btn':'Sign in','auth.key':'Sign in with a key',
@@ -756,10 +766,31 @@ const CLIENTS = {
   streisand:{label:'Streisand', hue:120},
   unknown:{label:null, hue:222},
 };
-const clientOf = u => (u.client && CLIENTS[u.client]) ? u.client : 'unknown';
-const clientLabel = k => (CLIENTS[k] && CLIENTS[k].label) || t('client.unknown');
-const clientColor = k => `hsl(${(CLIENTS[k] || CLIENTS.unknown).hue} 68% 52%)`;
+/* Приложение — это то, что назвал человек: панель его сама не определяет. Поэтому
+   известные названия — только подсказки (datalist) и готовые цвета, а своё название
+   («Clash for Windows», «Foxv2ray» …) остаёт своей долей кольца: цвет подбирается по хэшу
+   имени, в «прочие» попадают только те, у кого приложение не названо вовсе. */
+const APP_HINTS = Object.keys(CLIENTS).filter(k => k !== 'unknown');
+const hueOf = name => { let h = 0; for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) % 360; return h; };
+const clientKey = u => String(u.client || '').trim() || 'unknown';
+const clientOf = u => clientKey(u);
+const clientLabel = k => (k === 'unknown') ? t('client.unknown') : ((CLIENTS[k] && CLIENTS[k].label) || k);
+/* В таблице людей приложение — либо названное человеком, либо «не указано»: корзина «прочие»
+   относится к кольцу подписок, а не к пустому полю у конкретного человека */
+const clientCell = u => { const c = String(u.client || '').trim(); return c ? clientLabel(c) : t('client.none'); };
+const clientColor = k => CLIENTS[k] && CLIENTS[k].hue != null
+  ? `hsl(${CLIENTS[k].hue} 68% 52%)`
+  : `hsl(${hueOf(k)} 62% 52%)`;
 const subsWord = n => plural(n, t('subs.one'), t('subs.few'), t('subs.many'));
+
+/* Поле «приложение клиента»: ввод с подсказками, а не жёсткий список — бэкенд принимает
+   любое имя до 32 символов, и ломать чужое название списком из семи пунктов незачем. */
+function fillClientInput(input, current){
+  const dl = $('#clientlist');
+  const names = [...new Set([...APP_HINTS, ...(current && current !== 'unknown' ? [current] : [])])];
+  if (dl) dl.innerHTML = names.map(v => `<option value="${esc(v)}">${esc(clientLabel(v))}</option>`).join('');
+  input.value = (current && current !== 'unknown') ? current : '';
+}
 
 function clientsStats(users){
   const map = new Map();
@@ -838,12 +869,13 @@ const pages = {
     const users = await call('GET','/api/users');
     const w = canWrite();
     const rows = users.map(u=>{const c = STATUS_CLASS[u.status] || STATUS_CLASS.disabled; return `<tr>
-      <td><div class="who"><span class="ava">${esc((String(u.name||'').trim()[0]||'?').toUpperCase())}</span><div>${esc(u.name)}<div class="mono">${esc(u.token)} · ${esc(clientLabel(clientOf(u)))}</div></div></div></td>
+      <td><div class="who"><span class="ava">${esc((String(u.name||'').trim()[0]||'?').toUpperCase())}</span><div>${esc(u.name)}<div class="mono">${esc(u.token)} · ${esc(clientCell(u))}</div></div></div></td>
       <td><span class="badge ${c}">${statusLabel(u.status)}</span></td>
       <td>${fmt(u.used)}</td>
       <td><div class="acts">
         <button class="btn sm" data-a="copy" data-id="${u.id}">${ic('copy')}${t('btn.subscription')}</button>
-        ${w?`<button class="btn sm" data-a="toggle" data-id="${u.id}">${ic('power')}${u.status==='disabled'?t('btn.enable'):t('btn.disable')}</button>
+        ${w?`<button class="btn sm" data-a="uedit" data-id="${u.id}">${ic('gear')}${t('btn.edit')}</button>
+        <button class="btn sm" data-a="toggle" data-id="${u.id}">${ic('power')}${u.status==='disabled'?t('btn.enable'):t('btn.disable')}</button>
         <button class="btn sm del" data-a="del" data-id="${u.id}">${ic('trash')}${t('btn.delete')}</button>`:''}
       </div></td></tr>`}).join('');
     return `<div class="head"><h2>${t('nav.users')}</h2>${w?`<button class="btn pri" data-a="new">${ic('plus')}${t('btn.add')}</button>`:''}</div>
@@ -1028,7 +1060,7 @@ $('#view').addEventListener('click', async e=>{
   const WRITE_ACTIONS = ['new','newnode','newhost','newchain','anew','del','toggle','hdel','hedit','cedit','cdel','atoggle','adel','ncheck','ndelete'];
   if(WRITE_ACTIONS.includes(a) && !canWrite()) return toast(t('auth.required'));
   try{
-    if(a==='new'){ $('#dlg').returnValue=''; return $('#dlg').showModal(); }
+    if(a==='new'){ $('#uform').reset(); $('#dlg').returnValue=''; fillClientInput($('#uclient'), null); return $('#dlg').showModal(); }
     /* return без await: ошибка диалога ушла бы мимо try/catch и в консоль вместо объяснения */
     if(a==='newchain') return void await openChain();
     if(a==='cedit') return void await openChainEdit(id);
@@ -1052,6 +1084,7 @@ $('#view').addEventListener('click', async e=>{
       const u = (await call('GET','/api/users')).find(x=>x.id===id);
       await call('PATCH','/api/users/'+id,{status:u.status==='disabled'?'active':'disabled'});
     }
+    if(a==='uedit') return void await openUserEdit(id);
     if(a==='del'){ if(!confirm(t('confirm.delUser'))) return; await call('DELETE','/api/users/'+id); toast(t('toast.deleted')); }
     show();
   }catch(err){ toast(t('toast.error',{msg:err.message})) }
@@ -1059,9 +1092,38 @@ $('#view').addEventListener('click', async e=>{
 $('#dlg').addEventListener('close', async ()=>{
   if($('#dlg').returnValue!=='ok') return;
   const f = new FormData($('#uform'));
+  const client = String(f.get('client')||'').trim() || null;
   try{
-    await call('POST','/api/users',{name:f.get('name')});
+    await call('POST','/api/users',{name:f.get('name'), client});
     toast(t('toast.userCreated')); $('#uform').reset(); show('users');
+  }catch(err){ toast(t('toast.error',{msg:err.message})) }
+});
+
+/* ----- правка пользователя: имя и приложение клиента ----- */
+let userTarget = null;
+async function openUserEdit(id){
+  const u = (await call('GET','/api/users')).find(x=>x.id===id); if(!u) return toast(t('toast.stale'));
+  userTarget = u;
+  $('#uename').value = u.name || '';
+  fillClientInput($('#ueclient'), clientKey(u));
+  $('#uedlg').returnValue = '';
+  $('#uedlg').showModal();
+}
+$('#uedlg').addEventListener('close', async ()=>{
+  if($('#uedlg').returnValue!=='ok' || !userTarget) return;
+  const u = userTarget;
+  const name = String($('#uename').value||'').trim();
+  const client = String($('#ueclient').value||'').trim();
+  const body = {};
+  if(name && name !== u.name) body.name = name;
+  // пустая строка здесь — явное «снять приложение»: панель понимает именно её,
+  // а «не принесли поле» — это другое (иначе приложение нельзя было бы убрать)
+  if(client !== String(u.client || '').trim()) body.client = client;
+  if(!Object.keys(body).length) return;
+  try{
+    await call('PATCH','/api/users/'+u.id, body);
+    toast(t('toast.userSaved'));
+    show();
   }catch(err){ toast(t('toast.error',{msg:err.message})) }
 });
 
@@ -1194,8 +1256,11 @@ function advBody(cfg, root){
 
 /* ----- диалог «новая нода»: адрес и версия Xray, остальное соберёт опрос нод позже ----- */
 const FV = (root,k) => root.querySelector(`[data-f="${k}"]`).value.trim();
+const CB = (root,k) => { const el = root.querySelector(`[data-f="${k}"]`); return !!(el && el.checked); };
 function openNode(){
-  $('#nform').reset(); $('#ndlg').returnValue = ''; $('#ndlg').showModal();
+  $('#nform').reset();
+  const v6 = document.querySelector('#nform [data-f="ipv6Disabled"]'); if(v6) v6.checked = false;
+  $('#ndlg').returnValue = ''; $('#ndlg').showModal();
 }
 $('#ndlg').addEventListener('close', async ()=>{
   if($('#ndlg').returnValue!=='ok') return;
@@ -1203,6 +1268,7 @@ $('#ndlg').addEventListener('close', async ()=>{
   const body = {name:FV(dlg,'name'), address:FV(dlg,'address'), apiKey:FV(dlg,'apiKey')};
   const port = FV(dlg,'apiPort'); if(port) body.apiPort = +port;
   const proxy = FV(dlg,'proxy').trim(); if(proxy) body.proxy = proxy;
+  if(CB(dlg,'ipv6Disabled')) body.ipv6Disabled = true;   // только когда человек правда поставил галочку
   try{
     await call('POST','/api/nodes', body);
     toast(t('toast.nodeCreated')); show();
@@ -1260,6 +1326,7 @@ async function openNodeEdit(id){
     try{ proxyKnown = (await call('GET',`/api/nodes/${n.id}/proxy`)).proxy || ''; }catch(err){ proxyKnown = n.proxy || ''; }
   }
   nfill('proxy', proxyKnown);
+  const v6box = NEF().querySelector('[data-f="ipv6Disabled"]'); if(v6box) v6box.checked = !!n.ipv6Disabled;
   $('#ne_key').textContent = n.fingerprint ? t('dlg.nodeEdit.fp', {fp: n.fingerprint}) : t('dlg.nodeEdit.keyMissing');
   $('#ne_agent').innerHTML = missing(n.agent);
   $('#ne_xray').innerHTML = missing(n.xray);
@@ -1315,6 +1382,7 @@ $('#nedlg').addEventListener('close', async ()=>{
   const key = FV(form,'apiKey'); if(key && key !== keyKnown) body.apiKey = key;
   // то же, что и с ключом: прокси отправляем только если его правда поменяли
   const proxy = FV(form,'proxy').trim(); if(proxy !== proxyKnown) body.proxy = proxy;
+  const noV6 = CB(form,'ipv6Disabled'); if(noV6 !== !!editing.ipv6Disabled) body.ipv6Disabled = noV6;
   try{ await call('PATCH','/api/nodes/'+editing.id, body); toast(t('toast.nodeSaved')); }
   catch(err){ toast(t('toast.error',{msg:err.message})) }
   show();

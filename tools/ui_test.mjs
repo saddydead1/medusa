@@ -162,13 +162,18 @@ ok((await page.textContent('#acctrole')).includes('Владелец'), `и её 
 /* ---------- обзор на живых данных ---------- */
 ok((await page.textContent('#pname')).trim() === 'Medusa', 'панель загрузилась без мока');
 ok((await text()).includes('Не удалось загрузить') === false, 'данные взял бэкенд, а не мок');
-/* карточек «Сервер» ровно три только там, где три диска: на GitHub-раннере их
-   две (корень и временный диск), поэтому проверяем состав, а не количество. */
+/* карточка диска на «Обзоре» одна: панель показывает основной раздел машины, а не все
+   монтирования (/, /home, /boot, снапшоты, overlay контейнеров). Вторая карточка возможна
+   только если база панели реально лежит на другом устройстве. */
 const sysTitles = await page.evaluate(() => [...document.querySelectorAll('#view .syscard .systitle')]
   .map(x => x.textContent.trim()));
+const diskCards = sysTitles.filter(x => /Диск/.test(x));
 ok(sysTitles.length >= 3 && sysTitles.some(x => /ЦП/.test(x)) && sysTitles.some(x => /ОЗУ/.test(x))
-   && sysTitles.some(x => /Диск/.test(x)),
+   && diskCards.length >= 1,
    `блок сервера: ЦП, память и диски с живых метрик: ${sysTitles.join(' | ')}`);
+ok(diskCards.length <= 2, `дисков показано не больше основного (и базы панели, если она на другом устройстве): ${diskCards.join(' | ')}`);
+ok(!diskCards.some(x => /\/(boot|home|snap|var|mnt)\b/.test(x)),
+   `случайных разделов в блоке нет: ${diskCards.join(' | ')}`);
 const cpu = (await page.locator('.syscard .sysval').first().textContent()).trim();
 ok(/%$/.test(cpu), `ЦП с живых метрик: ${cpu}`);
 ok((await page.evaluate(() => savedSettings.panelName)) === 'Medusa', 'настройки пришли с бэкенда');
@@ -194,6 +199,27 @@ ok(!(await page.locator('#view .node').first().textContent()).includes('sk-api')
 ok(!(await page.locator('#view .node').first().textContent()).includes('/node/health'), 'карточка ноды не показывает её API');
 ok(!(await page.locator('#view .node').first().textContent()).includes('ещё не проверялась'), 'карточки не забиты состоянием связи');
 ok(await page.locator('#ndlg [data-f="apiKey"]').evaluate(el => el.required), 'без API-ключа ноду не добавить');
+
+/* ---------- IPv6 на ноде: галочка, её границы и обратный ход ---------- */
+await page.click('[data-a="newnode"]');
+await openDlg('#ndlg');
+await fill('#ndlg', {name: 'nov6', address: '10.8.0.7', apiKey: 'sk-api-uitest-nov6-0000000'});
+await page.check('#nform [data-f="ipv6Disabled"]');
+await submit('#nform');
+await wait(n => document.querySelectorAll('#view .node').length === n, 3);
+const v6row = (await (await api('/api/nodes')).json()).find(x => x.name === 'nov6');
+ok(v6row && v6row.ipv6Disabled === true, 'галочка «выключить IPv6» доехала до базы');
+await openCard('nov6');
+ok(await page.isChecked('#nedlg [data-f="ipv6Disabled"]'), 'окно правки предзаполняет выключенный IPv6');
+await page.click('#nedlg button[value="cancel"]');
+await closed('#nedlg');
+await page.waitForTimeout(200);
+const badHost = await api('/api/hosts', 'POST', {name: 'v6-host', node: 'nov6', protocol: 'vless', port: 8443, address: '2001:db8::7'});
+const badText = (await badHost.json()).detail;
+ok(badHost.status === 400 && badText.includes('IPv6'), `хост с IPv6-адресом на такой ноде отвергнут: ${badText}`);
+ok(await api('/api/nodes/' + v6row.id, 'DELETE').then(r => r.status) === 204, 'тестовую ноду без IPv6 убрали');
+await go('overview'); await go('nodes');
+await wait(() => document.querySelectorAll('#view .node').length === 2, null, {timeout: 60000});
 
 /* ---------- связка с живой нодой: отдельный порт и API-ключ ноды ---------- */
 const nodePort = process.env.MEDUSA_TEST_NODE_PORT;
@@ -382,22 +408,46 @@ if (nodePort && nodeKey) {
   console.log('SKIP  связка с нодой в UI: MEDUSA_TEST_NODE_PORT / MEDUSA_TEST_NODE_KEY не заданы');
 }
 
-/* ---------- пользователи ---------- */
+/* ---------- пользователи: имя и приложение клиента ---------- */
 await go('users');
-for(const name of ['vasya', 'petya']){
+for(const [name, app] of [['vasya', 'v2rayNG'], ['petya', 'Foxv2ray']]){
   await page.click('[data-a="new"]');
   await openDlg('#dlg');
-  await fill('#dlg', {name});
+  await fill('#dlg', {name, client: app});
   await submit('#uform');
   await wait(n => document.querySelector('#view').textContent.includes(n), name);
 }
 ok((await text()).includes('vasya') && (await text()).includes('petya'), 'пользователи созданы');
+ok((await text()).includes('v2rayNG') && (await text()).includes('Foxv2ray'),
+   'приложение клиента подписано в строке: и готовое из подсказок, и названное человеком');
 clearToast();
 await page.click('[data-a="new"]');
 await openDlg('#dlg');
 await fill('#dlg', {name: 'vasya'});
 await submit('#uform', true);
 ok((await toastText()).includes('уже есть'), `текст об ошибке пришёл с бэкенда: ${await toastText()}`);
+
+/* правка пользователя: приложение меняется, и панель отдаёт его обратно */
+clearToast();
+await page.click(`#view tr:has-text("petya") [data-a="uedit"]`);
+await openDlg('#uedlg');
+ok(await page.inputValue('#ueclient') === 'Foxv2ray',
+   `диалог правки предзаполнен и своё приложение не потеряно: ${await page.inputValue('#ueclient')}`);
+await fill('#uedlg', {client: 'hiddify'});
+await submit('#ueform');
+await wait(() => document.querySelector('#view').textContent.includes('Hiddify'), 'приложение заменено');
+ok((await text()).includes('Hiddify') && !(await text()).includes('Foxv2ray'),
+   `PATCH /api/users вернул новое приложение: ${(await page.locator('#view').innerText()).split('\n').filter(l=>l.includes('Hiddify'))[0] || ''}`);
+
+/* кольцо «Приложения клиентов» считает приложения, а не сваливает всех в «прочие» */
+await go('overview');
+const clNames = await page.locator('.grp:has(.clients) .clrow .fmeta b').allInnerTexts();
+ok(clNames.includes('v2rayNG') && clNames.includes('Hiddify'),
+   `статистика по приложениям клиентов работает: ${clNames.join(', ')}`);
+ok(!clNames.some(x => x.trim() === 'прочие'),
+   'ни один подписчик не попал в «прочие»: у обоих названо приложение');
+const clSegs = await page.locator('.grp:has(.clients) .donut .seg').count();
+ok(clSegs >= 2, `кольцо разрезано по приложениям, сегментов: ${clSegs}`);
 
 /* ---------- хосты ---------- */
 await go('hosts');

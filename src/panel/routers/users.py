@@ -61,6 +61,10 @@ def patch_user(
 ) -> dict:
     fetch_one(conn, "SELECT id FROM users WHERE id = ?", (user_id,))
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
+    # пустая строка в client — явное «приложения не названо»: None здесь означает
+    # «поле не принесли», и без этого разбора приложение нельзя было бы снять
+    if changes.get("client") == "":
+        changes["client"] = None
     if not changes:
         raise HTTPException(status_code=400, detail="нечего менять")
     fields = {"status": "status", "client": "client", "name": "name"}
