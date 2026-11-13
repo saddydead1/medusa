@@ -12,15 +12,27 @@ services:
       dockerfile: deploy/Dockerfile.panel
     # готовый образ вместо сборки на месте (реестр закрытый: сначала docker login docker.sonoma.su)
     # image: docker.sonoma.su/medusa/panel:latest
+    #
+    # Панель на host-сети — как и нода. Причина не в удобстве, а в том, что панель ходит к ноде
+    # по её API-порту: пока панель в bridge-контейнере, 127.0.0.1 в карточке ноды означает
+    # «сам контейнер панели», и связка не складывается. На host-сети обе половинки сидят в одной
+    # сетевой плоскости, адрес ноды в панели — просто 127.0.0.1, NAT и docker0 не нужны.
+    #
+    # Если панель всё же нужна в bridge (изоляция, опубликованный порт), оставьте ports: и
+    # добавьте host.docker.internal, а в карточке ноды пишите его вместо 172.17.0.1:
+    #   ports: ["8000:8000"]
+    #   extra_hosts: ["host.docker.internal:host-gateway"]
+    network_mode: host
+    # ports: ["8000:8000"]                       # вариант для bridge-сети (вместо network_mode)
     environment:
       MEDUSA_ADMIN_USER: admin
       # без MEDUSA_ADMIN_PASSWORD панель сгенерирует пароль сама и напечатает его
       # в лог при первом запуске: docker compose logs panel
       MEDUSA_ADMIN_PASSWORD: ${MEDUSA_ADMIN_PASSWORD:-}
       MEDUSA_AUTH: "1"                                  # по умолчанию и так включено
+      MEDUSA_PANEL_HOST: "0.0.0.0"                      # слушать на всех интерфейсах (на host-сети это и есть хост)
+      # MEDUSA_PANEL_PORT: "8080"                       # сменить порт панели: 8000 занят чем-то другим
       # MEDUSA_PANEL_BASE: https://panel.example.com    # за TLS-прокси: нужно для входа по ключу
-    ports:
-      - "8000:8000"
     volumes:
       - medusa-panel-data:/data
     restart: unless-stopped
@@ -30,6 +42,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.node
     # image: docker.sonoma.su/medusa/node:latest
+    # адрес этой ноды в панели (карточка ноды → «Адрес»): 127.0.0.1 — панель на host-сети тоже
     network_mode: host                   # API 9443 + порты Xray как есть
     environment:
       MEDUSA_NODE_PORT: "9443"

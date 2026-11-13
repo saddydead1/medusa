@@ -2,6 +2,8 @@ import {readFileSync} from 'node:fs';
 import {chromium} from 'playwright';
 const BASE = process.env.MEDUSA_UI_URL || 'http://localhost:8000/';
 const MOCK = BASE + '?mock=1';
+/* версия панели приходит из pyproject.toml, поэтому и проверка берёт её оттуда */
+const VERSION = (readFileSync('pyproject.toml', 'utf8').match(/^version = "([^"]+)"/m) || [])[1] || '';
 
 const b = await chromium.launch();
 const ctx = await b.newContext({viewport:{width:1400,height:1000},deviceScaleFactor:1});
@@ -24,7 +26,7 @@ ok(Math.abs(rep.y - langBtn.y) < 6, `GitHub и переключатель язы
 ok(Math.abs(rep.height - langBtn.height) < 2, `одинаковая высота кнопок (${Math.round(rep.height)} и ${Math.round(langBtn.height)})`);
 ok(langBtn.x > rep.x + rep.width, `переключатель справа от GitHub (x=${Math.round(langBtn.x)} против x=${Math.round(rep.x+rep.width)})`);
 ok(rep.y + rep.height <= foot.y + 2 && langBtn.y + langBtn.height <= foot.y + 2, `обе кнопки над разделительной полосой (полоса y=${Math.round(foot.y)})`);
-ok((await p.locator('#mode').innerText()) === 'Версия панели — 0.1.0', 'подпись версии: ' + await p.locator('#mode').innerText());
+ok((await p.locator('#mode').innerText()) === `Версия панели — ${VERSION}`, 'подпись версии: ' + await p.locator('#mode').innerText());
 ok((await p.locator('#langCode').innerText()) === 'RU', 'кнопка показывает текущий язык: RU');
 
 /* ---- карточки сервера: без аптайма и без «12 ядер», время чч:мм ---- */
@@ -42,7 +44,7 @@ const navEn = await nav();
 ok(navEn.includes('Settings') && navEn.includes('Overview'), 'меню на английском: ' + navEn.join(', '));
 ok((await p.locator('#langCode').innerText()) === 'EN', 'после переключения кнопка показывает EN');
 ok((await p.locator('#langBtn').evaluate(el=>el.title)) !== '', 'у кнопки есть подсказка: ' + await p.locator('#langBtn').evaluate(el=>el.title));
-ok((await p.locator('#mode').innerText()) === 'Panel version — 0.1.0', 'подпись версии на английском: ' + await p.locator('#mode').innerText());
+ok((await p.locator('#mode').innerText()) === `Panel version — ${VERSION}`, 'подпись версии на английском: ' + await p.locator('#mode').innerText());
 ok((await p.getAttribute('html','lang')) === 'en', '<html lang="en">');
 const sysCards = (await p.locator('#sysgrid .syscard').allInnerTexts()).map(s=>s.toLowerCase());
 ok(sysCards[0].includes('cpu') && sysCards[1].includes('ram') && sysCards[2].includes('disk'), 'метрики сервера по-английски: ' + sysCards.map(s=>s.split('\n')[0]).join(', '));

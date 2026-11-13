@@ -37,19 +37,25 @@ docker compose -f deploy/docker-compose.yaml logs node-home    # API-ключ н
 ```
 
 Если берёте готовые образы (каждый релиз публикуется в реестр `docker.sonoma.su`, версия —
-из `pyproject.toml`), compose-файл можно положить прямо на сервере: панель на `8000`, нода —
-на host-сети, потому что ей надо слушать и API-порт, и клиентские порты Xray.
+из `pyproject.toml`), compose-файл можно положить прямо на сервере: панель и нода — обе на
+host-сети. Ноде это нужно потому, что ей надо слушать и API-порт, и клиентские порты Xray,
+a панели — потому что она ходит к ноде по её API-порту: пока панель в отдельном контейнере,
+`127.0.0.1` в карточке ноды означает «сам контейнер панели» и связка не складывается.
 
 ```yaml
 # docker-compose.yaml
 services:
   panel:
     image: docker.sonoma.su/medusa/panel:latest
-    ports: ["8000:8000"]
+    network_mode: host                      # адрес ноды в панели тогда — просто 127.0.0.1
+    # ports: ["8000:8000"]                  # вариант с изоляцией: вместо network_mode
+    # extra_hosts: ["host.docker.internal:host-gateway"]   # и тогда адрес ноды в панели — host.docker.internal
     volumes: [medusa-panel:/data]
     environment:
       MEDUSA_ADMIN_USER: admin
       # MEDUSA_ADMIN_PASSWORD: "..."                     # без него панель напечатает пароль в лог
+      MEDUSA_PANEL_HOST: "0.0.0.0"                       # слушать на всех интерфейсах
+      # MEDUSA_PANEL_PORT: "8080"                        # если 8000 на машине занят другим
       # MEDUSA_PANEL_BASE: https://panel.example.com     # за TLS-прокси: нужно для входа по ключу
     restart: unless-stopped
 
@@ -92,6 +98,12 @@ docker run -d --name medusa-node --restart unless-stopped --network host \
 docker logs medusa-panel     # пароль владельца     docker logs medusa-node  # API-ключ ноды
 ```
 
+Порт панели меняется переменной (`-e MEDUSA_PANEL_PORT=8080 -p 8080:8080`). Если панель
+запускаете так — отдельным контейнером с `-p`, то в карточке ноды нужен адрес, доступный
+**панели**, а не браузеру: адрес хоста (`host.docker.internal`, если добавили
+`--add-host=host.docker.internal:host-gateway`, или IP `docker0`), но не `127.0.0.1` —
+из контейнера это сам контейнер.
+
 ### Вручную (без Docker)
 
 Python 3.14 и [uv](https://docs.astral.sh/uv/):
@@ -110,6 +122,7 @@ uv run medusa-node           # нода: её API на http://127.0.0.1:9443
 | `MEDUSA_DB` | панель | путь к SQLite (`data/medusa.db`) |
 | `MEDUSA_ADMIN_USER` / `MEDUSA_ADMIN_PASSWORD` | панель | владелец (без пароля — сгенерирует и напечатает в лог) |
 | `MEDUSA_PANEL_BASE` | панель | публичный адрес панели; нужен за обратным прокси и для FIDO2 |
+| `MEDUSA_PANEL_HOST` / `MEDUSA_PANEL_PORT` | панель | адрес и порт панели (`127.0.0.1:8000`); в образе — `0.0.0.0:8000`, порт меняется одной строкой в compose |
 | `MEDUSA_NODE_PORT` / `MEDUSA_NODE_API_KEY` / `MEDUSA_XRAY_BIN` | нода | порт API, готовый ключ вместо генерируемого, путь к Xray |
 
 Полный список — в [AGENTS.md](AGENTS.md).

@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from src.panel import deps  # noqa: E402
 from src.panel.main import app  # noqa: E402
+from src.core.version import project_version  # noqa: E402
 
 FAILS = 0
 
@@ -1214,7 +1215,10 @@ def main() -> int:
         ok(client.get("/api/users", headers=anon).status_code == 401, "и читать без сессии нельзя")
 
         meta = client.get("/api/meta").json()
-        ok(meta["name"] == "medusa" and meta["version"] == "0.1.0", f"/api/meta отдаёт имя и версию: {meta}")
+        # версия проверяется та же, что лежит в pyproject.toml: иначе правка версии
+        # ловила бы тест на ровном месте
+        ok(meta["name"] == "medusa" and meta["version"] == project_version(),
+           f"/api/meta отдаёт имя и версию проекта: {meta}")
         page = client.get("/")
         ok(page.status_code == 200 and 'id="view"' in page.text, "статика и API живут рядом")
         ok(client.get("/api/chains").status_code == 200, "список цепочек работает")

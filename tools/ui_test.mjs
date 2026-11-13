@@ -9,7 +9,13 @@ import {spawn} from 'node:child_process';
 import {rm} from 'node:fs/promises';
 import {appendFileSync} from 'node:fs';
 import {createServer} from 'node:net';
+import {readFileSync} from 'node:fs';
 import {chromium} from 'playwright';
+
+/* версия ноды = версия проекта (pyproject.toml одна на панель и на ноду),
+   поэтому тест не держит её внутри себя числом: правка версии не ломает проверки */
+const VERSION = (readFileSync(new URL('../pyproject.toml', import.meta.url), 'utf8')
+  .match(/^version = "([^"]+)"/m) || [])[1] || '';
 
 const BASE = (process.env.MEDUSA_UI_URL || 'http://localhost:8000/').replace(/\/+$/, '');
 const b = await chromium.launch();
@@ -214,7 +220,7 @@ if (nodePort && nodeKey) {
                'панель не показала результат проверки связи');
   ok((await page.textContent('#ne_status')).includes('API-ключ подходит'),
      `живая проверка связи: ${await page.textContent('#ne_status')}`);
-  ok((await page.textContent('#ne_agent')).includes('0.1.0'), 'нода сообщила версию своего агента');
+  ok((await page.textContent('#ne_agent')).includes(VERSION), `нода сообщила версию своего агента (${VERSION})`);
   const trafficTxt = (await page.textContent('#ne_traffic')).trim();
   ok(trafficTxt && /МБ|ГБ/.test(trafficTxt) && !trafficTxt.includes('node.traffic'),
      `в окне ноды есть строка её трафика — панель уже забрала счётчики живой ноды: ${trafficTxt}`);
@@ -232,7 +238,7 @@ if (nodePort && nodeKey) {
   });
   const live = await page.locator('#view .node', {hasText: 'live'}).textContent();
   ok(live.includes('Онлайн'), 'нода сама сообщила, что она в сети');
-  ok(live.includes('0.1.0'), 'версия ноды появилась на карточке');
+  ok(live.includes(VERSION), `версия ноды появилась на карточке (${VERSION})`);
 
   /* меняем API-ключ на чужой: нода отвечает, но работать с ней нельзя */
   await openCard('live');
@@ -298,7 +304,7 @@ if (nodePort && nodeKey) {
 
   await cardShows('pollnode', 'Онлайн');
   const polled = (await page.locator('#view .node', {hasText: 'pollnode'}).textContent()).replace(/\s+/g, ' ');
-  ok(polled.includes('Онлайн') && polled.includes('0.1.0'),
+  ok(polled.includes('Онлайн') && polled.includes(VERSION),
      `нода в сети сама, без кнопки и перезагрузки: ${polled}`);
 
   /* нода перезапустилась с другим API-ключом: панель обязана увидеть это сама */
