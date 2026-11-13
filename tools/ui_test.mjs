@@ -45,6 +45,14 @@ const text = () => page.textContent('#view');
 const toastText = () => page.textContent('#toast');
 const wait = (fn, arg, opts) => page.waitForFunction(fn, arg, {timeout: 30000, ...(opts || {})});
 const closed = sel => wait(x => !document.querySelector(x).open, sel);
+/* «timeout» в окне ноды ничего не объясняет: перед тем как упасть, вытаскиваем то,
+   что реально стоит в статусе, тосте и версии ноды */
+const orDump = async (what, fail, sel = '#ne_status') => {
+  try { return await what(); } catch (err) {
+    const grab = async s => { const el = await page.$(s); return el ? (await el.textContent()).trim() : '(нет элемента)'; };
+    throw new Error(`${fail}: ${err.message} | ${sel}=${await grab(sel)} | toast=${await grab('#toast')} | agent=${await grab('#ne_agent')}`);
+  }
+};
 const go = async (tab) => {
   await page.click(`#nav a[data-p="${tab}"]`);
   // дожидаемся не «изменения HTML», а именно отрендеренной страницы: иначе можно
@@ -202,15 +210,17 @@ if (nodePort && nodeKey) {
   ok((await page.textContent('#ne_badge')).trim() === 'Недоступна', 'в окне тот же статус, что на карточке');
 
   await page.click('#nedlg [data-a="ncheck"]');
-  await page.waitForFunction(() => !document.querySelector('#ne_status').hidden);
+  await orDump(() => page.waitForFunction(() => !document.querySelector('#ne_status').hidden, null, {timeout: 60000}),
+               'панель не показала результат проверки связи');
   ok((await page.textContent('#ne_status')).includes('API-ключ подходит'),
      `живая проверка связи: ${await page.textContent('#ne_status')}`);
   ok((await page.textContent('#ne_agent')).includes('0.1.0'), 'нода сообщила версию своего агента');
   const trafficTxt = (await page.textContent('#ne_traffic')).trim();
   ok(trafficTxt && /МБ|ГБ/.test(trafficTxt) && !trafficTxt.includes('node.traffic'),
      `в окне ноды есть строка её трафика — панель уже забрала счётчики живой ноды: ${trafficTxt}`);
-  await page.waitForFunction(() => !document.querySelector('#ne_seen').textContent.includes('ещё не проверялась'));
-  await wait(x => document.querySelector('#ne_badge').textContent === 'Онлайн');
+  await page.waitForFunction(() => !document.querySelector('#ne_seen').textContent.includes('ещё не проверялась'), null, {timeout: 60000});
+  await orDump(() => wait(x => document.querySelector('#ne_badge').textContent === 'Онлайн'),
+               'нода не стала «Онлайн» после проверки связи', '#ne_badge');
   const seen = (await page.textContent('#ne_seen')).toLowerCase();
   ok(seen.includes('назад') || seen.includes('только что'), `в окне видно, когда проверяли связь: ${seen}`);
 

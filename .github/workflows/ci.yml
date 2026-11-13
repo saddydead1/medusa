@@ -109,7 +109,8 @@ jobs:
           node tools/ui_test.mjs 2>&1 | tee "$MEDUSA_CI_TMP/ui.log"
           code=${PIPESTATUS[0]}
           if [ "$code" -ne 0 ]; then
-            tail -8 "$MEDUSA_CI_TMP/ui.log" | sed 's/^/::error::ui_test: /'
+            grep -E "^FAIL" "$MEDUSA_CI_TMP/ui.log" | tail -12 | sed 's/^/::error::ui_test: /'
+            tail -8 "$MEDUSA_CI_TMP/ui.log" | sed 's/^/::error::ui_test(хвост): /'
           fi
           exit "$code"
 
@@ -119,16 +120,19 @@ jobs:
             node "tools/mock/$suite.mjs"
           done
 
-      # логи тестовых сервисов — в сводку шага: без них «упало» ничего не объясняет
+      # логи тестовых сервисов — и в сводку шага, и аннотациями: без них «упало» ничего
+      # не объясняет, а логи шага доступны не всем
       - name: логи тестовых ноды и панели (только при падении)
         if: failure()
         run: |
           {
             echo '### node.log'
-            tail -40 "$MEDUSA_CI_TMP/node.log" 2>/dev/null || echo '(нет файла)'
+            tail -30 "$MEDUSA_CI_TMP/node.log" 2>/dev/null || echo '(нет файла)'
             echo '### panel.log'
-            tail -40 "$MEDUSA_CI_TMP/panel.log" 2>/dev/null || echo '(нет файла)'
+            tail -30 "$MEDUSA_CI_TMP/panel.log" 2>/dev/null || echo '(нет файла)'
           } >> "$GITHUB_STEP_SUMMARY"
+          tail -20 "$MEDUSA_CI_TMP/node.log" 2>/dev/null | sed 's/^/::error::node.log: /' || true
+          tail -20 "$MEDUSA_CI_TMP/panel.log" 2>/dev/null | sed 's/^/::error::panel.log: /' || true
 
   # Dockerfile.panel и Dockerfile.node: сборка без публикации. Границы половин
   # (панель не видит src/node, нода не видит src/panel) здесь тоже проверяются —
@@ -191,6 +195,7 @@ jobs:
           .venv/bin/python tools/live_demo.py 2>&1 | tee /tmp/medusa-live/live.log
           code=${PIPESTATUS[0]}
           if [ "$code" -ne 0 ]; then
-            tail -8 /tmp/medusa-live/live.log | sed 's/^/::error::live_demo: /'
+            grep -E "FAIL|провал" /tmp/medusa-live/live.log | tail -12 | sed 's/^/::error::live_demo: /'
+            tail -8 /tmp/medusa-live/live.log | sed 's/^/::error::live_demo(хвост): /'
           fi
           exit "$code"
