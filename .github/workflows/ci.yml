@@ -36,7 +36,7 @@ jobs:
       MEDUSA_NODE_PORT: "9443"
       MEDUSA_NODE_STATE: /tmp/medusa-ci/node-state.json
       MEDUSA_UI_PORT: "8123"
-      MEDUSA_UI_URL: http://127.0.0.1:8123/
+      MEDUSA_UI_URL: http://127.0.0.1:8123   # без слэша на конце: panel_test/ui_test клеят путь к адресу
     steps:
       - uses: actions/checkout@v7
 
