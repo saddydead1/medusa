@@ -1,0 +1,168 @@
+name: Релиз
+
+# Merge в main = релиз: версия берётся из pyproject.toml, образы едут в свой контейнерный
+# реестр (docker.sonoma.su), на этом же коммите появляется тег v<версия> и релиз GitHub.
+#
+# Settings → Secrets and variables → Actions
+#   SECRETS (логин/пароль реестра — их видно быть не должно):
+#     REGISTRY_PASSWORD — пароль для docker login в docker.sonoma.su
+#   VARIABLES (не секреты — это имена и пути, их меняет человек, а не CI):
+#     REGISTRY_USERNAME   — логин в реестре
+#     REGISTRY_NAMESPACE  — путь внутри реестра, docker.sonoma.su/<namespace>/<image>
+#     REGISTRY            — адрес реестра (по умолчанию docker.sonoma.su, см. env ниже)
+#
+# Переменные (variables) создаются там же: New repository variable. Если их не создать,
+# workflow подставляет значения по умолчанию из env.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write          # завести тег и релиз
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false   # два релиза одновременно publish-ить не должно
+
+env:
+  # Свой реестр контейнеров: авторизация обычным docker login (логин + пароль).
+  REGISTRY: ${{ vars.REGISTRY || 'docker.sonoma.su' }}
+  REGISTRY_USERNAME: ${{ vars.REGISTRY_USERNAME || secrets.REGISTRY_USERNAME }}
+  REGISTRY_NAMESPACE: ${{ vars.REGISTRY_NAMESPACE || 'medusa' }}
+  # Xray, который едет в образ ноды: та же строка, что и ARG в Dockerfile.node.
+  # Фиксируем тегом: Xray 26.9.x — на нём панель проверялась живым прогоном.
+  XRAY_IMAGE: ghcr.io/xtls/xray-core:26.9.9
+
+jobs:
+  version:
+    name: Версия из pyproject.toml
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+      exists: ${{ steps.ver.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: ver
+        run: |
+          set -euo pipefail
+          v=$(awk -F'"' '/^version = /{print $2; exit}' pyproject.toml)
+          [ -n "$v" ] || { echo "в pyproject.toml нет версии" >&2; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=v$v"    >> "$GITHUB_OUTPUT"
+          # этот релиз уже выпущен? (повторный merge без новой версии не должен плодить пустые релизы)
+          if git ls-remote --tags origin "refs/tags/v$v" | grep -q "refs/tags/v$v"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "версия релиза: $v" >> "$GITHUB_STEP_SUMMARY"
+
+  images:
+    name: ${{ matrix.image }} в ${{ env.REGISTRY }}
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: panel
+            dockerfile: deploy/Dockerfile.panel
+          - image: node
+            dockerfile: deploy/Dockerfile.node
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Вход в реестр (${{ env.REGISTRY }})
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Метки образов
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.REGISTRY_NAMESPACE }}/${{ matrix.image }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            type=semver,pattern={{version}},value=${{ needs.version.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.version.outputs.version }}
+
+      - name: Сборка и публикация
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            XRAY_IMAGE=${{ env.XRAY_IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Что выложено
+        run: |
+          {
+            echo "### ${{ matrix.image }}"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: Тег и релиз GitHub
+    needs: [version, images]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Завести тег v${VERSION}
+        if: needs.version.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          git tag "$TAG" "${{ github.sha }}"
+          git push origin "$TAG"
+
+      - name: Релиз ${{ needs.version.outputs.tag }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Medusa ${{ needs.version.outputs.version }}
+          generate_release_notes: true
+          append_body: true
+          body: |
+            ## Образы: `${{ env.REGISTRY }}/${{ env.REGISTRY_NAMESPACE }}`
+
+            Реестр закрытый, поэтому сначала вход по логину и паролю:
+
+            ```bash
+            docker login ${{ env.REGISTRY }}
+
+            # панель
+            docker run -d --name medusa-panel --restart unless-stopped \
+              -p 8000:8000 -v medusa-panel:/data \
+              -e MEDUSA_ADMIN_USER=admin \
+              ${{ env.REGISTRY }}/${{ env.REGISTRY_NAMESPACE }}/panel:${{ needs.version.outputs.version }}
+            docker logs medusa-panel     # панель напечатает пароль владельца
+
+            # нода (ей нужен host-сеть: API-порт и порты Xray)
+            docker run -d --name medusa-node --restart unless-stopped \
+              --network host \
+              -v medusa-node:/var/lib/medusa-node \
+              -e MEDUSA_NODE_PORT=9443 \
+              ${{ env.REGISTRY }}/${{ env.REGISTRY_NAMESPACE }}/node:${{ needs.version.outputs.version }}
+            docker logs medusa-node      # нода напечатает свой API-ключ: взять его в панель
+            ```
+
+            Внутрь образа ноды положен `${{ env.XRAY_IMAGE }}`.

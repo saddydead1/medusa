@@ -1,0 +1,102 @@
+name: Проверки
+
+# main и develop protected, поэтому проверки гоняются и на push, и на pull request:
+# merge-ом в main можно только то, что уже прошло здесь же на develop.
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # весь панельный и нодовый прогон: границы монолита, нода, рендер конфига Xray и
+  # применение к ноде, права/сессии/FIDO2, панельный API, фронт против живого API, моковые сценарии
+  tests:
+    name: Панель, нода, конфиг Xray и фронт
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # run_all.sh зовёт .venv/bin/python, поэтому окружение заводится ровно так,
+      # как его заводит разработчик: uv sync в ./venv репозитория
+      - name: Python (pyproject требует 3.14)
+        run: uv python install 3.14 && uv sync --frozen
+
+      # ui_test.mjs и tools/mock/*.mjs работают на Playwright против живого фронтенда
+      - name: Playwright
+        run: |
+          cd tools
+          npm ci || npm install
+          npx playwright install --with-deps chromium
+
+      - name: ./tools/run_all.sh
+        run: ./tools/run_all.sh
+
+  # Dockerfile.panel и Dockerfile.node: сборка без публикации. Границы половин
+  # (панель не видит src/node, нода не видит src/panel) здесь тоже проверяются —
+  # в образ просто нечего копировать, если COPY поехал не туда.
+  docker-build:
+    name: Сборка образов (без публикации)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {dockerfile: deploy/Dockerfile.panel, tag: medusa-panel-ci}
+          - {dockerfile: deploy/Dockerfile.node,  tag: medusa-node-ci}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          tags: ${{ matrix.tag }}
+          push: false
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # образ ноды обязан знать Xray: иначе нода честно отдаст xrayVersion: null
+      - name: Xray в образе ноды
+        if: contains(matrix.dockerfile, 'Dockerfile.node')
+        run: docker run --rm ${{ matrix.tag }} /usr/local/bin/xray version
+
+  # живой прогон: скачанный Xray, настоящая нода, туннели всех протоколов.
+  # continue-on-error: этот прогон зависит от поведения свежего Xray (панель проверялась
+  # на 26.9.x), поэтому он сигналит о проблеме, но не блокирует merge.
+  live:
+    name: Живые туннели (Xray, live_demo)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      XRAY_VERSION: v26.9.9
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - name: Python
+        run: uv python install 3.14 && uv sync --frozen
+      - name: Настоящий Xray в bin/
+        run: |
+          mkdir -p bin
+          curl -fsSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip"
+          unzip -o xray.zip -d bin
+          chmod +x bin/xray
+          bin/xray version
+      - name: tools/live_demo.py
+        env:
+          MEDUSA_LIVE: "1"
+        run: .venv/bin/python tools/live_demo.py
