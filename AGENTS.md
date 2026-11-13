@@ -830,9 +830,12 @@ docker compose -f deploy/docker-compose.yaml up --build      # панель + н
 
 * `tests` — `./tools/run_all.sh` целиком: границы монолита, нода, рендер конфига Xray и
   применение к тестовой ноде, права/сессии/FIDO2, панельный API с живой связкой, фронт против
-  живого API (`ui_test.mjs`) и моковые сценарии. Python — 3.14 (`uv python install 3.14 &&
-  uv sync --frozen`), Playwright ставится в самом джобе (`npm ci` в `tools/` +
-  `npx playwright install --with-deps chromium`);
+  живого API (`ui_test.mjs`) и моковые сценарии. Python — `actions/setup-python` с 3.14, затем
+  `pip install uv && uv sync --frozen` (`.venv` в корне — его и зовёт run_all.sh); Playwright
+  ставится в самом джобе (`npm ci` в `tools/` + `npx playwright install --with-deps chromium`).
+  `astral-sh/setup-uv` не используется: у него нет тега `v8`/`v9`/`v10` целиком, только
+  `v10.3.3`, а мажорные теги заканчиваются на `v7` — ссылка `@v10` ломает «Unable to resolve
+  action» прямо на «Set up job» и оба джоба падают, не доходя до тестов;
 * `docker-build` — сборка обоих образов **без публикации**: ловит поломку Dockerfile и
   держит границы COPY (в образ ноды просто нечего копировать, если поехал не туда);
 * `live` — `.venv/bin/python tools/live_demo.py` со скачанным `bin/xray`. Стоит

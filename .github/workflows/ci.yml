@@ -25,7 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v10
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
 
       - uses: actions/setup-node@v7
         with:
@@ -34,7 +36,7 @@ jobs:
       # run_all.sh зовёт .venv/bin/python, поэтому окружение заводится ровно так,
       # как его заводит разработчик: uv sync в ./venv репозитория
       - name: Python (pyproject требует 3.14)
-        run: uv python install 3.14 && uv sync --frozen
+        run: python -m pip install --upgrade uv && uv sync --frozen
 
       # ui_test.mjs и tools/mock/*.mjs работают на Playwright против живого фронтенда
       - name: Playwright
@@ -86,9 +88,11 @@ jobs:
       XRAY_VERSION: v26.9.9
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
       - name: Python
-        run: uv python install 3.14 && uv sync --frozen
+        run: python -m pip install --upgrade uv && uv sync --frozen
       - name: Настоящий Xray в bin/
         run: |
           mkdir -p bin

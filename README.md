@@ -24,33 +24,59 @@ Shadowrocket, Clash Verge, nekobox…).
 
 ## Установка
 
-### docker-compose — панель и нода на одной машине
+### docker-compose — панель и нода
+
+Готовый пример в репозитории — [`deploy/docker-compose.yaml`](deploy/docker-compose.yaml):
+там образы **собираются** из этого же репозитория, нода стоит на `network_mode: host`,
+и есть тома для базы панели и состояния ноды.
 
 ```bash
-git clone https://github.com/saddydead1/medusa && cd medusa
 docker compose -f deploy/docker-compose.yaml up --build -d
-docker compose -f deploy/docker-compose.yaml logs panel   # пароль владельца: панель генерирует его сама
-docker compose -f deploy/docker-compose.yaml logs node-home  # здесь API-ключ ноды — его в панель
+docker compose -f deploy/docker-compose.yaml logs panel        # пароль владельца
+docker compose -f deploy/docker-compose.yaml logs node-home    # API-ключ ноды — его в панель
 ```
 
-compose-файл уже учитывает всё нужное: панель на `8000` с томом для базы, нода на
-`network_mode: host` (ей надо слушать и API-порт, и клиентские порты Xray), тома
-`medusa-panel-data` и `medusa-node-home`. Переменные — `MEDUSA_ADMIN_USER`,
-`MEDUSA_ADMIN_PASSWORD` (подстановка из окружения), для ноды `MEDUSA_NODE_PORT`.
+Если берёте готовые образы (каждый релиз публикуется в реестр `docker.sonoma.su`, версия —
+из `pyproject.toml`), compose-файл можно положить прямо на сервере: панель на `8000`, нода —
+на host-сети, потому что ей надо слушать и API-порт, и клиентские порты Xray.
 
-По умолчанию compose **собирает** образы. Готовые образы (каждый релиз публикуется в
-реестр `docker.sonoma.su`, версия — из `pyproject.toml`) подключаются двумя строками
-`image:` — они уже лежат в файле закомментированными:
+```yaml
+# docker-compose.yaml
+services:
+  panel:
+    image: docker.sonoma.su/medusa/panel:latest
+    ports: ["8000:8000"]
+    volumes: [medusa-panel:/data]
+    environment:
+      MEDUSA_ADMIN_USER: admin
+      # MEDUSA_ADMIN_PASSWORD: "..."                     # без него панель напечатает пароль в лог
+      # MEDUSA_PANEL_BASE: https://panel.example.com     # за TLS-прокси: нужно для входа по ключу
+    restart: unless-stopped
+
+  node:
+    image: docker.sonoma.su/medusa/node:latest
+    network_mode: host                    # API 9443 + порты Xray как есть
+    volumes: [medusa-node:/var/lib/medusa-node]
+    environment:
+      MEDUSA_NODE_PORT: "9443"
+      # MEDUSA_NODE_API_KEY: "sk-api-..."                # без него нода напечатает свой ключ в лог
+    restart: unless-stopped
+
+volumes:
+  medusa-panel:
+  medusa-node:
+```
 
 ```bash
-docker login docker.sonoma.su
-docker pull docker.sonoma.su/medusa/panel:latest
-docker pull docker.sonoma.su/medusa/node:latest
+docker login docker.sonoma.su      # реестр закрытый: логин + пароль
+docker compose up -d
+docker compose logs panel node     # пароль владельца и API-ключ ноды
 ```
 
-Ноду на **другой** машине удобнее собирать там же, где она запускается
-(`docker build -f deploy/Dockerfile.node -t docker.sonoma.su/medusa/node .`), и открыть в
-брандмауэре её API-порт и порты хостов.
+Панель — на `http://адрес-машины:8000`. В брандмауэре ноды откройте её API-порт (9443) и
+позже — порты хостов. Ноду на **другой** машине запускают тем же compose-файлом (образ
+`…/node`, `network_mode: host`), а образ удобнее собрать там, где нода и работает:
+`docker build -f deploy/Dockerfile.node -t docker.sonoma.su/medusa/node .`
 
 ### docker run
 

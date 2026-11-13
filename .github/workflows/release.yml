@@ -38,6 +38,11 @@ jobs:
   version:
     name: Версия из pyproject.toml
     runs-on: ubuntu-latest
+    # GitHub создаёт прогон и для push-а в другую ветку, если этот файл появился в том же
+    # пуше (так вышло, когда release.yml завели в develop). Фильтр branches не мешает
+    # прогону появиться, но без этой строки он закончится «failure» без единого джоба.
+    # Дальше по цепочке images и release нужны version — значит они пропускаются сами.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     outputs:
       version: ${{ steps.ver.outputs.version }}
       tag: ${{ steps.ver.outputs.tag }}
