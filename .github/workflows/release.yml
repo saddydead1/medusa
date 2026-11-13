@@ -15,7 +15,10 @@ name: Релиз
 # workflow подставляет значения по умолчанию из env.
 on:
   push:
-    branches: [main]
+    # develop здесь не для релиза, а для честного статуса: GitHub всё равно заводит прогон
+    # release.yml на пуш в develop (так файл попал в репозиторий), и без этой ветки в фильтре
+    # тот прогон заканчивается «failure» без единого джоба. С ней джобы пропускаются по if ниже.
+    branches: [main, develop]
   workflow_dispatch:
 
 permissions:
