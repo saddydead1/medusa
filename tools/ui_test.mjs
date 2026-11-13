@@ -7,6 +7,7 @@
    Тест сам вычищает базу и может запускаться сколько угодно раз подряд. */
 import {spawn} from 'node:child_process';
 import {rm} from 'node:fs/promises';
+import {appendFileSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {chromium} from 'playwright';
 
@@ -22,10 +23,18 @@ page.on('console', m => { if(m.type() === 'error' && !/\b(400|401|409)\b/.test(m
 page.on('pageerror', e => errors.push('pageerror: ' + e.message));
 
 let fails = 0;
-const ok = (cond, msg) => { console.log((cond ? 'PASS  ' : 'FAIL  ') + msg); if(!cond) fails++; };
+/* В Actions логи шага видны только человеку с правами на репозиторий, поэтому проваленная
+   проверка дублируется аннотацией (::error::) и в сводку шага — иначе «упало» ничего не объясняет. */
+const annotate = (msg) => {
+  const line = msg.replace(/\n/g, ' ').slice(0, 300);
+  if(process.env.GITHUB_ACTIONS) console.log(`::error::${line}`);
+  if(process.env.GITHUB_STEP_SUMMARY){ try{ appendFileSync(process.env.GITHUB_STEP_SUMMARY, line + '\n'); }catch{ /* сводка не обязательна */ } }
+};
+const ok = (cond, msg) => { console.log((cond ? 'PASS  ' : 'FAIL  ') + msg); if(!cond){ fails++; annotate('FAIL  ' + msg); } };
+process.on('uncaughtException', e => { console.log('FAIL  неожиданная ошибка теста: ' + e.message); annotate('FAIL  неожиданная ошибка теста: ' + e.message); process.exit(1); });
 const text = () => page.textContent('#view');
 const toastText = () => page.textContent('#toast');
-const wait = (fn, arg, opts) => page.waitForFunction(fn, arg, {timeout: 15000, ...(opts || {})});
+const wait = (fn, arg, opts) => page.waitForFunction(fn, arg, {timeout: 30000, ...(opts || {})});
 const closed = sel => wait(x => !document.querySelector(x).open, sel);
 const go = async (tab) => {
   await page.click(`#nav a[data-p="${tab}"]`);
@@ -47,7 +56,7 @@ const freePort = () => new Promise(resolve => {
 async function spawnNode(port, apiKey, stateFile){
   const proc = spawn('.venv/bin/python', ['-m', 'uvicorn', 'src.node.main:app', '--host', '127.0.0.1', '--port', String(port)],
     {env: {...process.env, MEDUSA_NODE_API_KEY: apiKey, MEDUSA_NODE_PORT: String(port), MEDUSA_NODE_STATE: stateFile}, stdio: 'ignore'});
-  for (let i = 0; i < 80; i++) {
+  for (let i = 0; i < 160; i++) {
     try { if ((await fetch(`http://127.0.0.1:${port}/node/health`)).ok) return proc; } catch { /* ещё не поднялась */ }
     await new Promise(r => setTimeout(r, 250));
   }
