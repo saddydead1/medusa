@@ -10,6 +10,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.panel
+    # готовый образ вместо сборки на месте (реестр закрытый: сначала docker login docker.sonoma.su)
+    # image: docker.sonoma.su/medusa/panel:latest
     environment:
       MEDUSA_ADMIN_USER: admin
       # без MEDUSA_ADMIN_PASSWORD панель сгенерирует пароль сама и напечатает его
@@ -27,6 +29,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.node
+    # image: docker.sonoma.su/medusa/node:latest
     network_mode: host                   # API 9443 + порты Xray как есть
     environment:
       MEDUSA_NODE_PORT: "9443"

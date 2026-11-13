@@ -1,0 +1,201 @@
+name: Проверки
+
+# main и develop protected, поэтому проверки гоняются и на push, и на pull request:
+# merge-ом в main можно только то, что уже прошло здесь же на develop.
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # весь панельный и нодовый прогон: границы монолита, нода, рендер конфига Xray и
+  # применение к ноде, права/сессии/FIDO2, панельный API, фронт против живого API, моковые сценарии.
+  # Проверки разбиты по этапам, а не гоняются одним run_all.sh: в UI сразу видно, какой
+  # набор упал, вместо «упала одна большая инструкция». Порядок тот же, что у run_all.sh.
+  tests:
+    name: Панель, нода, конфиг Xray и фронт
+    runs-on: ubuntu-latest
+    env:
+      MEDUSA_CI_TMP: /tmp/medusa-ci
+      MEDUSA_DB: /tmp/medusa-ci/panel.db
+      MEDUSA_DEMO: "1"
+      MEDUSA_ADMIN_USER: admin
+      MEDUSA_ADMIN_PASSWORD: testpass12345
+      MEDUSA_TEST_NODE_KEY: sk-api-runall0123456789abcdef00
+      MEDUSA_TEST_NODE_PORT: "9443"
+      MEDUSA_NODE_API_KEY: sk-api-runall0123456789abcdef00
+      MEDUSA_NODE_PORT: "9443"
+      MEDUSA_NODE_STATE: /tmp/medusa-ci/node-state.json
+      MEDUSA_UI_PORT: "8123"
+      MEDUSA_UI_URL: http://127.0.0.1:8123   # без слэша на конце: panel_test/ui_test клеят путь к адресу
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # каждый тест зовёт .venv/bin/python, поэтому окружение заводится ровно так,
+      # как его заводит разработчик: uv sync в ./venv репозитория
+      - name: Python (pyproject требует 3.14)
+        run: python -m pip install --upgrade uv && uv sync --frozen
+
+      # ui_test.mjs и tools/mock/*.mjs работают на Playwright против живого фронтенда
+      - name: Playwright
+        run: |
+          cd tools
+          npm ci || npm install
+          npx playwright install --with-deps chromium
+          cd ..
+
+      - name: границы монолита (панель/нода/ядро)
+        run: .venv/bin/python tools/arch_test.py
+
+      - name: "нода: API-ключ, файл состояния и трафик"
+        run: .venv/bin/python tools/node_test.py
+
+      - name: "конфиг Xray: панель -> нода -> xray (заглушка)"
+        run: .venv/bin/python tools/xray_test.py
+
+      # тестовая нода на своём порту: ей пользуются и auth_test, и panel_test (живая связка)
+      - name: поднять тестовую ноду
+        run: |
+          mkdir -p "$MEDUSA_CI_TMP"
+          nohup .venv/bin/python -m uvicorn src.node.main:app --host 127.0.0.1 \
+            --port "$MEDUSA_TEST_NODE_PORT" >"$MEDUSA_CI_TMP/node.log" 2>&1 &
+          for _ in $(seq 120); do
+            curl -sf "http://127.0.0.1:${MEDUSA_TEST_NODE_PORT}/node/health" >/dev/null && exit 0
+            sleep 0.25
+          done
+          echo "тестовая нода не поднялась на порту $MEDUSA_TEST_NODE_PORT:"; tail -30 "$MEDUSA_CI_TMP/node.log"
+          exit 1
+
+      - name: права, сессии и вход по аппаратному ключу
+        run: .venv/bin/python tools/auth_test.py
+
+      - name: панельный API, включая живую связку с нодой
+        run: .venv/bin/python tools/panel_test.py
+
+      - name: поднять панель для UI-проверок
+        run: |
+          mkdir -p "$MEDUSA_CI_TMP"
+          nohup .venv/bin/python -m uvicorn src.panel.main:app --host 127.0.0.1 \
+            --port "$MEDUSA_UI_PORT" >"$MEDUSA_CI_TMP/panel.log" 2>&1 &
+          for _ in $(seq 120); do
+            curl -sf "$MEDUSA_UI_URL/api/meta" >/dev/null && exit 0
+            sleep 0.25
+          done
+          echo "тестовая панель не поднялась на порту $MEDUSA_UI_PORT:"; tail -30 "$MEDUSA_CI_TMP/panel.log"
+          exit 1
+
+      # шаг не должен заканчиваться «просто failure»: последние строки теста уходят аннотациями,
+      # их видно в интерфейсе Actions без доступа к логам шага
+      - name: фронт против живого API (Playwright)
+        run: |
+          set +e
+          node tools/ui_test.mjs 2>&1 | tee "$MEDUSA_CI_TMP/ui.log"
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            grep -E "^FAIL" "$MEDUSA_CI_TMP/ui.log" | tail -12 | sed 's/^/::error::ui_test: /'
+            tail -8 "$MEDUSA_CI_TMP/ui.log" | sed 's/^/::error::ui_test(хвост): /'
+          fi
+          exit "$code"
+
+      - name: моковые сценарии интерфейса
+        run: |
+          for suite in live overview clients i18n keys; do
+            node "tools/mock/$suite.mjs"
+          done
+
+      # логи тестовых сервисов — и в сводку шага, и аннотациями: без них «упало» ничего
+      # не объясняет, а логи шага доступны не всем
+      - name: логи тестовых ноды и панели (только при падении)
+        if: failure()
+        run: |
+          {
+            echo '### node.log'
+            tail -30 "$MEDUSA_CI_TMP/node.log" 2>/dev/null || echo '(нет файла)'
+            echo '### panel.log'
+            tail -30 "$MEDUSA_CI_TMP/panel.log" 2>/dev/null || echo '(нет файла)'
+          } >> "$GITHUB_STEP_SUMMARY"
+          tail -20 "$MEDUSA_CI_TMP/node.log" 2>/dev/null | sed 's/^/::error::node.log: /' || true
+          tail -20 "$MEDUSA_CI_TMP/panel.log" 2>/dev/null | sed 's/^/::error::panel.log: /' || true
+
+  # Dockerfile.panel и Dockerfile.node: сборка без публикации. Границы половин
+  # (панель не видит src/node, нода не видит src/panel) здесь тоже проверяются —
+  # в образ просто нечего копировать, если COPY поехал не туда.
+  docker-build:
+    name: Сборка образов (без публикации)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {dockerfile: deploy/Dockerfile.panel, tag: medusa-panel-ci}
+          - {dockerfile: deploy/Dockerfile.node,  tag: medusa-node-ci}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          tags: ${{ matrix.tag }}
+          push: false
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # образ ноды обязан знать Xray: иначе нода честно отдаст xrayVersion: null
+      - name: Xray в образе ноды
+        if: contains(matrix.dockerfile, 'Dockerfile.node')
+        run: docker run --rm ${{ matrix.tag }} /usr/local/bin/xray version
+
+  # живой прогон: скачанный Xray, настоящая нода, туннели всех протоколов.
+  # continue-on-error: этот прогон зависит от поведения свежего Xray (панель проверялась
+  # на 26.9.x), поэтому он сигналит о проблеме, но не блокирует merge.
+  live:
+    name: Живые туннели (Xray, live_demo)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      XRAY_VERSION: v26.9.9
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Python
+        run: python -m pip install --upgrade uv && uv sync --frozen
+      - name: Настоящий Xray в bin/
+        run: |
+          mkdir -p bin
+          curl -fsSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip"
+          unzip -o xray.zip -d bin
+          chmod +x bin/xray
+          bin/xray version
+      - name: tools/live_demo.py
+        env:
+          MEDUSA_LIVE: "1"
+        run: |
+          set +e
+          mkdir -p /tmp/medusa-live
+          .venv/bin/python tools/live_demo.py 2>&1 | tee /tmp/medusa-live/live.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            grep -E "FAIL|провал" /tmp/medusa-live/live.log | tail -12 | sed 's/^/::error::live_demo: /'
+            tail -8 /tmp/medusa-live/live.log | sed 's/^/::error::live_demo(хвост): /'
+          fi
+          exit "$code"

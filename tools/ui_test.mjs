@@ -7,6 +7,7 @@
    Тест сам вычищает базу и может запускаться сколько угодно раз подряд. */
 import {spawn} from 'node:child_process';
 import {rm} from 'node:fs/promises';
+import {appendFileSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {chromium} from 'playwright';
 
@@ -22,11 +23,36 @@ page.on('console', m => { if(m.type() === 'error' && !/\b(400|401|409)\b/.test(m
 page.on('pageerror', e => errors.push('pageerror: ' + e.message));
 
 let fails = 0;
-const ok = (cond, msg) => { console.log((cond ? 'PASS  ' : 'FAIL  ') + msg); if(!cond) fails++; };
+/* В Actions логи шага видны только человеку с правами на репозиторий, поэтому проваленная
+   проверка дублируется аннотацией (::error::) и в сводку шага — иначе «упало» ничего не объясняет. */
+const annotate = (msg) => {
+  const line = msg.replace(/\n/g, ' ').slice(0, 300);
+  if(process.env.GITHUB_ACTIONS) console.log(`::error::${line}`);
+  if(process.env.GITHUB_STEP_SUMMARY){ try{ appendFileSync(process.env.GITHUB_STEP_SUMMARY, line + '\n'); }catch{ /* сводка не обязательна */ } }
+};
+const ok = (cond, msg) => { console.log((cond ? 'PASS  ' : 'FAIL  ') + msg); if(!cond){ fails++; annotate('FAIL  ' + msg); } };
+/* тест весь построен на верхнем await: невыполненное обещание (например waitForFunction
+   не дождался) приходит именно как unhandledRejection, а не как uncaughtException */
+const die = (label, err) => {
+  const msg = err && err.message ? err.message : String(err);
+  console.log('FAIL  ' + label + ': ' + msg);
+  annotate('FAIL  ' + label + ': ' + msg);
+  process.exit(1);
+};
+process.on('uncaughtException', e => die('неожиданная ошибка теста', e));
+process.on('unhandledRejection', e => die('обещание теста не дождалось', e));
 const text = () => page.textContent('#view');
 const toastText = () => page.textContent('#toast');
-const wait = (fn, arg, opts) => page.waitForFunction(fn, arg, {timeout: 15000, ...(opts || {})});
+const wait = (fn, arg, opts) => page.waitForFunction(fn, arg, {timeout: 30000, ...(opts || {})});
 const closed = sel => wait(x => !document.querySelector(x).open, sel);
+/* «timeout» в окне ноды ничего не объясняет: перед тем как упасть, вытаскиваем то,
+   что реально стоит в статусе, тосте и версии ноды */
+const orDump = async (what, fail, sel = '#ne_status') => {
+  try { return await what(); } catch (err) {
+    const grab = async s => { const el = await page.$(s); return el ? (await el.textContent()).trim() : '(нет элемента)'; };
+    throw new Error(`${fail}: ${err.message} | ${sel}=${await grab(sel)} | toast=${await grab('#toast')} | agent=${await grab('#ne_agent')}`);
+  }
+};
 const go = async (tab) => {
   await page.click(`#nav a[data-p="${tab}"]`);
   // дожидаемся не «изменения HTML», а именно отрендеренной страницы: иначе можно
@@ -47,7 +73,7 @@ const freePort = () => new Promise(resolve => {
 async function spawnNode(port, apiKey, stateFile){
   const proc = spawn('.venv/bin/python', ['-m', 'uvicorn', 'src.node.main:app', '--host', '127.0.0.1', '--port', String(port)],
     {env: {...process.env, MEDUSA_NODE_API_KEY: apiKey, MEDUSA_NODE_PORT: String(port), MEDUSA_NODE_STATE: stateFile}, stdio: 'ignore'});
-  for (let i = 0; i < 80; i++) {
+  for (let i = 0; i < 160; i++) {
     try { if ((await fetch(`http://127.0.0.1:${port}/node/health`)).ok) return proc; } catch { /* ещё не поднялась */ }
     await new Promise(r => setTimeout(r, 250));
   }
@@ -130,7 +156,13 @@ ok((await page.textContent('#acctrole')).includes('Владелец'), `и её 
 /* ---------- обзор на живых данных ---------- */
 ok((await page.textContent('#pname')).trim() === 'Medusa', 'панель загрузилась без мока');
 ok((await text()).includes('Не удалось загрузить') === false, 'данные взял бэкенд, а не мок');
-ok(await page.locator('#view .syscard').count() === 3, 'блок сервера: ЦП, память и диски с живых метрик');
+/* карточек «Сервер» ровно три только там, где три диска: на GitHub-раннере их
+   две (корень и временный диск), поэтому проверяем состав, а не количество. */
+const sysTitles = await page.evaluate(() => [...document.querySelectorAll('#view .syscard .systitle')]
+  .map(x => x.textContent.trim()));
+ok(sysTitles.length >= 3 && sysTitles.some(x => /ЦП/.test(x)) && sysTitles.some(x => /ОЗУ/.test(x))
+   && sysTitles.some(x => /Диск/.test(x)),
+   `блок сервера: ЦП, память и диски с живых метрик: ${sysTitles.join(' | ')}`);
 const cpu = (await page.locator('.syscard .sysval').first().textContent()).trim();
 ok(/%$/.test(cpu), `ЦП с живых метрик: ${cpu}`);
 ok((await page.evaluate(() => savedSettings.panelName)) === 'Medusa', 'настройки пришли с бэкенда');
@@ -178,15 +210,17 @@ if (nodePort && nodeKey) {
   ok((await page.textContent('#ne_badge')).trim() === 'Недоступна', 'в окне тот же статус, что на карточке');
 
   await page.click('#nedlg [data-a="ncheck"]');
-  await page.waitForFunction(() => !document.querySelector('#ne_status').hidden);
+  await orDump(() => page.waitForFunction(() => !document.querySelector('#ne_status').hidden, null, {timeout: 60000}),
+               'панель не показала результат проверки связи');
   ok((await page.textContent('#ne_status')).includes('API-ключ подходит'),
      `живая проверка связи: ${await page.textContent('#ne_status')}`);
   ok((await page.textContent('#ne_agent')).includes('0.1.0'), 'нода сообщила версию своего агента');
   const trafficTxt = (await page.textContent('#ne_traffic')).trim();
   ok(trafficTxt && /МБ|ГБ/.test(trafficTxt) && !trafficTxt.includes('node.traffic'),
      `в окне ноды есть строка её трафика — панель уже забрала счётчики живой ноды: ${trafficTxt}`);
-  await page.waitForFunction(() => !document.querySelector('#ne_seen').textContent.includes('ещё не проверялась'));
-  await wait(x => document.querySelector('#ne_badge').textContent === 'Онлайн');
+  await page.waitForFunction(() => !document.querySelector('#ne_seen').textContent.includes('ещё не проверялась'), null, {timeout: 60000});
+  await orDump(() => wait(x => document.querySelector('#ne_badge').textContent === 'Онлайн'),
+               'нода не стала «Онлайн» после проверки связи', '#ne_badge');
   const seen = (await page.textContent('#ne_seen')).toLowerCase();
   ok(seen.includes('назад') || seen.includes('только что'), `в окне видно, когда проверяли связь: ${seen}`);
 
@@ -294,8 +328,9 @@ if (nodePort && nodeKey) {
   await openCard('pollnode');
   ok((await page.inputValue('#nedlg [data-f="proxy"]')) === socksUrl,
      'окно правки предзаполняет прокси целиком, с паролем: masked-форма для сохранения не годится');
-  const viaHint = (await page.textContent('#ne_proxy')).trim().replace('sockssecret', '••••');
-  ok(viaHint.includes('через прокси'), `подсказка окна называет путь: ${viaHint}`);
+  ok(await page.evaluate(() => !document.querySelector('#ne_proxy') &&
+      !/панель идёт к этой ноде/.test(document.querySelector('#nedlg').textContent)),
+     'под полем SOCKS5-прокси текста нет: окно ноды не печатает строку «как именно идём»');
   await page.click('#nedlg [data-a="ncheck"]');
   /* ключ этой ноды тест уже сменил (проверка «статус обновляется сам»), поэтому связка
      не обязана складываться. Важное здесь другое: нода ОТВЕТИЛА через прокси и отвергла
@@ -439,10 +474,23 @@ await page.evaluate(() => {
   document.querySelectorAll('#hops .hopbox').forEach((row, i) => {
     const set = (k, v) => { const el = row.querySelector(`[data-k="${k}"]`); if(el){ el.value = v; el.dispatchEvent(new Event('change', {bubbles: true})); } };
     set('node', i === 0 ? 'vps-fi' : 'home'); set('protocol', 'vless'); set('security', 'reality'); set('network', 'tcp'); set('port', 2053);
-    // у хопа может быть свой адрес: туда же придёт соседняя нода и туда же пойдёт ссылка входа
-    set('address', i === 0 ? 'fi.example.net' : '');
   });
 });
+/* адрес хоста у хопа обязателен: это тот адрес, куда подключатся и подписчик входа,
+   и соседняя нода. Панель подставляет адрес ноды этого хопа, чтобы поле не было пустым. */
+const NODE_ADDR = {'home': '10.8.0.1', 'vps-fi': '195.232.115.27'};
+const prefilled = await page.evaluate(() => [...document.querySelectorAll('#hops .hopbox')]
+  .map(r => ({node: r.querySelector('[data-k="node"]').value, address: r.querySelector('[data-k="address"]').value})));
+ok(prefilled.every(h => h.address === NODE_ADDR[h.node]),
+   `адрес хоста подставлен заранее — адрес ноды этого хопа: ${JSON.stringify(prefilled)}`);
+await page.evaluate(() => { const el = document.querySelector('#hops .hopbox [data-k="address"]'); el.value = ''; });
+await clearToast();
+await page.click('#cform .btn.pri');
+await page.waitForTimeout(400);
+ok(await page.evaluate(() => document.querySelector('#cdlg').open),
+   'адрес хоста обязателен: без него окно цепочки не сохраняет хопа');
+// свой адрес хопа: туда же придёт соседняя нода и туда же пойдёт ссылка входа
+await page.evaluate(() => { const el = document.querySelector('#hops .hopbox [data-k="address"]'); el.value = 'fi.example.net'; });
 await submit('#cform');
 await wait(() => document.querySelectorAll('#view .chain').length === 1);
 ok((await text()).includes('FI-DE') && (await text()).includes('2053'), 'цепочка из двух нод создана');
@@ -469,8 +517,11 @@ const prefill = await page.evaluate(() => ({
 }));
 ok(prefill.title.includes('изменение') && prefill.save.includes('Сохранить') && prefill.name === 'FI-DE'
    && prefill.hops.length === 2 && prefill.hops[0].node === 'vps-fi' && prefill.hops[1].node === 'home'
-   && prefill.hops[0].address === 'fi.example.net' && prefill.hops[1].address === '',
-   `окно правки цепочки предзаполнено её же хопами: ${JSON.stringify(prefill.hops)} («${prefill.title}»)`);
+   && prefill.hops[0].address === 'fi.example.net' && prefill.hops[1].address === '10.8.0.1',
+   `окно правки цепочки предзаполнено её же хопами (адрес хоста у каждого): ${JSON.stringify(prefill.hops)} («${prefill.title}»)`);
+const chainApi = (await (await api('/api/chains')).json())[0];
+ok(chainApi.hops[0].address === 'fi.example.net' && chainApi.hops[1].address === '',
+   `свой адрес хопа сохранился, а названный равным адресу ноды панель не записывает отдельно (пусто = адрес ноды): ${JSON.stringify(chainApi.hops.map(h => [h.node, h.address]))}`);
 
 // хопа местами: те же ноды и те же порты, но вход переезжает на другую ноду.
 // Свои порты своей же цепочки конфликтом быть не должны.
