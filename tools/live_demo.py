@@ -96,6 +96,28 @@ def port_alive(port: int, tries: int = 30) -> bool:
     return False
 
 
+def port_alive_udp(port: int, tries: int = 30) -> bool:
+    """Слушает ли Xray этот UDP-порт (hy2 — QUIC/HTTP3).
+
+    hy2 не обязан отвечать на мусорный датаграммом, поэтому проверка читает не ответ, а
+    отказ ядра: «порт закрыт» (ECONNREFUSED по ICMP) значит слушателя нет; таймаут значит
+    слушатель есть и просто не ответил. Именно так и проверяют UDP-порт hy2-хоста.
+    """
+    for _ in range(tries):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.settimeout(1.5)
+            try:
+                probe.sendto(b"\x00" * 48, ("127.0.0.1", port))
+                probe.recv(64)
+            except ConnectionRefusedError:
+                time.sleep(0.5)
+                continue
+            except TimeoutError:
+                return True
+            return True
+    return False
+
+
 def wait_http(url: str, seconds: float = 30.0) -> bool:
     import httpx
 
@@ -239,6 +261,10 @@ def main() -> int:
     panel_port, node_port = free_port(), free_port()
     host_names = ("plain", "reality", "wss", "ws", "grpc", "vmess", "trojan", "treal", "ss", "hy2")
     hosts_ports = {name: free_port() for name in host_names}
+    # hy2 слушает UDP (QUIC), и панель разрешает ему тот же номер, что держит tcp-хост этой
+    # же машины: «443/tcp для VLESS, 443/udp для Hysteria2» — рабочая связка, а не побег.
+    # Здесь она и проверяется настоящим Xray: plain (vless tcp) и hy2 живут на одном порту.
+    hosts_ports["hy2"] = hosts_ports["plain"]
     socks_ports = {name: free_port() for name in host_names}
 
     node_proc = spawn(
@@ -310,7 +336,8 @@ def main() -> int:
                                                    "sni": "localhost"}).json()
         petya = api.post("/api/users", json={"name": "petya"}).json()
         masha = api.post("/api/users", json={"name": "masha", "client": "happ"}).json()
-        print("заведены: нода demo, десять хостов (vless×5, vmess, trojan×2, ss, hy2), два пользователя")
+        print("заведены: нода demo, десять хостов (vless×5, vmess, trojan×2, ss, hy2), два пользователя; "
+              "hy2-хост сидит на одном порту с tcp-хостом plain (UDP и TCP не встречаются)")
 
         # панель применяет конфиг сама; ждём, пока доставка успокоится: каждое
         # создание хоста — отдельная ревизия, и Xray на ноде перезапускается на каждую
@@ -341,8 +368,10 @@ def main() -> int:
         ports_dead = []
         for label in host_names:
             port = hosts_ports[label]
-            alive = port_alive(port)
-            ok(alive, f"порт {label} ({port}) слушается Xray")
+            alive = port_alive_udp(port) if label == "hy2" else port_alive(port)
+            ok(alive, f"порт {label} ({port}) слушается Xray"
+               + (f" по UDP, на одном номере с tcp-хостом plain ({hosts_ports['plain']})"
+                  if label == "hy2" else ""))
             if not alive:
                 ports_dead.append(label)
         if ports_dead:
@@ -357,6 +386,11 @@ def main() -> int:
         # транспортные и протокольные детали доехали до живого конфига Xray дословно
         cfg = json.loads(CFG_PATH.read_text(encoding="utf-8"))
         by_port = {i["port"]: i for i in cfg["inbounds"]}
+        shared = [i for i in cfg["inbounds"] if i["port"] == hosts_ports["plain"]]
+        ok({i["protocol"] for i in shared} == {"vless", "hysteria"},
+           f"живой конфиг Xray: на одном порту {hosts_ports['plain']} стоят и tcp-инбаунд plain, "
+           f"и hy2-инбаунд (hysteria v2) — Xray поднимает оба, UDP и TCP на одном номере "
+           f"не встречаются: {[(i['protocol'], i['port']) for i in shared]}")
         wss = by_port[hosts_ports["ws"]]["streamSettings"]
         ok(wss["wsSettings"]["path"] == "/medusa-tunnel" and wss["wsSettings"]["host"] == "cdn.example.net",
            "живой конфиг Xray: путь и Host-заголовок websocket")

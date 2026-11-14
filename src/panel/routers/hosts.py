@@ -133,14 +133,19 @@ def check_cert_pair(cert_file: str, key_file: str) -> None:
         raise bad_request("файл ключа должен называться .key или .pem")
 
 
-def check_port(conn: sqlite3.Connection, node_id: int, port: int, own_id: int | None = None) -> None:
-    """Порт хоста проверяется по машине ноды, а не по одной ноде.
+def check_port(conn: sqlite3.Connection, node_id: int, port: int, protocol: str,
+               own_id: int | None = None) -> None:
+    """Порт хоста проверяется по машине ноды и по классу его слушателя.
 
-    Две ноды с одним адресом — одна машина: её слушатели не должны наступать друг на друга,
-    иначе Xray падает целиком (`bind: address already in use`) и вместе с ним все хосты ноды.
-    API-порт ноды — такой же слушатель на том же адресе.
+    Две ноды с одним адресом — одна машина: её слушатели одного класса (TCP или UDP) не
+    должны наступать друг на друга: Xray 26 поднимает оба и раздаёт соединения между ними,
+    а если на этом же номере сидит API ноды — Xray не поднимается вовсе.
+
+    hy2 слушает UDP (QUIC), поэтому ему не мешают tcp-хосты на том же номере: «443/tcp для
+    VLESS, 443/udp для Hysteria2» — нормальная связка, и панель её разрешает. Два hy2-хоста
+    на одном номере — конфликт: их UDP-пакеты делятся так же.
     """
-    issue = ports.host_port_conflict(conn, node_id, port, skip_host=own_id)
+    issue = ports.host_port_conflict(conn, node_id, port, protocol=protocol, skip_host=own_id)
     if issue:
         raise conflict(issue)
 
@@ -163,7 +168,7 @@ def create_host(
                       no_ipv6=bool(node["ipv6_disabled"]), node_name=node["name"])
     check_fields(body, body.security, body.network, body.protocol)
     check_cert_pair(clean(body.certFile), clean(body.keyFile))
-    check_port(conn, node["id"], body.port)
+    check_port(conn, node["id"], body.port, body.protocol)
     private_key = public_key = ""
     if body.security == "reality":
         private_key, public_key = new_reality_keys()
@@ -234,7 +239,7 @@ def patch_host(
                       no_ipv6=bool(node["ipv6_disabled"]), node_name=node["name"])
     check_fields(body, merged["security"], merged["network"], merged["protocol"])
     check_cert_pair(merged["cert_file"], merged["key_file"])
-    check_port(conn, node_id, merged["port"], own_id=host_id)
+    check_port(conn, node_id, merged["port"], merged["protocol"], own_id=host_id)
 
     private_key, public_key = row["private_key"], row["public_key"]
     if merged["security"] == "reality" and not private_key:

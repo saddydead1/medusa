@@ -145,6 +145,58 @@ def chain_migration_checks() -> None:
     conn.close()
 
 
+def port_index_migration_check() -> None:
+    """Прежняя база поверх новой панели: индекс занятости портов дорисовывается до
+    класса слушателя.
+
+    Прежняя форма была одна на всю ноду: UNIQUE (node_id, port). Она не пускала hy2-хост на
+    тот же номер, где уже сидел tcp-хост, хотя Xray разводит UDP и TCP по разным слушателям.
+    Новая форма добавляет класс слушателя, и прежний индекс приходится пересоздать — проверка
+    и на это: миграция не должна оставить базу ни с прежним (слишком строгим) индексом, ни без
+    охраны вовсе.
+    """
+    from src.panel.db import connect, init_db
+
+    path = Path(tempfile.mkdtemp(prefix="medusa-ports-")) / "old.db"
+    init_db(path)
+    conn = connect(path)
+    node = conn.execute("INSERT INTO nodes (name, address, api_key, created_at) "
+                        "VALUES ('machine','10.1.1.1','sk-api-machine01234567890',1)").lastrowid
+    conn.execute("DROP INDEX IF EXISTS hosts_node_port")
+    conn.execute("CREATE UNIQUE INDEX hosts_node_port ON hosts (node_id, port)")
+    conn.execute("""INSERT INTO hosts (name, node_id, protocol, port, network, security, created_at)
+                    VALUES ('tcp', ?, 'vless', 8443, 'tcp', 'none', 1)""", (node,))
+    conn.commit()
+    try:
+        conn.execute("""INSERT INTO hosts (name, node_id, protocol, port, network, security, created_at)
+                        VALUES ('hy2', ?, 'hy2', 8443, 'tcp', 'tls', 1)""", (node,))
+        ok(False, "прежний индекс должен был отказать hy2 на одном порту с tcp-хостом — "
+                  "проверка не создала прежнюю форму индекса")
+    except sqlite3.IntegrityError:
+        ok(True, "прежний индекс действительно был строже нового: hy2 рядом с tcp-хостом он не пустил")
+    conn.close()
+
+    init_db(path)                       # повторный запуск панели поверх прежней базы
+    conn = connect(path)
+    columns = conn.execute("SELECT COUNT(*) AS c FROM pragma_index_info('hosts_node_port')").fetchone()["c"]
+    ok(columns == 3,
+       f"миграция пересоздала индекс занятости портов с классом слушателя: колонок {columns}")
+    conn.execute("""INSERT INTO hosts (name, node_id, protocol, port, network, security, created_at)
+                    VALUES ('hy2', ?, 'hy2', 8443, 'tcp', 'tls', 1)""", (node,))
+    conn.commit()
+    hy2 = conn.execute("SELECT protocol FROM hosts WHERE node_id = ? AND port = 8443 ORDER BY id", (node,)).fetchall()
+    ok([r["protocol"] for r in hy2] == ["vless", "hy2"],
+       f"после миграции hy2 и tcp на одном порту одной ноды живут рядом: {[r['protocol'] for r in hy2]}")
+    try:
+        conn.execute("""INSERT INTO hosts (name, node_id, protocol, port, network, security, created_at)
+                        VALUES ('tcp2', ?, 'trojan', 8443, 'tcp', 'none', 1)""", (node,))
+        ok(False, "второй tcp-хост на тот же порт проскочил: индекс не держит слушателей одного класса")
+    except sqlite3.IntegrityError as exc:
+        ok("hosts_node_port" in str(exc) or "UNIQUE" in str(exc).upper(),
+           f"два слушателя одного класса на одном порту база по-прежнему не пускает: {exc}")
+    conn.close()
+
+
 def traffic_checks(client: TestClient) -> None:
     """Как панель раскладывает отчёты нод по людям.
 
@@ -299,8 +351,93 @@ def port_and_hop_checks(client: TestClient) -> None:
        f"переход соседней ноды идёт на адрес хопа, а не на адрес его ноды: {target}")
     entry_in = next((i for i in cfg_home["inbounds"] if i["tag"] == chain["name"]), {})
     ok(bool(entry_in), f"вход цепочки — инбаунд своей ноды на её порту: {entry_in.get('port')}")
-
     client.delete(f"/api/chains/{chain['id']}")
+
+    # hy2 слушает UDP (QUIC/HTTP3), и Xray разводит UDP и TCP по разным слушателям: тот же
+    # номер, что держит tcp-хост этой же машины, hy2-хостом занять можно — это нормальная
+    # связка «443/tcp для VLESS, 443/udp для Hysteria2» (проверено живым Xray 26).
+    # Два слушателя одного класса на одном номере Xray 26 поднимает оба (SO_REUSEPORT) и
+    # раздаёт трафик между ними — вот это панель и не позволяет.
+    tcp_a = client.post("/api/hosts", json={"name": "tcp 9105", "node": "machine-a", "protocol": "vless",
+                                            "port": 9105, "network": "tcp", "security": "none"}).json()
+    hy2_share = client.post("/api/hosts", json={"name": "hy2 рядом с tcp", "node": "machine-b",
+                                                 "protocol": "hy2", "port": 9105, "network": "tcp",
+                                                 "security": "tls", "sni": "hy2.example.net"})
+    ok(hy2_share.status_code == 201,
+       f"hy2-хост занимает порт tcp-хоста той же машины (UDP и TCP не встречаются): {hy2_share}")
+
+    hy2_dup = client.post("/api/hosts", json={"name": "второй hy2 на 9105", "node": "machine-a",
+                                              "protocol": "hy2", "port": 9105, "network": "tcp",
+                                              "security": "tls", "sni": "hy2b.example.net"})
+    ok(hy2_dup.status_code == 409 and "UDP" in hy2_dup.json()["detail"],
+       f"два hy2-хоста на одном номере — конфликт (Xray делит их UDP-трафик): {hy2_dup.json()['detail']}")
+    tcp_dup = client.post("/api/hosts", json={"name": "tcp на 9105", "node": "machine-b",
+                                              "protocol": "vless", "port": 9105, "network": "tcp",
+                                              "security": "none"})
+    ok(tcp_dup.status_code == 409 and "TCP" in tcp_dup.json()["detail"],
+       f"tcp-хост на номер tcp-хоста той же машины по-прежнему занят: {tcp_dup.json()['detail']}")
+
+    # и на одной ноде: hy2-инбаунд и tcp-инбаунд на одном порту живут рядом (Xray поднимает
+    # оба) — база это разрешает, а два hy2 на одном порту одной ноды — нет
+    hy2_same = client.post("/api/hosts", json={"name": "hy2 9107", "node": "machine-a",
+                                               "protocol": "hy2", "port": 9107, "network": "tcp",
+                                               "security": "tls", "sni": "hy27.example.net"})
+    tcp_same = client.post("/api/hosts", json={"name": "tcp 9107", "node": "machine-a",
+                                               "protocol": "trojan", "port": 9107, "network": "tcp",
+                                               "security": "none"})
+    ok(hy2_same.status_code == 201 and tcp_same.status_code == 201,
+       f"hy2 и tcp на одном порту одной ноды — нормально: {hy2_same.status_code}/{tcp_same.status_code}")
+    hy2_same_dup = client.post("/api/hosts", json={"name": "hy2 9107 повтор", "node": "machine-a",
+                                                   "protocol": "hy2", "port": 9107, "network": "tcp",
+                                                   "security": "tls", "sni": "hy27b.example.net"})
+    ok(hy2_same_dup.status_code == 409,
+       f"второй hy2 на тот же порт той же ноды отвергнут: {hy2_same_dup.json()['detail']}")
+
+    # API-порт ноды панель держит за нодой целиком: hy2 поверх UDP не сломал бы API ноды
+    # поверх TCP, но два сервиса на одном номере — путаница, которую разбирает человек
+    hy2_api = client.post("/api/hosts", json={"name": "hy2 на api-порту", "node": "machine-b",
+                                              "protocol": "hy2", "port": 9443, "network": "tcp",
+                                              "security": "tls", "sni": "hy2api.example.net"})
+    ok(hy2_api.status_code == 409 and "API-портом" in hy2_api.json()["detail"],
+       f"hy2 не ставится на номер API-порта: {hy2_api.json()['detail']}")
+    api_onto_hy2 = client.patch(f"/api/nodes/{mach_b['id']}", json={"apiPort": 9107})
+    ok(api_onto_hy2.status_code == 409,
+       f"API-порт ноды не переезжает на номер hy2-хоста той же машины: {api_onto_hy2.json()['detail']}")
+
+    # хопа цепочки — такие же слушатели: hy2-хоп и tcp-хоп одной машины могут взять один номер,
+    # два hy2-хопа или два tcp-хопа — нет
+    mixed_chain = client.post("/api/chains", json={"name": "hy2+tcp порт", "hops": [
+        {"node": "machine-a", "protocol": "hy2", "network": "tcp", "security": "tls", "port": 9121,
+         "sni": "hop-hy2.example.net"},
+        {"node": "machine-b", "protocol": "vless", "network": "tcp", "security": "none", "port": 9121}]})
+    ok(mixed_chain.status_code == 201,
+       f"hy2-хоп и tcp-хоп одной машины на одном порту — нормально: {mixed_chain}")
+    two_hy2_chain = client.post("/api/chains", json={"name": "два hy2 порт", "hops": [
+        {"node": "machine-a", "protocol": "hy2", "network": "tcp", "security": "tls", "port": 9122,
+         "sni": "hop-a.example.net"},
+        {"node": "machine-b", "protocol": "hy2", "network": "tcp", "security": "tls", "port": 9122,
+         "sni": "hop-b.example.net"}]})
+    ok(two_hy2_chain.status_code == 409 and "UDP" in two_hy2_chain.json()["detail"],
+       f"два hy2-хопа на одном номере одной машины — конфликт: {two_hy2_chain.json()['detail']}")
+    two_tcp_chain = client.post("/api/chains", json={"name": "два tcp порт", "hops": [
+        {"node": "machine-a", "protocol": "vless", "network": "tcp", "security": "none", "port": 9123},
+        {"node": "machine-b", "protocol": "trojan", "network": "tcp", "security": "none", "port": 9123}]})
+    ok(two_tcp_chain.status_code == 409,
+       f"два tcp-хопа на одном номере одной машины — конфликт: {two_tcp_chain.json()['detail']}")
+
+    probe = connect()
+    try:
+        cfg_a = collect(probe, int(mach_a["id"]))["config"]
+    finally:
+        probe.close()
+    on_9107 = [i for i in cfg_a["inbounds"] if i["port"] == 9107]
+    ok({i["protocol"] for i in on_9107} == {"hysteria", "trojan"},
+       f"конфиг ноды держит оба инбаунда на одном порту (hysteria = hy2 и tcp-хост): "
+       f"{[(i['protocol'], i['port']) for i in on_9107]}")
+
+    for host in (tcp_a, hy2_share.json(), hy2_same.json(), tcp_same.json()):
+        client.delete(f"/api/hosts/{host['id']}")
+    client.delete(f"/api/chains/{mixed_chain.json()['id']}")
     client.delete(f"/api/nodes/{mach_b['id']}")
     client.delete(f"/api/nodes/{mach_a['id']}")
 
@@ -1342,6 +1479,7 @@ def main() -> int:
         ok(client.get("/api/chains").status_code == 200, "список цепочек работает")
 
     chain_migration_checks()
+    port_index_migration_check()
     port_and_hop_checks(client)
     proxy_setting_checks(client)
     hop_settings_checks(client)

@@ -539,6 +539,21 @@ def main() -> int:
             masked_in = next(i for i in masked["inbounds"] if i["tag"] == "HY2443")
             ok(all(u.get("auth") == "скрыто панелью" for u in masked_in["settings"]["users"]),
                "окно конфига ноды не показывает auth-ключи hy2-подписчиков")
+            # hy2 слушает UDP (QUIC), и tcp-хост на том же номере этой же ноды ему не мешает:
+            # панель пускает такую связку, и оба инбаунда доезжают ноде. Настоящий Xray поднявает
+            # её и гоняет по ней трафик — это проверяет tools/live_demo.py (hy2 и plain на одном
+            # порту, оба туннеля дают HTTP 204)
+            same_port = client.post("/api/hosts", json={"name": "T3071", "node": "stub",
+                                                        "protocol": "trojan", "port": 3071,
+                                                        "network": "tcp", "security": "none"})
+            ok(same_port.status_code == 201,
+               f"tcp-хост на номер hy2-хоста не мешает (разные классы слушателя): "
+               f"{same_port.json().get('detail', 'ok')}")
+            both = wait_cfg(cfg_path, lambda c: sum(1 for i in c["inbounds"] if i["port"] == 3071) == 2)
+            ok(both is not None,
+               "на ноде оба инбаунда на одном порту: Xray разводит UDP (hysteria) и TCP (trojan)")
+            client.delete(f"/api/hosts/{same_port.json()['id']}")
+
             client.delete(f"/api/hosts/{hy2_host['id']}")
             gone = wait_cfg(cfg_path, lambda c: all(i["tag"] != "HY2443" for i in c["inbounds"]))
             ok(gone is not None, "hy2-хост удалён — его инбаунд снялся с ноды")
@@ -559,6 +574,18 @@ def main() -> int:
                    for o in strategic),
                f"наружу и в переходы нода ходит по IPv4: "
                f"{[(o['tag'], o.get('streamSettings', {}).get('sockopt', {}).get('domainStrategy')) for o in strategic]}")
+            # hy2 слушает UDP (QUIC), и ему тоже нужен IPv4-адрес: dual-stack QUIC-сокет на ::
+            # на машине без IPv6 роняет ноду целиком
+            hy2_v6 = client.post("/api/hosts", json={"name": "HY2V6", "node": "stub", "protocol": "hy2",
+                                                     "port": 3073, "network": "tcp", "security": "tls",
+                                                     "address": "hy2v6.example.net",
+                                                     "sni": "hy2v6.example.net"}).json()
+            v6hy2 = wait_cfg(cfg_path, lambda c: any(i["tag"] == "HY2V6" and i.get("listen") == "0.0.0.0"
+                                                     for i in c["inbounds"]))
+            ok(v6hy2 is not None,
+               "hy2-инбаунд ноды без IPv6 слушает 0.0.0.0 — QUIC поверх IPv6 ему не подниматься")
+            client.delete(f"/api/hosts/{hy2_v6['id']}")
+            wait_cfg(cfg_path, lambda c: all(i["tag"] != "HY2V6" for i in c["inbounds"]))
             client.patch(f"/api/nodes/{node['id']}", json={"ipv6Disabled": False})
             plain = wait_cfg(cfg_path, lambda c: all("sockopt" not in (o.get("streamSettings") or {})
                                                      or not (o["streamSettings"].get("sockopt") or {}).get("domainStrategy")

@@ -118,7 +118,7 @@ const I18N = {
     'cfg.sec.tls.hint':'Оставьте сертификаты пустыми — нода сама выпустит self-signed на sni. Есть настоящий сертификат (например, от certbot) — впишите пути к обоим файлам. Строгому клиенту нужно назвать отпечаток сертификата pinnedPeerCertSha256.',
     'cfg.sec.tls.hopHint':'Хопу цепочки сертификат выпускает панель: она обязана знать его отпечаток, чтобы закрепить его за соседней нодой. SNI здесь — имя, которое назовёт соседняя нода; пусто — адрес хопа (или адрес её ноды).',
     'cfg.protocol.short':'Протокол','cfg.port.short':'Порт',
-    'host.hy2Hint':'Hysteria2: транспорт и шифрование встроены в протокол (QUIC + TLS), hy2-хост слушает UDP, сертификат хосту выпускает нода. Ссылка hy2:// и прокси type: hysteria2 для Clash/Mihomo.',
+    'host.hy2Hint':'Hysteria2: транспорт и шифрование встроены в протокол (QUIC + TLS), hy2-хост слушает UDP, сертификат хосту выпускает нода. Ссылка hy2:// и прокси type: hysteria2 для Clash/Mihomo. Тот же номер порта, что держит tcp-хост, hy2 не помеха — UDP и TCP не встречаются; а вот два hy2-хоста на одном номере занять не могут: Xray делил бы их UDP-трафик между ними.',
     'th.address':'Адрес','th.node':'Нода','th.users':'Пользователей','th.traffic':'Трафик',
     'th.name':'Имя','th.title':'Название','th.status':'Статус','th.login':'Логин','th.role':'Роль',
     'th.lastLogin':'Последний вход','th.route':'Маршрут',
@@ -241,7 +241,7 @@ const I18N = {
     'cfg.sec.tls.hint':'Leave the certificate fields empty and the node issues a self-signed cert for the sni. Have a real certificate (e.g. from certbot) — give both file paths. Strict clients must pin it via pinnedPeerCertSha256.',
     'cfg.sec.tls.hopHint':'The panel issues the certificate for a chain hop: it has to know its fingerprint to pin it on the neighbouring node. SNI here is the name that neighbour will use; empty means the hop address (or its node address).',
     'cfg.protocol.short':'Protocol','cfg.port.short':'Port',
-    'host.hy2Hint':'Hysteria2: transport and encryption are built into the protocol (QUIC + TLS), a hy2 host listens on UDP, the node issues its certificate. hy2:// link and a type: hysteria2 proxy for Clash/Mihomo.',
+    'host.hy2Hint':'Hysteria2: transport and encryption are built into the protocol (QUIC + TLS), a hy2 host listens on UDP, the node issues its certificate. hy2:// link and a type: hysteria2 proxy for Clash/Mihomo. The same port number a tcp host holds is not a problem for hy2 — UDP and TCP never meet; two hy2 hosts on one number are: Xray would split their UDP traffic between them.',
     'th.address':'Address','th.node':'Node','th.users':'Users','th.traffic':'Traffic',
     'th.name':'Name','th.title':'Name','th.status':'Status','th.login':'Username','th.role':'Role',
     'th.lastLogin':'Last sign-in','th.route':'Route',
@@ -1410,23 +1410,29 @@ async function loadCtx(){
   ctx = {hosts,chains,nodes};
 }
 /* Занятые порты считаются по машине, а не по одной ноде: две ноды с одним адресом — это
-   один и тот же сервер, и Xray там падает целиком, если два слушателя взяли один порт.
-   API-порт ноды — такой же слушатель на том же адресе. */
+   один и тот же сервер, и Xray 26 поднимает двух слушателей одного класса на одном порту
+   (SO_REUSEPORT), но раздаёт трафик между ними — подписчики попадают не в свой хост.
+   API-порт ноды — такой же слушатель на том же адресе, он занят всегда.
+   hy2 слушает UDP (QUIC), поэтому ему не мешают tcp-хосты на том же номере: 443/tcp для
+   VLESS и 443/udp для Hysteria2 — нормальная связка, и бэкенд её разрешает. */
+const listenerNet = proto => proto === 'hy2' ? 'udp' : 'tcp';
 const machineNames = node => {
   const self = ctx.nodes.find(n=>n.name===node);
   if(!self) return new Set([node]);
   return new Set(ctx.nodes.filter(n=>n.address===self.address).map(n=>n.name));
 };
-const taken = node => {
+/* net — класс слушателя, который сюда ставят: 'tcp' или 'udp' (listenerNet от протокола) */
+const taken = (node, net='tcp') => {
   const onMachine = machineNames(node);
   return new Set([
+    /* API-порт ноды панель держит за нодой целиком, для любого класса слушателя */
     ...ctx.nodes.filter(n=>onMachine.has(n.name)).map(n=>n.apiPort),
-    ...ctx.hosts.filter(h=>onMachine.has(h.node)).map(h=>h.port),
-    ...ctx.chains.flatMap(c=>c.hops.filter(h=>onMachine.has(h.node)).map(h=>h.port)),
+    ...ctx.hosts.filter(h=>onMachine.has(h.node) && listenerNet(h.protocol)===net).map(h=>h.port),
+    ...ctx.chains.flatMap(c=>c.hops.filter(h=>onMachine.has(h.node) && listenerNet(h.protocol)===net).map(h=>h.port)),
   ]);
 };
-function freePort(node, extra=[]){
-  const used = new Set([...taken(node), ...extra]);
+function freePort(node, extra=[], net='tcp'){
+  const used = new Set([...taken(node, net), ...extra]);
   const p = [443,8443,2053,2083,2087,2096].find(x=>!used.has(x));
   if(p) return p;
   let r = 10000 + Math.floor(Math.random()*50000); while(used.has(r)) r++;
@@ -1460,7 +1466,7 @@ async function openHost(){
   $('#hdlg h3').textContent = t('dlg.host.title');
   $('#hdlg [value=ok]').textContent = t('btn.create');
   initCfg($('#hcfg'), ()=>renderHostExtras({}));
-  K($('#hcfg'),'port').value = freePort($('#hnode').value);
+  K($('#hcfg'),'port').value = freePort($('#hnode').value, [], listenerNet(K($('#hcfg'),'protocol').value));
   $('#hdlg').showModal();
 }
 async function openHostEdit(id){
@@ -1481,13 +1487,13 @@ async function openHostEdit(id){
   renderHostExtras(h);
   $('#hdlg').showModal();
 }
-$('#hnode').onchange = ()=>{ K($('#hcfg'),'port').value = freePort($('#hnode').value); };
+$('#hnode').onchange = ()=>{ K($('#hcfg'),'port').value = freePort($('#hnode').value, [], listenerNet(K($('#hcfg'),'protocol').value)); };
 $('#hform').addEventListener('submit', e=>{
   if(e.submitter && e.submitter.value!=='ok') return;
   const port = readCfg($('#hcfg')).port, node = $('#hnode').value;
   const own = hostEditing && ctx.hosts.find(x=>x.id===hostEditing);
   if(own && own.port===port && own.node===node) return;   // свой порт при правке — не конфликт
-  if(taken(node).has(port)){ e.preventDefault(); toast(t('toast.portTaken',{port,node})); }
+  if(taken(node, listenerNet(readCfg($('#hcfg')).protocol)).has(port)){ e.preventDefault(); toast(t('toast.portTaken',{port,node})); }
 });
 $('#hdlg').addEventListener('close', async ()=>{
   if($('#hdlg').returnValue!=='ok') return;
@@ -1512,8 +1518,10 @@ const rowNode = r => K(r,'node').value;
 const rowPort = r => +K(r,'port').value;
 const nodeAddress = name => (ctx.nodes.find(n=>n.name===name) || {}).address || '';
 function setHopPort(row){
-  const same = hopRows().filter(r=>r!==row && rowNode(r)===rowNode(row)).map(rowPort);
-  K(row,'port').value = freePort(rowNode(row), same);
+  const net = listenerNet(K(row,'protocol').value);
+  const same = hopRows().filter(r=>r!==row && rowNode(r)===rowNode(row)
+                               && listenerNet(K(r,'protocol').value)===net).map(rowPort);
+  K(row,'port').value = freePort(rowNode(row), same, net);
 }
 /* Адрес хопа обязателен и подставляется сам: это тот адрес, куда подключаются и подписчик
    входа, и соседняя нода. Панель пишет сюда адрес ноды этого хопа — поле никогда не пусто,
@@ -1612,13 +1620,14 @@ $('#cform').addEventListener('submit', e=>{
   // свои порты при правке цепочки конфликтом не считаются: хопа этой же цепочки
   // занимают их прямо сейчас, и перестановка хопов внутри тех же портов — не занято
   const own = chainEditing ? (ctx.chains.find(c=>c.id===chainEditing)?.hops || []) : [];
-  const mine = (node, port) => own.some(h=>h.node===node && h.port===port);
+  const mine = (node, port, net) => own.some(h=>h.node===node && h.port===port && listenerNet(h.protocol)===net);
   rows.forEach((r,i)=>{
-    const n = rowNode(r), port = rowPort(r);
+    const n = rowNode(r), port = rowPort(r), net = listenerNet(K(r,'protocol').value);
     if(!(K(r,'address').value || '').trim()) err ||= t('chain.hopAddressEmpty');
     if(i && n===rowNode(rows[i-1])) err ||= t('chain.hopSameNode');
-    if(!mine(n,port) && taken(n).has(port)) err ||= t('toast.portTaken',{port,node:n});
-    if(rows.slice(0,i).some(o=>rowNode(o)===n && rowPort(o)===port)) err ||= t('toast.portDup',{port,node:n});
+    if(!mine(n,port,net) && taken(n, net).has(port)) err ||= t('toast.portTaken',{port,node:n});
+    if(rows.slice(0,i).some(o=>rowNode(o)===n && rowPort(o)===port
+                              && listenerNet(K(o,'protocol').value)===net)) err ||= t('toast.portDup',{port,node:n});
   });
   if(err){ e.preventDefault(); toast(err); }
 });

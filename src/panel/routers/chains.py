@@ -114,10 +114,13 @@ def hop_issue(conn: sqlite3.Connection, hop: dict, skip_chain: int | None) -> st
     """Чем занят порт этого хопа.
 
     Смотрим не «на ноде», а на адресе ноды: соседняя нода с тем же адресом — это та же
-    машина, и два её слушателя на одном порту уронят Xray целиком (вместе с его здоровыми
-    хостами). API-порт ноды участвует в проверке: он слушает там же.
+    машина, и два её слушателя одного класса на одном порту делят трафик между собой (а если
+    номер занят API-портом — Xray на этой машине не поднимется вовсе). API-порт ноды участвует
+    в проверке: он слушает там же. Класс слушателя берётся из протокола хопа: hy2-хоп слушает
+    UDP, и ему не мешают tcp-хосты или tcp-хопа на том же номере.
     """
-    return ports.host_port_conflict(conn, hop["node_id"], hop["port"], skip_chain=skip_chain)
+    return ports.host_port_conflict(conn, hop["node_id"], hop["port"], protocol=hop["protocol"],
+                                    skip_chain=skip_chain)
 
 
 def resolve_hops(conn: sqlite3.Connection, body: ChainCreate, skip_chain: int | None) -> tuple[list[dict], list[int]]:
@@ -162,16 +165,18 @@ def resolve_hops(conn: sqlite3.Connection, body: ChainCreate, skip_chain: int | 
                                   "принимаемых SNI) обязан быть доменом, а не IP")
 
     # хопы одной цепочки могут попасть на одну машину (две ноды с одним адресом), и тогда
-    # их порты обязаны различаться так же, как порты обычных хостов
-    on_machine: dict[tuple[str, int], str] = {}
+    # их порты обязаны различаться так же, как порты обычных хостов — но только в пределах
+    # одного класса слушателя: hy2-хоп (UDP) и tcp-хоп на одном номере живут нормально
+    on_machine: dict[tuple[str, int, str], str] = {}
     for hop in resolved:
         issue = hop_issue(conn, hop, skip_chain=skip_chain)
         if issue:
             raise conflict(issue)
-        key = (ports.node_address(conn, hop["node_id"]), hop["port"])
+        net = ports.listener_net(hop["protocol"])
+        key = (ports.node_address(conn, hop["node_id"]), hop["port"], net)
         if key in on_machine:
             raise conflict(f"порт {hop['port']} на {key[0]} уже занят хопом «{on_machine[key]}» "
-                           "этой же цепочки")
+                           f"этой же цепочки: оба слушают {ports.NET_LABEL[net]} на этом номере")
         on_machine[key] = hop["node"]
     return resolved, [h["node_id"] for h in resolved]
 

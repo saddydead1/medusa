@@ -31,8 +31,12 @@ def check_api_port(conn: sqlite3.Connection, node_id: int | None, address: str, 
     Это не придирка: нода и её же хосты живут на одном адресе, и если API-порт совпадёт с
     портом хоста (своего или чужой ноды на этой машине), Xray не поднимется — а панель будет
     видеть живую ноду с мёртвыми хостами.
+
+    Панель резервирует этот номер за нодой для любого класса слушателя: hy2 поверх UDP не
+    помешал бы API ноды поверх TCP (проверено живым Xray), но два сервиса на одном порту —
+    то, что человек потом разбирает по логам.
     """
-    issue = ports.port_conflict(conn, address, port, skip_node=node_id)
+    issue = ports.port_conflict(conn, address, port, skip_api_of=node_id, network=ports.ANY_NET)
     if issue:
         raise conflict(issue)
 
@@ -105,9 +109,11 @@ def patch_node(
     if "ipv6Disabled" in changes or "address" in changes:
         if issue := node_conflict(address, no_ipv6):
             raise bad_request(issue)
-    for host in conn.execute("SELECT id, name, port FROM hosts WHERE node_id = ?", (node_id,)).fetchall():
+    for host in conn.execute("SELECT id, name, port, protocol FROM hosts WHERE node_id = ?",
+                            (node_id,)).fetchall():
         issue = ports.port_conflict(conn, address, int(host["port"]),
-                                    skip_node=node_id, skip_host=int(host["id"]))
+                                    skip_host=int(host["id"]), own_node=node_id,
+                                    network=ports.listener_net(host["protocol"]))
         if issue:
             raise conflict(f"хост «{host['name']}»: {issue}")
     # хосты этой же ноды с IPv6-адресом при выключенном IPv6 остаться не могут

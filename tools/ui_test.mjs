@@ -520,6 +520,54 @@ await submit('#hform');
 await wait(() => document.querySelector('#view').textContent.includes('9412'));
 ok((await text()).includes('FI Reality-2') && (await text()).includes('9412'), 'хост изменён: имя и порт обновлены');
 
+/* hy2 слушает UDP (QUIC), поэтому номер, который держит tcp-хост этой же машины, для него
+   не занят: связка «443/tcp для VLESS, 443/udp для Hysteria2» рабочая — настоящий Xray
+   поднимает оба инбаунда (это проверяет tools/live_demo.py). Фронт держит то же правило,
+   что и бэкенд: tcp-слушателя hy2 не видит, а своего — видит */
+await page.click('[data-a="newhost"]');
+await openDlg('#hdlg');
+await page.evaluate(() => {
+  const set = (k, v) => { const el = document.querySelector(`#hcfg [data-k="${k}"]`); if(el){ el.value = v; el.dispatchEvent(new Event('change', {bubbles: true})); } };
+  document.querySelector('#hform [name=name]').value = 'FI Hysteria';
+  document.querySelector('#hform [name=address]').value = 'hy2.example.net';
+  document.querySelector('#hnode').value = 'vps-fi';
+  document.querySelector('#hnode').dispatchEvent(new Event('change'));
+  set('protocol', 'hy2'); set('security', 'tls'); set('network', 'tcp');
+  document.querySelector('#hcfg [data-k="port"]').value = 9412;
+});
+ok(await page.locator('#hsec [data-k="sni"]').count() === 1
+   && await page.locator('#hsec [data-k="certFile"]').count() === 1
+   && (await page.locator('#hadv').innerHTML()).trim() === ''
+   && (await page.locator('#hsec').innerText()).includes('Hysteria2'),
+   'hy2: из защиты только sni и свои сертификаты, блока транспорта и поля отпечатка нет, '
+   + 'подсказка про QUIC/UDP на месте');
+await clearToast();
+await submit('#hform');
+await wait(() => document.querySelector('#view').textContent.includes('FI Hysteria'));
+const shared = await page.evaluate(() => (document.querySelector('#view').textContent.match(/9412/g) || []).length);
+ok(shared >= 2, `hy2-хост и tcp-хост одной ноды сидят на одном порту — оба в списке: упоминаний 9412: ${shared}`);
+
+/* два hy2 на одном номере — уже конфликт: Xray делил бы их UDP-трафик между инбаундами */
+await page.click('[data-a="newhost"]');
+await openDlg('#hdlg');
+await page.evaluate(() => {
+  const set = (k, v) => { const el = document.querySelector(`#hcfg [data-k="${k}"]`); if(el){ el.value = v; el.dispatchEvent(new Event('change', {bubbles: true})); } };
+  document.querySelector('#hform [name=name]').value = 'FI Hysteria 2';
+  document.querySelector('#hform [name=address]').value = 'hy2b.example.net';
+  document.querySelector('#hnode').value = 'vps-fi';
+  document.querySelector('#hnode').dispatchEvent(new Event('change'));
+  set('protocol', 'hy2'); set('security', 'tls'); set('network', 'tcp');
+  document.querySelector('#hcfg [data-k="port"]').value = 9412;
+});
+await clearToast();
+await page.click('#hform .btn.pri');
+await wait(() => document.querySelector('#toast').textContent.includes('занят'));
+ok(await page.evaluate(() => document.querySelector('#hdlg').open),
+   `второй hy2 на порт первого фронт не пускает: ${await toastText()}`);
+await page.evaluate(() => document.querySelector('#hdlg').close());
+await api(`/api/hosts/${(await (await api('/api/hosts')).json()).find(h => h.name === 'FI Hysteria').id}`, 'DELETE');
+await go('hosts');
+
 /* ---------- цепочка: её хост подсосался из цепочки ---------- */
 await go('chains');
 await page.click('[data-a="newchain"]');

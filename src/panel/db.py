@@ -138,7 +138,6 @@ CREATE TABLE IF NOT EXISTS hosts (
 );
 -- порт ноды занят и обычным хостом, и хопом цепочки; индекс заводится отдельной
 -- инструкцией (см. ensure_columns), чтобы достался и новым, и прежним базам
-CREATE UNIQUE INDEX IF NOT EXISTS hosts_node_port ON hosts (node_id, port);
 
 CREATE INDEX IF NOT EXISTS idx_hosts_node   ON hosts(node_id);
 CREATE INDEX IF NOT EXISTS idx_hosts_chain  ON hosts(chain_id);
@@ -222,14 +221,18 @@ def free_hop_ports(conn: sqlite3.Connection) -> list[str]:
     """
     notes: list[str] = []
     rows = conn.execute(
-        """SELECT h.id, h.name, h.chain_id, h.hop_index, h.port, h.node_id, n.address AS node_address
+        """SELECT h.id, h.name, h.chain_id, h.hop_index, h.port, h.protocol, h.node_id,
+                  n.address AS node_address
            FROM hosts h JOIN nodes n ON n.id = h.node_id
            WHERE h.chain_id IS NOT NULL ORDER BY h.chain_id, h.hop_index, h.id""").fetchall()
     for row in rows:
-        issue = ports.port_conflict(conn, row["node_address"], int(row["port"]), skip_host=row["id"])
+        net = ports.listener_net(row["protocol"])
+        issue = ports.port_conflict(conn, row["node_address"], int(row["port"]),
+                                   skip_host=row["id"], network=net)
         if issue is None:
             continue
-        moved = ports.free_port(conn, int(row["node_id"]), int(row["port"]) + 1)
+        moved = ports.free_port(conn, int(row["node_id"]), int(row["port"]) + 1,
+                                protocol=row["protocol"])
         if moved is None:
             notes.append(f"{issue} — свободного порта для хопа «{row['name']}» не нашлось")
             continue
@@ -357,11 +360,20 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
     # порт занят и хопом цепочки: в прежних базах хопа отдельными строками hosts не были,
     # поэтому индекс добавляется отдельно (создать его поверх уже существующего дубликата
-    # sqlite не может — тогда держится только проверка слоя выше)
+    # sqlite не может — тогда держится только проверка слоя выше).
+    # Класс слушателя в индексе обязателен: прежняя форма UNIQUE (node_id, port) не пускала
+    # на один порт hy2-хост рядом с tcp-хостом, хотя Xray разводит их по протоколам
+    # (QUIC/UDP и TCP) и такая связка работает. Поэтому прежний индекс пересоздаётся.
+    indexed = conn.execute("SELECT COUNT(*) AS c FROM pragma_index_info('hosts_node_port')").fetchone()["c"]
+    if indexed and indexed != 3:
+        conn.execute("DROP INDEX IF EXISTS hosts_node_port")
+    guarded = f"CREATE UNIQUE INDEX IF NOT EXISTS hosts_node_port ON hosts (node_id, port, {ports.LISTENER_NET_SQL})"
     try:
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS hosts_node_port ON hosts (node_id, port)")
+        conn.execute(guarded)
     except sqlite3.IntegrityError:
-        pass
+        # в прежней базе уже есть дубликаты одного класса: новый индекс поверх них не
+        # создаётся, оставляем хотя бы прежний (он строже, но хоть как-то держит границу)
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS hosts_node_port ON hosts (node_id, port)")
 
 
 def init_db(path: Path | None = None) -> list[str]:
