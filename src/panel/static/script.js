@@ -81,6 +81,8 @@ const I18N = {
     'dlg.node.apiPort':'Порт API ноды','dlg.node.key':'API-ключ ноды',
     'dlg.node.keyHint':'API-ключ нода печатает в консоль при первом запуске.',
     'dlg.node.proxy':'SOCKS5-прокси (необязательно)',
+    'dlg.node.ipv6':'Выключить IPv6 на этой ноде',
+    'dlg.node.ipv6Hint':'Нужно, если у машины ноды нет рабочего IPv6: Xray будет слушать 0.0.0.0 и ходить наружу и в переходы цепочек только по IPv4. Хост или хоп с IPv6-адресом на такой ноде остаться не смогут.',
     'dlg.nodeEdit.proxy':'SOCKS5-прокси для связи',
     'node.openTip':'Изменить ноду','node.version':'Версия ноды','node.notReported':'неизвестно',
     'dlg.nodeEdit.apiKey':'API-ключ','dlg.nodeEdit.check':'Связь с панелью',
@@ -100,6 +102,7 @@ const I18N = {
     'btn.newHost':'Добавить хост',
     'btn.newChain':'Создать цепочку','btn.chain':'Цепочка','btn.discard':'Отменить','btn.addhop':'Добавить хоп',
     'dlg.user.title':'Новый пользователь','dlg.user.name':'Имя (email в Xray)',
+    'dlg.user.client':'Приложение клиента','dlg.user.clientHint':'Нужно только для статистики на «Обзоре»: сама панель приложение не определяет, а по имени приложения видна доля подписок и трафика.',
     'dlg.admin.title':'Новый администратор','dlg.admin.login':'Логин',
     'dlg.admin.password':'Пароль (минимум 8 символов)',
     'dlg.admin.hint':'Администратор управляет пользователями, хостами, цепочками и нодами. Настройки и других администраторов меняет владелец.',
@@ -115,6 +118,7 @@ const I18N = {
     'cfg.sec.tls.hint':'Оставьте сертификаты пустыми — нода сама выпустит self-signed на sni. Есть настоящий сертификат (например, от certbot) — впишите пути к обоим файлам. Строгому клиенту нужно назвать отпечаток сертификата pinnedPeerCertSha256.',
     'cfg.sec.tls.hopHint':'Хопу цепочки сертификат выпускает панель: она обязана знать его отпечаток, чтобы закрепить его за соседней нодой. SNI здесь — имя, которое назовёт соседняя нода; пусто — адрес хопа (или адрес её ноды).',
     'cfg.protocol.short':'Протокол','cfg.port.short':'Порт',
+    'host.hy2Hint':'Hysteria2: транспорт и шифрование встроены в протокол (QUIC + TLS), hy2-хост слушает UDP, сертификат хосту выпускает нода. Ссылка hy2:// и прокси type: hysteria2 для Clash/Mihomo. Тот же номер порта, что держит tcp-хост, hy2 не помеха — UDP и TCP не встречаются; а вот два hy2-хоста на одном номере занять не могут: Xray делил бы их UDP-трафик между ними.',
     'th.address':'Адрес','th.node':'Нода','th.users':'Пользователей','th.traffic':'Трафик',
     'th.name':'Имя','th.title':'Название','th.status':'Статус','th.login':'Логин','th.role':'Роль',
     'th.lastLogin':'Последний вход','th.route':'Маршрут',
@@ -128,6 +132,8 @@ const I18N = {
     'overview.clients':'Приложения клиентов','overview.clientsAria':'Распределение подписок по приложениям клиентов',
     'subs.one':'подписка','subs.few':'подписки','subs.many':'подписок',
     'clients.activeTitle':'активных подписок','client.unknown':'прочие',
+    'client.none':'не указано','dlg.userEdit.title':'Пользователь: изменение',
+    'dlg.userEdit.hint':'Имя — это метка в Xray и то, что видит подписчик; приложение нужно для статистики на «Обзоре». Смена имени трафик не теряет: счётчики привязаны к человеку, а не к имени.',
     'empty.nodes':'Нод пока нет. Панель ещё ни к одной ноде не подключилась.',
     'sys.server':'Сервер','sys.cpu':'ЦП','sys.ram':'ОЗУ','sys.disk':'Диск','sys.diskMount':'Диск {mount}',
     'sys.updated':'обновлено в {time}','sys.mocked':'тестовые данные, обновлено в {time}',
@@ -154,7 +160,7 @@ const I18N = {
     'settings.unsaved':'Есть несохранённые изменения',
     'ago.never':'Никогда','ago.now':'Только что','ago.min':'{n} мин назад','ago.hour':'{n} ч назад','ago.day':'{n} дн. назад',
     'toast.saved':'Настройки сохранены','toast.discarded':'Изменения отменены','toast.passwordChanged':'Пароль изменён',
-    'toast.adminCreated':'Администратор создан','toast.chainCreated':'Цепочка создана','toast.userCreated':'Пользователь создан',
+    'toast.adminCreated':'Администратор создан','toast.chainCreated':'Цепочка создана','toast.userCreated':'Пользователь создан','toast.userSaved':'Пользователь обновлён',
     'toast.deleted':'Удалён','toast.chainDeleted':'Удалена','toast.chainEdited':'Цепочка изменена','toast.subCopied':'Ссылка подписки скопирована',
     'toast.error':'Ошибка: {msg}','toast.loadSettings':'Не удалось получить настройки: {msg}',
     'auth.login':'Вход в панель','auth.user':'Логин','auth.password':'Пароль','auth.btn':'Войти','auth.key':'Войти ключом',
@@ -198,6 +204,8 @@ const I18N = {
     'dlg.node.apiPort':'Node API port','dlg.node.key':'Node API key',
     'dlg.node.keyHint':'The node prints its API key to the console on first start.',
     'dlg.node.proxy':'SOCKS5 proxy (optional)',
+    'dlg.node.ipv6':'Disable IPv6 on this node',
+    'dlg.node.ipv6Hint':'For a node machine without working IPv6: Xray will listen on 0.0.0.0 and go out — including chain hops — over IPv4 only. A host or hop with an IPv6 address cannot stay on such a node.',
     'dlg.nodeEdit.proxy':'SOCKS5 proxy for the link',
     'node.openTip':'Edit this node','node.version':'Node version','node.notReported':'unknown',
     'dlg.nodeEdit.apiKey':'API key','dlg.nodeEdit.check':'Panel link',
@@ -217,6 +225,7 @@ const I18N = {
     'btn.newHost':'Add host',
     'btn.newChain':'Create chain','btn.chain':'Chain','btn.discard':'Discard','btn.addhop':'Add hop',
     'dlg.user.title':'New user','dlg.user.name':'Name (email in Xray)',
+    'dlg.user.client':'Client app','dlg.user.clientHint':'Only for the Overview statistics: the panel cannot detect the app itself, and the app name is what splits subscriptions and traffic.',
     'dlg.admin.title':'New administrator','dlg.admin.login':'Username',
     'dlg.admin.password':'Password (at least 8 characters)',
     'dlg.admin.hint':'An administrator manages users, hosts, chains and nodes. Only the owner can change settings and other administrators.',
@@ -232,6 +241,7 @@ const I18N = {
     'cfg.sec.tls.hint':'Leave the certificate fields empty and the node issues a self-signed cert for the sni. Have a real certificate (e.g. from certbot) — give both file paths. Strict clients must pin it via pinnedPeerCertSha256.',
     'cfg.sec.tls.hopHint':'The panel issues the certificate for a chain hop: it has to know its fingerprint to pin it on the neighbouring node. SNI here is the name that neighbour will use; empty means the hop address (or its node address).',
     'cfg.protocol.short':'Protocol','cfg.port.short':'Port',
+    'host.hy2Hint':'Hysteria2: transport and encryption are built into the protocol (QUIC + TLS), a hy2 host listens on UDP, the node issues its certificate. hy2:// link and a type: hysteria2 proxy for Clash/Mihomo. The same port number a tcp host holds is not a problem for hy2 — UDP and TCP never meet; two hy2 hosts on one number are: Xray would split their UDP traffic between them.',
     'th.address':'Address','th.node':'Node','th.users':'Users','th.traffic':'Traffic',
     'th.name':'Name','th.title':'Name','th.status':'Status','th.login':'Username','th.role':'Role',
     'th.lastLogin':'Last sign-in','th.route':'Route',
@@ -245,6 +255,8 @@ const I18N = {
     'overview.clients':'Client apps','overview.clientsAria':'Subscription split by client app',
     'subs.one':'subscription','subs.few':'subscriptions','subs.many':'subscriptions',
     'clients.activeTitle':'active subscriptions','client.unknown':'other',
+    'client.none':'not specified','dlg.userEdit.title':'User: edit',
+    'dlg.userEdit.hint':'The name is the Xray label and what the subscriber sees; the app is for the Overview statistics. Renaming keeps the traffic: counters follow the person, not the name.',
     'empty.nodes':'No nodes yet. The panel has not connected to any node.',
     'sys.server':'Server','sys.cpu':'CPU','sys.ram':'RAM','sys.disk':'Disk','sys.diskMount':'Disk {mount}',
     'sys.updated':'updated at {time}','sys.mocked':'demo data, updated at {time}',
@@ -271,7 +283,7 @@ const I18N = {
     'settings.unsaved':'There are unsaved changes',
     'ago.never':'Never','ago.now':'Just now','ago.min':'{n} min ago','ago.hour':'{n} h ago','ago.day':'{n} d ago',
     'toast.saved':'Settings saved','toast.discarded':'Changes discarded','toast.passwordChanged':'Password changed',
-    'toast.adminCreated':'Administrator created','toast.chainCreated':'Chain created','toast.userCreated':'User created',
+    'toast.adminCreated':'Administrator created','toast.chainCreated':'Chain created','toast.userCreated':'User created','toast.userSaved':'User updated',
     'toast.deleted':'Deleted','toast.chainDeleted':'Deleted','toast.chainEdited':'Chain updated','toast.subCopied':'Subscription link copied',
     'toast.error':'Error: {msg}','toast.loadSettings':'Could not load settings: {msg}',
     'auth.login':'Sign in to the panel','auth.user':'Login','auth.password':'Password','auth.btn':'Sign in','auth.key':'Sign in with a key',
@@ -461,6 +473,7 @@ const mock = {
     {id:2,name:'FI TLS WS',node:'vps-fi',address:'fi.example.com',protocol:'vless',port:8443,network:'ws',security:'tls',chain:null},
     {id:3,name:'DE Reality',node:'vps-de',address:'de.example.com',protocol:'vless',port:443,network:'tcp',security:'reality',chain:null},
     {id:4,name:'Home VMess',node:'home',address:'',protocol:'vmess',port:2083,network:'ws',security:'tls',chain:null},
+    {id:5,name:'FI Hysteria2',node:'vps-fi',address:'fi.example.com',protocol:'hy2',port:4444,network:'tcp',security:'tls',chain:null},
   ],
   admins: [
     {id:1,username:'admin',role:'owner',status:'active',last:Date.now()-5*60e3,self:true},
@@ -539,13 +552,17 @@ function mockCall(method, path, body){
     const hosts = mock.hosts.filter(h=>!h.chain && h.node===node.name);
     const active = mock.users.filter(u=>u.status==='active');
     const inbounds = hosts.map(h=>{
-      const clients = active.map(u=>h.security==='reality'
-        ? {password:'••••••••', shortIds:['••••']}
+      const clients = active.map(u=>h.protocol==='hy2' ? {auth:'скрыто панелью'}
+        : h.security==='reality' ? {password:'••••••••', shortIds:['••••']}
         : {id:'••••••••-••••'});
-      const stream = {network:h.network, security:h.security};
+      // hy2 в конфиге Xray живёт под своим именем (hysteria) и со своим транспортом
+      const stream = h.protocol==='hy2'
+        ? {network:'hysteria', security:'tls', hysteriaSettings:{version:2, masquerade:{type:'404'}}}
+        : {network:h.network, security:h.security};
       if(h.security==='reality')
         stream.realitySettings = {serverNames:[h.address||'•••'], privateKey:'скрыто панелью'};
-      return {tag:'medusa-host-'+h.id, port:h.port, protocol:h.protocol, settings:{clients:clients}, streamSettings:stream};
+      return {tag:'medusa-host-'+h.id, port:h.port, protocol:h.protocol==='hy2'?'hysteria':h.protocol,
+              settings:h.protocol==='hy2' ? {version:2, users:clients} : {clients:clients}, streamSettings:stream};
     });
     return Promise.resolve({config:{log:{loglevel:'warning'}, inbounds:inbounds, outbounds:[{protocol:'freedom',tag:'direct'}]}});
   }
@@ -756,10 +773,31 @@ const CLIENTS = {
   streisand:{label:'Streisand', hue:120},
   unknown:{label:null, hue:222},
 };
-const clientOf = u => (u.client && CLIENTS[u.client]) ? u.client : 'unknown';
-const clientLabel = k => (CLIENTS[k] && CLIENTS[k].label) || t('client.unknown');
-const clientColor = k => `hsl(${(CLIENTS[k] || CLIENTS.unknown).hue} 68% 52%)`;
+/* Приложение — это то, что назвал человек: панель его сама не определяет. Поэтому
+   известные названия — только подсказки (datalist) и готовые цвета, а своё название
+   («Clash for Windows», «Foxv2ray» …) остаёт своей долей кольца: цвет подбирается по хэшу
+   имени, в «прочие» попадают только те, у кого приложение не названо вовсе. */
+const APP_HINTS = Object.keys(CLIENTS).filter(k => k !== 'unknown');
+const hueOf = name => { let h = 0; for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) % 360; return h; };
+const clientKey = u => String(u.client || '').trim() || 'unknown';
+const clientOf = u => clientKey(u);
+const clientLabel = k => (k === 'unknown') ? t('client.unknown') : ((CLIENTS[k] && CLIENTS[k].label) || k);
+/* В таблице людей приложение — либо названное человеком, либо «не указано»: корзина «прочие»
+   относится к кольцу подписок, а не к пустому полю у конкретного человека */
+const clientCell = u => { const c = String(u.client || '').trim(); return c ? clientLabel(c) : t('client.none'); };
+const clientColor = k => CLIENTS[k] && CLIENTS[k].hue != null
+  ? `hsl(${CLIENTS[k].hue} 68% 52%)`
+  : `hsl(${hueOf(k)} 62% 52%)`;
 const subsWord = n => plural(n, t('subs.one'), t('subs.few'), t('subs.many'));
+
+/* Поле «приложение клиента»: ввод с подсказками, а не жёсткий список — бэкенд принимает
+   любое имя до 32 символов, и ломать чужое название списком из семи пунктов незачем. */
+function fillClientInput(input, current){
+  const dl = $('#clientlist');
+  const names = [...new Set([...APP_HINTS, ...(current && current !== 'unknown' ? [current] : [])])];
+  if (dl) dl.innerHTML = names.map(v => `<option value="${esc(v)}">${esc(clientLabel(v))}</option>`).join('');
+  input.value = (current && current !== 'unknown') ? current : '';
+}
 
 function clientsStats(users){
   const map = new Map();
@@ -838,12 +876,13 @@ const pages = {
     const users = await call('GET','/api/users');
     const w = canWrite();
     const rows = users.map(u=>{const c = STATUS_CLASS[u.status] || STATUS_CLASS.disabled; return `<tr>
-      <td><div class="who"><span class="ava">${esc((String(u.name||'').trim()[0]||'?').toUpperCase())}</span><div>${esc(u.name)}<div class="mono">${esc(u.token)} · ${esc(clientLabel(clientOf(u)))}</div></div></div></td>
+      <td><div class="who"><span class="ava">${esc((String(u.name||'').trim()[0]||'?').toUpperCase())}</span><div>${esc(u.name)}<div class="mono">${esc(u.token)} · ${esc(clientCell(u))}</div></div></div></td>
       <td><span class="badge ${c}">${statusLabel(u.status)}</span></td>
       <td>${fmt(u.used)}</td>
       <td><div class="acts">
         <button class="btn sm" data-a="copy" data-id="${u.id}">${ic('copy')}${t('btn.subscription')}</button>
-        ${w?`<button class="btn sm" data-a="toggle" data-id="${u.id}">${ic('power')}${u.status==='disabled'?t('btn.enable'):t('btn.disable')}</button>
+        ${w?`<button class="btn sm" data-a="uedit" data-id="${u.id}">${ic('gear')}${t('btn.edit')}</button>
+        <button class="btn sm" data-a="toggle" data-id="${u.id}">${ic('power')}${u.status==='disabled'?t('btn.enable'):t('btn.disable')}</button>
         <button class="btn sm del" data-a="del" data-id="${u.id}">${ic('trash')}${t('btn.delete')}</button>`:''}
       </div></td></tr>`}).join('');
     return `<div class="head"><h2>${t('nav.users')}</h2>${w?`<button class="btn pri" data-a="new">${ic('plus')}${t('btn.add')}</button>`:''}</div>
@@ -1028,7 +1067,7 @@ $('#view').addEventListener('click', async e=>{
   const WRITE_ACTIONS = ['new','newnode','newhost','newchain','anew','del','toggle','hdel','hedit','cedit','cdel','atoggle','adel','ncheck','ndelete'];
   if(WRITE_ACTIONS.includes(a) && !canWrite()) return toast(t('auth.required'));
   try{
-    if(a==='new'){ $('#dlg').returnValue=''; return $('#dlg').showModal(); }
+    if(a==='new'){ $('#uform').reset(); $('#dlg').returnValue=''; fillClientInput($('#uclient'), null); return $('#dlg').showModal(); }
     /* return без await: ошибка диалога ушла бы мимо try/catch и в консоль вместо объяснения */
     if(a==='newchain') return void await openChain();
     if(a==='cedit') return void await openChainEdit(id);
@@ -1052,6 +1091,7 @@ $('#view').addEventListener('click', async e=>{
       const u = (await call('GET','/api/users')).find(x=>x.id===id);
       await call('PATCH','/api/users/'+id,{status:u.status==='disabled'?'active':'disabled'});
     }
+    if(a==='uedit') return void await openUserEdit(id);
     if(a==='del'){ if(!confirm(t('confirm.delUser'))) return; await call('DELETE','/api/users/'+id); toast(t('toast.deleted')); }
     show();
   }catch(err){ toast(t('toast.error',{msg:err.message})) }
@@ -1059,15 +1099,46 @@ $('#view').addEventListener('click', async e=>{
 $('#dlg').addEventListener('close', async ()=>{
   if($('#dlg').returnValue!=='ok') return;
   const f = new FormData($('#uform'));
+  const client = String(f.get('client')||'').trim() || null;
   try{
-    await call('POST','/api/users',{name:f.get('name')});
+    await call('POST','/api/users',{name:f.get('name'), client});
     toast(t('toast.userCreated')); $('#uform').reset(); show('users');
   }catch(err){ toast(t('toast.error',{msg:err.message})) }
 });
 
+/* ----- правка пользователя: имя и приложение клиента ----- */
+let userTarget = null;
+async function openUserEdit(id){
+  const u = (await call('GET','/api/users')).find(x=>x.id===id); if(!u) return toast(t('toast.stale'));
+  userTarget = u;
+  $('#uename').value = u.name || '';
+  fillClientInput($('#ueclient'), clientKey(u));
+  $('#uedlg').returnValue = '';
+  $('#uedlg').showModal();
+}
+$('#uedlg').addEventListener('close', async ()=>{
+  if($('#uedlg').returnValue!=='ok' || !userTarget) return;
+  const u = userTarget;
+  const name = String($('#uename').value||'').trim();
+  const client = String($('#ueclient').value||'').trim();
+  const body = {};
+  if(name && name !== u.name) body.name = name;
+  // пустая строка здесь — явное «снять приложение»: панель понимает именно её,
+  // а «не принесли поле» — это другое (иначе приложение нельзя было бы убрать)
+  if(client !== String(u.client || '').trim()) body.client = client;
+  if(!Object.keys(body).length) return;
+  try{
+    await call('PATCH','/api/users/'+u.id, body);
+    toast(t('toast.userSaved'));
+    show();
+  }catch(err){ toast(t('toast.error',{msg:err.message})) }
+});
+
 /* ----- общие настройки инбаунда: протокол / транспорт / защита / порт ----- */
-const PROTOS = ['vless','vmess','trojan','ss'];
-const SEC_BY = {vless:['none','tls','reality'],vmess:['none','tls'],trojan:['tls','reality'],ss:['none']};
+const PROTOS = ['vless','vmess','trojan','ss','hy2'];
+const SEC_BY = {vless:['none','tls','reality'],vmess:['none','tls'],trojan:['tls','reality'],ss:['none'],
+  /* у hysteria2 защита встроена в протокол (QUIC + TLS): выбирать нечего */
+  hy2:['tls']};
 const opts = (list,label)=>list.map(v=>`<option value="${v}">${esc(label?label[v]:v)}</option>`).join('');
 const cfgHTML = ()=>`<div class="cfgwrap"><div class="cfgh"><span>${t('cfg.protocol')}</span><span>${t('cfg.transport')}</span><span>${t('cfg.security')}</span><span>${t('cfg.port')}</span></div>
   <div class="cfg"><select data-k="protocol" aria-label="${t('cfg.protocol')}">${opts(PROTOS,PROTO)}</select>
@@ -1079,7 +1150,9 @@ function syncCfg(root){
   const sec = K(root,'security'), net = K(root,'network'), proto = K(root,'protocol').value, ok = SEC_BY[proto];
   [...sec.options].forEach(o=>o.disabled = !ok.includes(o.value));
   if(!ok.includes(sec.value)) sec.value = ok[0];
-  [...net.options].forEach(o=>o.disabled = (sec.value==='reality' && o.value==='ws') || (proto==='ss' && o.value!=='tcp'));
+  /* у ss и у hy2 транспорта на выбор нет: hy2 сам и есть транспорт (QUIC/HTTP3) */
+  [...net.options].forEach(o=>o.disabled = (sec.value==='reality' && o.value==='ws')
+    || (proto==='ss' && o.value!=='tcp') || (proto==='hy2' && o.value!=='tcp'));
   if(net.selectedOptions[0].disabled) net.value = [...net.options].find(o=>!o.disabled).value;
 }
 function initCfg(root, onChange){
@@ -1113,7 +1186,8 @@ function renderHopCfg(row){
   /* пустое значение при правке — «сбросить к разумному по умолчанию»: рендер сам знает,
      что поставить вместо пустого пути или пустой маскировки */
   secBox.innerHTML = secHTML(sec, values, true);
-  advBox.innerHTML = advHTML(net, values, sec);
+  advBox.innerHTML = advHTML(net, values, sec, K(row,'protocol').value);
+  if(K(row,'protocol').value === 'hy2') secBox.innerHTML += `<p class="hint">${esc(t('host.hy2Hint'))}</p>`;
   if(K(advBox,'fp')) K(advBox,'fp').value = values.fp || 'chrome';
 }
 function hopCfgBody(row){
@@ -1175,10 +1249,12 @@ const ADV_BY = {
     <label><span>${t('cfg.adv.grpc.authority')}</span><input data-k="grpcAuthority" maxlength="63" placeholder="grpc.example.net" value="${esc(h.grpcAuthority||'')}"></label>`,
 };
 const fpField = h=>`<label><span>${t('cfg.sec.fp')}</span><select data-k="fp">${opts(FPS)}</select></label>`;
-const advHTML = (net, h = {}, sec = 'none') => {
+const advHTML = (net, h = {}, sec = 'none', proto = '') => {
   const parts = [];
   if(ADV_BY[net]) parts.push(ADV_BY[net](h));
-  if(sec==='tls' || sec==='reality') parts.push(fpField(h));
+  /* отпечаток клиента (utls) — про ClientHello браузера; hy2-клиент рукопожатие QUIC
+     делает сам, и панели там подставлять нечего */
+  if((sec==='tls' || sec==='reality') && proto!=='hy2') parts.push(fpField(h));
   return parts.length ? `<details class="adv"><summary>${esc(t('cfg.adv'))}</summary><div class="advf">${parts.join('')}</div></details>` : '';
 };
 function advBody(cfg, root){
@@ -1194,8 +1270,11 @@ function advBody(cfg, root){
 
 /* ----- диалог «новая нода»: адрес и версия Xray, остальное соберёт опрос нод позже ----- */
 const FV = (root,k) => root.querySelector(`[data-f="${k}"]`).value.trim();
+const CB = (root,k) => { const el = root.querySelector(`[data-f="${k}"]`); return !!(el && el.checked); };
 function openNode(){
-  $('#nform').reset(); $('#ndlg').returnValue = ''; $('#ndlg').showModal();
+  $('#nform').reset();
+  const v6 = document.querySelector('#nform [data-f="ipv6Disabled"]'); if(v6) v6.checked = false;
+  $('#ndlg').returnValue = ''; $('#ndlg').showModal();
 }
 $('#ndlg').addEventListener('close', async ()=>{
   if($('#ndlg').returnValue!=='ok') return;
@@ -1203,6 +1282,7 @@ $('#ndlg').addEventListener('close', async ()=>{
   const body = {name:FV(dlg,'name'), address:FV(dlg,'address'), apiKey:FV(dlg,'apiKey')};
   const port = FV(dlg,'apiPort'); if(port) body.apiPort = +port;
   const proxy = FV(dlg,'proxy').trim(); if(proxy) body.proxy = proxy;
+  if(CB(dlg,'ipv6Disabled')) body.ipv6Disabled = true;   // только когда человек правда поставил галочку
   try{
     await call('POST','/api/nodes', body);
     toast(t('toast.nodeCreated')); show();
@@ -1260,6 +1340,7 @@ async function openNodeEdit(id){
     try{ proxyKnown = (await call('GET',`/api/nodes/${n.id}/proxy`)).proxy || ''; }catch(err){ proxyKnown = n.proxy || ''; }
   }
   nfill('proxy', proxyKnown);
+  const v6box = NEF().querySelector('[data-f="ipv6Disabled"]'); if(v6box) v6box.checked = !!n.ipv6Disabled;
   $('#ne_key').textContent = n.fingerprint ? t('dlg.nodeEdit.fp', {fp: n.fingerprint}) : t('dlg.nodeEdit.keyMissing');
   $('#ne_agent').innerHTML = missing(n.agent);
   $('#ne_xray').innerHTML = missing(n.xray);
@@ -1315,6 +1396,7 @@ $('#nedlg').addEventListener('close', async ()=>{
   const key = FV(form,'apiKey'); if(key && key !== keyKnown) body.apiKey = key;
   // то же, что и с ключом: прокси отправляем только если его правда поменяли
   const proxy = FV(form,'proxy').trim(); if(proxy !== proxyKnown) body.proxy = proxy;
+  const noV6 = CB(form,'ipv6Disabled'); if(noV6 !== !!editing.ipv6Disabled) body.ipv6Disabled = noV6;
   try{ await call('PATCH','/api/nodes/'+editing.id, body); toast(t('toast.nodeSaved')); }
   catch(err){ toast(t('toast.error',{msg:err.message})) }
   show();
@@ -1328,23 +1410,29 @@ async function loadCtx(){
   ctx = {hosts,chains,nodes};
 }
 /* Занятые порты считаются по машине, а не по одной ноде: две ноды с одним адресом — это
-   один и тот же сервер, и Xray там падает целиком, если два слушателя взяли один порт.
-   API-порт ноды — такой же слушатель на том же адресе. */
+   один и тот же сервер, и Xray 26 поднимает двух слушателей одного класса на одном порту
+   (SO_REUSEPORT), но раздаёт трафик между ними — подписчики попадают не в свой хост.
+   API-порт ноды — такой же слушатель на том же адресе, он занят всегда.
+   hy2 слушает UDP (QUIC), поэтому ему не мешают tcp-хосты на том же номере: 443/tcp для
+   VLESS и 443/udp для Hysteria2 — нормальная связка, и бэкенд её разрешает. */
+const listenerNet = proto => proto === 'hy2' ? 'udp' : 'tcp';
 const machineNames = node => {
   const self = ctx.nodes.find(n=>n.name===node);
   if(!self) return new Set([node]);
   return new Set(ctx.nodes.filter(n=>n.address===self.address).map(n=>n.name));
 };
-const taken = node => {
+/* net — класс слушателя, который сюда ставят: 'tcp' или 'udp' (listenerNet от протокола) */
+const taken = (node, net='tcp') => {
   const onMachine = machineNames(node);
   return new Set([
+    /* API-порт ноды панель держит за нодой целиком, для любого класса слушателя */
     ...ctx.nodes.filter(n=>onMachine.has(n.name)).map(n=>n.apiPort),
-    ...ctx.hosts.filter(h=>onMachine.has(h.node)).map(h=>h.port),
-    ...ctx.chains.flatMap(c=>c.hops.filter(h=>onMachine.has(h.node)).map(h=>h.port)),
+    ...ctx.hosts.filter(h=>onMachine.has(h.node) && listenerNet(h.protocol)===net).map(h=>h.port),
+    ...ctx.chains.flatMap(c=>c.hops.filter(h=>onMachine.has(h.node) && listenerNet(h.protocol)===net).map(h=>h.port)),
   ]);
 };
-function freePort(node, extra=[]){
-  const used = new Set([...taken(node), ...extra]);
+function freePort(node, extra=[], net='tcp'){
+  const used = new Set([...taken(node, net), ...extra]);
   const p = [443,8443,2053,2083,2087,2096].find(x=>!used.has(x));
   if(p) return p;
   let r = 10000 + Math.floor(Math.random()*50000); while(used.has(r)) r++;
@@ -1359,8 +1447,9 @@ let hostEditing = null;
 const setCfg = (k,v)=>{ const el = K($('#hcfg'),k); if(v!=null && v!=='') el.value = v; };
 function renderHostExtras(h){
   const sec = K($('#hcfg'),'security').value, net = K($('#hcfg'),'network').value;
-  $('#hsec').innerHTML = secHTML(sec, h);
-  $('#hadv').innerHTML = advHTML(net, h, sec);
+  const proto = K($('#hcfg'),'protocol').value;
+  $('#hsec').innerHTML = secHTML(sec, h) + (proto==='hy2' ? `<p class="hint">${esc(t('host.hy2Hint'))}</p>` : '');
+  $('#hadv').innerHTML = advHTML(net, h, sec, proto);
   if(K($('#hadv'),'fp')) K($('#hadv'),'fp').value = h.fp || 'chrome';
 }
 function hostDialogShell(){
@@ -1377,7 +1466,7 @@ async function openHost(){
   $('#hdlg h3').textContent = t('dlg.host.title');
   $('#hdlg [value=ok]').textContent = t('btn.create');
   initCfg($('#hcfg'), ()=>renderHostExtras({}));
-  K($('#hcfg'),'port').value = freePort($('#hnode').value);
+  K($('#hcfg'),'port').value = freePort($('#hnode').value, [], listenerNet(K($('#hcfg'),'protocol').value));
   $('#hdlg').showModal();
 }
 async function openHostEdit(id){
@@ -1398,13 +1487,13 @@ async function openHostEdit(id){
   renderHostExtras(h);
   $('#hdlg').showModal();
 }
-$('#hnode').onchange = ()=>{ K($('#hcfg'),'port').value = freePort($('#hnode').value); };
+$('#hnode').onchange = ()=>{ K($('#hcfg'),'port').value = freePort($('#hnode').value, [], listenerNet(K($('#hcfg'),'protocol').value)); };
 $('#hform').addEventListener('submit', e=>{
   if(e.submitter && e.submitter.value!=='ok') return;
   const port = readCfg($('#hcfg')).port, node = $('#hnode').value;
   const own = hostEditing && ctx.hosts.find(x=>x.id===hostEditing);
   if(own && own.port===port && own.node===node) return;   // свой порт при правке — не конфликт
-  if(taken(node).has(port)){ e.preventDefault(); toast(t('toast.portTaken',{port,node})); }
+  if(taken(node, listenerNet(readCfg($('#hcfg')).protocol)).has(port)){ e.preventDefault(); toast(t('toast.portTaken',{port,node})); }
 });
 $('#hdlg').addEventListener('close', async ()=>{
   if($('#hdlg').returnValue!=='ok') return;
@@ -1429,8 +1518,10 @@ const rowNode = r => K(r,'node').value;
 const rowPort = r => +K(r,'port').value;
 const nodeAddress = name => (ctx.nodes.find(n=>n.name===name) || {}).address || '';
 function setHopPort(row){
-  const same = hopRows().filter(r=>r!==row && rowNode(r)===rowNode(row)).map(rowPort);
-  K(row,'port').value = freePort(rowNode(row), same);
+  const net = listenerNet(K(row,'protocol').value);
+  const same = hopRows().filter(r=>r!==row && rowNode(r)===rowNode(row)
+                               && listenerNet(K(r,'protocol').value)===net).map(rowPort);
+  K(row,'port').value = freePort(rowNode(row), same, net);
 }
 /* Адрес хопа обязателен и подставляется сам: это тот адрес, куда подключаются и подписчик
    входа, и соседняя нода. Панель пишет сюда адрес ноды этого хопа — поле никогда не пусто,
@@ -1529,13 +1620,14 @@ $('#cform').addEventListener('submit', e=>{
   // свои порты при правке цепочки конфликтом не считаются: хопа этой же цепочки
   // занимают их прямо сейчас, и перестановка хопов внутри тех же портов — не занято
   const own = chainEditing ? (ctx.chains.find(c=>c.id===chainEditing)?.hops || []) : [];
-  const mine = (node, port) => own.some(h=>h.node===node && h.port===port);
+  const mine = (node, port, net) => own.some(h=>h.node===node && h.port===port && listenerNet(h.protocol)===net);
   rows.forEach((r,i)=>{
-    const n = rowNode(r), port = rowPort(r);
+    const n = rowNode(r), port = rowPort(r), net = listenerNet(K(r,'protocol').value);
     if(!(K(r,'address').value || '').trim()) err ||= t('chain.hopAddressEmpty');
     if(i && n===rowNode(rows[i-1])) err ||= t('chain.hopSameNode');
-    if(!mine(n,port) && taken(n).has(port)) err ||= t('toast.portTaken',{port,node:n});
-    if(rows.slice(0,i).some(o=>rowNode(o)===n && rowPort(o)===port)) err ||= t('toast.portDup',{port,node:n});
+    if(!mine(n,port,net) && taken(n, net).has(port)) err ||= t('toast.portTaken',{port,node:n});
+    if(rows.slice(0,i).some(o=>rowNode(o)===n && rowPort(o)===port
+                              && listenerNet(K(o,'protocol').value)===net)) err ||= t('toast.portDup',{port,node:n});
   });
   if(err){ e.preventDefault(); toast(err); }
 });

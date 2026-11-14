@@ -1,6 +1,8 @@
+import {readFileSync} from 'node:fs';
 import {chromium} from 'playwright';
 const BASE = process.env.MEDUSA_UI_URL || 'http://localhost:8000/';
 const MOCK = BASE + '?mock=1';
+const VERSION = (readFileSync('pyproject.toml', 'utf8').match(/^version = "([^"]+)"/m) || [])[1] || '';
 
 
 const b = await chromium.launch();
@@ -13,7 +15,7 @@ await page.goto(MOCK);
 await page.evaluate(() => { localStorage.clear(); });
 await page.reload();
 await page.waitForTimeout(500);
-ok((await page.textContent('#mode')).includes('0.1.0'), 'версия из pyproject.toml: ' + await page.textContent('#mode'));
+ok((await page.textContent('#mode')).includes(VERSION), `версия из pyproject.toml (${VERSION}): ${await page.textContent('#mode')}`);
 ok(await page.getAttribute('html', 'data-theme') === null, 'стартовая тема — авто (как в системе)');
 
 await page.click('a[data-p="settings"]');

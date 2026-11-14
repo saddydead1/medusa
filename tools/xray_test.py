@@ -13,7 +13,8 @@
   идут с паролем и коротким id, tls-хосты — с выпущенным сертификатом;
 * vmess, trojan и shadowsocks подымаются сами: у vmess согласуемый шифр, у trojan пароль
   из токена, у shadowsocks подписчики лежат в `users` со своим шифром и своим на каждый
-  хост паролем; hy2 и бессмысленные комбинации (ss+tls, vmess+reality) не заводятся;
+  хост паролем, hysteria2 поднимается своим протоколом и транспортом (и своим сертификатом
+  на ноде); бессмысленные комбинации (ss+tls, vmess+reality, hy2 без tls, hy2 поверх ws) не заводятся;
 * применение поднимает ревизию на обеих сторонах и не роняет панель при отказе ноды;
 * отключённый пользователь исчезает из клиентов конфига.
 """
@@ -247,9 +248,15 @@ def main() -> int:
             sock = client.post("/api/hosts", json={"name": "S3055", "node": "stub", "protocol": "ss",
                                                    "port": 3055, "network": "tcp", "security": "none",
                                                    "address": "ss.example.net"}).json()
-            hy2 = client.post("/api/hosts", json={"name": "HY2", "node": "stub", "protocol": "hy2",
-                                                  "port": 3056, "network": "tcp", "security": "none"})
-            ok(hy2.status_code == 400, f"hy2 панель не заводит: {hy2.json()['detail']}")
+            hy2_none = client.post("/api/hosts", json={"name": "HY2", "node": "stub", "protocol": "hy2",
+                                                       "port": 3056, "network": "tcp", "security": "none"})
+            ok(hy2_none.status_code == 400 and "tls" in hy2_none.json()["detail"],
+               f"hy2 без tls не заводится (шифрование встроено в протокол): {hy2_none.json()['detail']}")
+            hy2_ws = client.post("/api/hosts", json={"name": "HY2-ws", "node": "stub", "protocol": "hy2",
+                                                     "port": 3056, "network": "ws", "security": "tls"})
+            ok(hy2_ws.status_code == 400 and "QUIC" in hy2_ws.json()["detail"],
+               f"hy2 поверх ws отвергается: {hy2_ws.json()['detail']}")
+            # сам hy2-хост заводится отдельно ниже: он проверяется живым конфигом на ноде
             ss_tls = client.post("/api/hosts", json={"name": "ss+tls", "node": "stub", "protocol": "ss",
                                                      "port": 3057, "network": "tcp", "security": "tls"})
             ok(ss_tls.status_code == 400, f"ss с чужой защитой отвергается: {ss_tls.json()['detail']}")
@@ -505,6 +512,86 @@ def main() -> int:
                and reality1.get("serverNames") == ["mirror.example.org", "backup.example.org"],
                f"reality-хоп прячется за названной маской и принимает названные имена: "
                f"{reality1.get('serverNames')}")
+
+            # --- hysteria2: какой конфиг доезжает до ноды и что нода делает с сертификатом ---
+            hy2_host = client.post("/api/hosts", json={"name": "HY2443", "node": "stub", "protocol": "hy2",
+                                                       "port": 3071, "network": "tcp", "security": "tls",
+                                                       "address": "hy2.example.net",
+                                                       "sni": "hy2.example.net"}).json()
+            hy2_cfg = wait_cfg(cfg_path, lambda c: any(i["tag"] == "HY2443" for i in c["inbounds"]))
+            inb = next((i for i in (hy2_cfg or {}).get("inbounds", []) if i["tag"] == "HY2443"), {})
+            ok(inb.get("protocol") == "hysteria" and inb.get("settings", {}).get("version") == 2,
+               "hy2 на ноде — протокол hysteria версии 2 (так Xray 26 называет hysteria2)")
+            stream = inb.get("streamSettings") or {}
+            ok(stream.get("network") == "hysteria" and stream.get("security") == "tls"
+               and stream.get("hysteriaSettings", {}).get("masquerade", {}).get("type") == "404",
+               f"транспорт hy2 его собственный (QUIC/HTTP3) с masquerade-заглушкой: {stream.get('hysteriaSettings')}")
+            hy2_users = inb.get("settings", {}).get("users", [])
+            auths = {u.get("auth") for u in hy2_users}
+            ok(len(hy2_users) >= 1 and len(auths) == len(hy2_users) and all(u.get("email", "").startswith("u")
+               for u in hy2_users),
+               f"hy2 различает подписчиков по их auth и держит метку email (по ней счётчики): {hy2_users}")
+            certs = stream.get("tlsSettings", {}).get("certificates", [])
+            crt_file = (certs[0].get("certificateFile") if certs else "")
+            ok(crt_file and Path(crt_file).exists() and Path(certs[0].get("keyFile", "")).exists(),
+               f"hy2 нужен сертификат: нода выпустила self-signed по подсказке панели: {crt_file}")
+            masked = client.get(f"/api/nodes/{node['id']}/config").json()["config"]
+            masked_in = next(i for i in masked["inbounds"] if i["tag"] == "HY2443")
+            ok(all(u.get("auth") == "скрыто панелью" for u in masked_in["settings"]["users"]),
+               "окно конфига ноды не показывает auth-ключи hy2-подписчиков")
+            # hy2 слушает UDP (QUIC), и tcp-хост на том же номере этой же ноды ему не мешает:
+            # панель пускает такую связку, и оба инбаунда доезжают ноде. Настоящий Xray поднявает
+            # её и гоняет по ней трафик — это проверяет tools/live_demo.py (hy2 и plain на одном
+            # порту, оба туннеля дают HTTP 204)
+            same_port = client.post("/api/hosts", json={"name": "T3071", "node": "stub",
+                                                        "protocol": "trojan", "port": 3071,
+                                                        "network": "tcp", "security": "none"})
+            ok(same_port.status_code == 201,
+               f"tcp-хост на номер hy2-хоста не мешает (разные классы слушателя): "
+               f"{same_port.json().get('detail', 'ok')}")
+            both = wait_cfg(cfg_path, lambda c: sum(1 for i in c["inbounds"] if i["port"] == 3071) == 2)
+            ok(both is not None,
+               "на ноде оба инбаунда на одном порту: Xray разводит UDP (hysteria) и TCP (trojan)")
+            client.delete(f"/api/hosts/{same_port.json()['id']}")
+
+            client.delete(f"/api/hosts/{hy2_host['id']}")
+            gone = wait_cfg(cfg_path, lambda c: all(i["tag"] != "HY2443" for i in c["inbounds"]))
+            ok(gone is not None, "hy2-хост удалён — его инбаунд снялся с ноды")
+
+            # --- IPv6 на ноде выключен: конфиг слушает 0.0.0.0 и ходит только по IPv4 ---
+            # Проверка ровно на живом переходе цепочки: там есть и инбаунд, и outbound
+            # в соседнюю ноду — оба должны перестать цепляться за IPv6.
+            client.patch(f"/api/nodes/{node['id']}", json={"ipv6Disabled": True})
+            v6cfg = wait_cfg(cfg_path, lambda c: all(i.get("listen") == "0.0.0.0"
+                                                     for i in c["inbounds"]
+                                                     if i.get("protocol") != "dokodemo-door"))
+            ok(v6cfg is not None,
+               "инбаунды ноды без IPv6 слушают 0.0.0.0: dual-stack bind на такой машине роняет Xray целиком")
+            hop_tags = {o["tag"] for o in v6cfg["outbounds"] if o["tag"].startswith("XRAY-CHAIN")}
+            ok(hop_tags, "переход цепочки на месте — проверяем стратегию и на нём")
+            strategic = [o for o in v6cfg["outbounds"] if o["protocol"] != "blackhole"]
+            ok(all(o.get("streamSettings", {}).get("sockopt", {}).get("domainStrategy") == "UseIPv4"
+                   for o in strategic),
+               f"наружу и в переходы нода ходит по IPv4: "
+               f"{[(o['tag'], o.get('streamSettings', {}).get('sockopt', {}).get('domainStrategy')) for o in strategic]}")
+            # hy2 слушает UDP (QUIC), и ему тоже нужен IPv4-адрес: dual-stack QUIC-сокет на ::
+            # на машине без IPv6 роняет ноду целиком
+            hy2_v6 = client.post("/api/hosts", json={"name": "HY2V6", "node": "stub", "protocol": "hy2",
+                                                     "port": 3073, "network": "tcp", "security": "tls",
+                                                     "address": "hy2v6.example.net",
+                                                     "sni": "hy2v6.example.net"}).json()
+            v6hy2 = wait_cfg(cfg_path, lambda c: any(i["tag"] == "HY2V6" and i.get("listen") == "0.0.0.0"
+                                                     for i in c["inbounds"]))
+            ok(v6hy2 is not None,
+               "hy2-инбаунд ноды без IPv6 слушает 0.0.0.0 — QUIC поверх IPv6 ему не подниматься")
+            client.delete(f"/api/hosts/{hy2_v6['id']}")
+            wait_cfg(cfg_path, lambda c: all(i["tag"] != "HY2V6" for i in c["inbounds"]))
+            client.patch(f"/api/nodes/{node['id']}", json={"ipv6Disabled": False})
+            plain = wait_cfg(cfg_path, lambda c: all("sockopt" not in (o.get("streamSettings") or {})
+                                                     or not (o["streamSettings"].get("sockopt") or {}).get("domainStrategy")
+                                                     for o in c["outbounds"]) and
+                            all(i.get("protocol") == "dokodemo-door" or "listen" not in i for i in c["inbounds"]))
+            ok(plain is not None, "галочку сняли — конфиг вернулся к обычному слушанию и разрешению имён")
 
             client.delete(f"/api/chains/{route['id']}")
             cfg = wait_cfg(cfg_path, lambda c: all(not i["tag"].startswith("XRAY-CHAIN") for i in c["inbounds"]))

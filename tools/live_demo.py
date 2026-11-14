@@ -96,6 +96,28 @@ def port_alive(port: int, tries: int = 30) -> bool:
     return False
 
 
+def port_alive_udp(port: int, tries: int = 30) -> bool:
+    """Слушает ли Xray этот UDP-порт (hy2 — QUIC/HTTP3).
+
+    hy2 не обязан отвечать на мусорный датаграммом, поэтому проверка читает не ответ, а
+    отказ ядра: «порт закрыт» (ECONNREFUSED по ICMP) значит слушателя нет; таймаут значит
+    слушатель есть и просто не ответил. Именно так и проверяют UDP-порт hy2-хоста.
+    """
+    for _ in range(tries):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.settimeout(1.5)
+            try:
+                probe.sendto(b"\x00" * 48, ("127.0.0.1", port))
+                probe.recv(64)
+            except ConnectionRefusedError:
+                time.sleep(0.5)
+                continue
+            except TimeoutError:
+                return True
+            return True
+    return False
+
+
 def wait_http(url: str, seconds: float = 30.0) -> bool:
     import httpx
 
@@ -207,6 +229,16 @@ def outbound_from_link(link: str, pin: str | None = None) -> dict:
         return {"tag": "direct", "protocol": "trojan",
                 "settings": {"servers": [{"address": address, "port": port, "password": credential}]},
                 "streamSettings": stream_of(params, pin)}
+    if scheme == "hy2":
+        # hysteria2: ключ подписчика — auth, транспорт и шифрование у протокола свои
+        stream_hy: dict = {"network": "hysteria", "security": "tls",
+                           "hysteriaSettings": {"version": 2, "auth": credential},
+                           "tlsSettings": {"serverName": params.get("sni", address)}}
+        if pin:
+            stream_hy["tlsSettings"]["pinnedPeerCertSha256"] = pin
+        return {"tag": "direct", "protocol": "hysteria",
+                "settings": {"version": 2, "address": address, "port": port},
+                "streamSettings": stream_hy}
     if scheme == "ss":
         method, _, password = credential.partition(":")
         return {"tag": "direct", "protocol": "shadowsocks",
@@ -227,8 +259,12 @@ def main() -> int:
     print(f"Xray: {XRAY_BIN}")
 
     panel_port, node_port = free_port(), free_port()
-    host_names = ("plain", "reality", "wss", "ws", "grpc", "vmess", "trojan", "treal", "ss")
+    host_names = ("plain", "reality", "wss", "ws", "grpc", "vmess", "trojan", "treal", "ss", "hy2")
     hosts_ports = {name: free_port() for name in host_names}
+    # hy2 слушает UDP (QUIC), и панель разрешает ему тот же номер, что держит tcp-хост этой
+    # же машины: «443/tcp для VLESS, 443/udp для Hysteria2» — рабочая связка, а не побег.
+    # Здесь она и проверяется настоящим Xray: plain (vless tcp) и hy2 живут на одном порту.
+    hosts_ports["hy2"] = hosts_ports["plain"]
     socks_ports = {name: free_port() for name in host_names}
 
     node_proc = spawn(
@@ -293,9 +329,15 @@ def main() -> int:
         made["ss"] = api.post("/api/hosts", json={"name": "ss", "node": "demo", "protocol": "ss",
                                                   "port": hosts_ports["ss"], "network": "tcp",
                                                   "security": "none"}).json()
+        # hysteria2: свой транспорт (QUIC/UDP) и обязательный tls — сертификат выпустит нода
+        made["hy2"] = api.post("/api/hosts", json={"name": "hy2", "node": "demo", "protocol": "hy2",
+                                                   "port": hosts_ports["hy2"], "network": "tcp",
+                                                   "security": "tls", "address": "localhost",
+                                                   "sni": "localhost"}).json()
         petya = api.post("/api/users", json={"name": "petya"}).json()
         masha = api.post("/api/users", json={"name": "masha", "client": "happ"}).json()
-        print("заведены: нода demo, девять хостов (vless×5, vmess, trojan×2, ss), два пользователя")
+        print("заведены: нода demo, десять хостов (vless×5, vmess, trojan×2, ss, hy2), два пользователя; "
+              "hy2-хост сидит на одном порту с tcp-хостом plain (UDP и TCP не встречаются)")
 
         # панель применяет конфиг сама; ждём, пока доставка успокоится: каждое
         # создание хоста — отдельная ревизия, и Xray на ноде перезапускается на каждую
@@ -326,8 +368,10 @@ def main() -> int:
         ports_dead = []
         for label in host_names:
             port = hosts_ports[label]
-            alive = port_alive(port)
-            ok(alive, f"порт {label} ({port}) слушается Xray")
+            alive = port_alive_udp(port) if label == "hy2" else port_alive(port)
+            ok(alive, f"порт {label} ({port}) слушается Xray"
+               + (f" по UDP, на одном номере с tcp-хостом plain ({hosts_ports['plain']})"
+                  if label == "hy2" else ""))
             if not alive:
                 ports_dead.append(label)
         if ports_dead:
@@ -342,6 +386,11 @@ def main() -> int:
         # транспортные и протокольные детали доехали до живого конфига Xray дословно
         cfg = json.loads(CFG_PATH.read_text(encoding="utf-8"))
         by_port = {i["port"]: i for i in cfg["inbounds"]}
+        shared = [i for i in cfg["inbounds"] if i["port"] == hosts_ports["plain"]]
+        ok({i["protocol"] for i in shared} == {"vless", "hysteria"},
+           f"живой конфиг Xray: на одном порту {hosts_ports['plain']} стоят и tcp-инбаунд plain, "
+           f"и hy2-инбаунд (hysteria v2) — Xray поднимает оба, UDP и TCP на одном номере "
+           f"не встречаются: {[(i['protocol'], i['port']) for i in shared]}")
         wss = by_port[hosts_ports["ws"]]["streamSettings"]
         ok(wss["wsSettings"]["path"] == "/medusa-tunnel" and wss["wsSettings"]["host"] == "cdn.example.net",
            "живой конфиг Xray: путь и Host-заголовок websocket")
@@ -369,7 +418,7 @@ def main() -> int:
             der = x509.load_pem_x509_certificate(crt.read_bytes()).public_bytes(Encoding.DER)
             return hashlib.sha256(der).hexdigest()
 
-        pins = {name: cert_pin(made[name]["id"]) for name in ("wss", "vmess", "trojan")}
+        pins = {name: cert_pin(made[name]["id"]) for name in ("wss", "vmess", "trojan", "hy2")}
 
         # ---- настоящий клиент: SOCKS-туннель и внешний запрос наружу ----
         def client_json(proxy_port: int, outbound: dict) -> Path:
@@ -423,8 +472,8 @@ def main() -> int:
             return out
 
         petya_links, masha_links = links_of(petya), links_of(masha)
-        ok(len(petya_links) == 9 and {"vmess", "trojan", "trojan-reality", "ss"} <= set(petya_links),
-           f"машинная ссылка подписки отдаёт все девять хостов: {sorted(petya_links)}")
+        ok(len(petya_links) == 10 and {"vmess", "trojan", "trojan-reality", "ss", "hy2"} <= set(petya_links),
+           f"машинная ссылка подписки отдаёт все десять хостов: {sorted(petya_links)}")
 
         short_id = reality_short_id(petya["token"])
         through("plain", socks_ports["plain"], outbound_from_link(petya_links["plain"]))
@@ -436,6 +485,7 @@ def main() -> int:
         through("trojan", socks_ports["trojan"], outbound_from_link(petya_links["trojan"], pins["trojan"]))
         through("trojan-reality", socks_ports["treal"], outbound_from_link(petya_links["trojan-reality"]))
         through("ss", socks_ports["ss"], outbound_from_link(petya_links["ss"]))
+        through("hy2", socks_ports["hy2"], outbound_from_link(petya_links["hy2"], pins["hy2"]))
 
         # второй подписчик через те же порты vmess/trojan/shadowsocks: панель различает людей
         for name in ("vmess", "trojan", "ss"):
@@ -447,8 +497,8 @@ def main() -> int:
         # то, что увидит подписчик: ссылки прямо со страницы подписки панели
         page = api.get(f"/sub/{petya['token']}", headers={"Accept": "text/html"}).text
         page_links = list(dict.fromkeys(l.replace("&amp;", "&") for l in
-                                        re.findall(r"(?:vless|vmess|trojan|ss)://[^\s\"<]+", page)))
-        ok(len(page_links) >= 9, f"страница подписки отдаёт ссылки всех хостов: {len(page_links)}")
+                                        re.findall(r"(?:vless|vmess|trojan|ss|hy2)://[^\s\"<]+", page)))
+        ok(len(page_links) >= 10, f"страница подписки отдаёт ссылки всех хостов: {len(page_links)}")
         print("\nссылки подписки petya (можно вставить в клиент и подключаться к этой машине):")
         for link in page_links:
             print("  " + link)
@@ -459,23 +509,29 @@ def main() -> int:
         # машинный вид: одно вставление ссылки в приложение — все хосты разом
         machine = api.get(f"/sub/{petya['token']}/links?raw=1").text.splitlines()
         schemes = {l.split("://", 1)[0] for l in machine if l}
-        ok(len(machine) == 9 and schemes == {"vless", "vmess", "trojan", "ss"},
-           f"ссылка подписки одним запросом отдаёт все девять хостов: {sorted(schemes)}")
+        ok(len(machine) == 10 and schemes == {"vless", "vmess", "trojan", "ss", "hy2"},
+           f"ссылка подписки одним запросом отдаёт все десять хостов: {sorted(schemes)}")
         # та же ссылка без Accept: text/html — приложение получит ссылки, а не страницу
         negotiated = base64.b64decode(api.get(f"/sub/{petya['token']}", headers={"Accept": "*/*"}).text).decode("utf-8")
-        ok(len([l for l in negotiated.splitlines() if l]) == 9,
+        ok(len([l for l in negotiated.splitlines() if l]) == 10,
            "та же ссылка подписки: клиент без Accept: text/html получает ссылки вместо страницы")
         # Happ, v2rayNG и прочие читают base64 из переводных ссылок: проверим, что он собирается
         ok(base64.b64decode(api.get(f"/sub/{masha['token']}/links").text).decode("utf-8")
-           .count("\n") == 8, "base64-подписка для Happ/v2rayNG: девять ссылок, переводные")
+           .count("\n") == 9, "base64-подписка для Happ/v2rayNG: десять ссылок, переводные")
         # Clash и его производные понимают только YAML со списком proxies
         import yaml as _yaml
         clash_doc = _yaml.safe_load(api.get(f"/sub/{petya['token']}",
                                             headers={"Accept": "*/*", "User-Agent": "clash-verge/v2.4.0"}).text)
         kinds = sorted({p["type"] for p in clash_doc["proxies"]})
-        ok(len(clash_doc["proxies"]) == 9 and kinds == ["ss", "trojan", "vless", "vmess"],
-           f"clash yaml: все девять хостов и все протоколы списком proxies: "
+        ok(len(clash_doc["proxies"]) == 10
+           and kinds == ["hysteria2", "ss", "trojan", "vless", "vmess"],
+           f"clash yaml: все десять хостов и все протоколы списком proxies: "
            f"{len(clash_doc['proxies'])} прокси {kinds}")
+        ok(by_clash_hy := next((x for x in clash_doc["proxies"] if x["name"] == "hy2"), {}),
+           "clash yaml: hysteria2-прокси в списке")
+        ok(by_clash_hy["type"] == "hysteria2" and by_clash_hy["password"] and by_clash_hy["sni"] == "localhost"
+           and by_clash_hy["skip-cert-verify"] is True,
+           "clash yaml: hy2 описан как hysteria2 (проверяется живым Mihomo ниже)")
         by_clash = {p["name"]: p for p in clash_doc["proxies"]}
         ok(by_clash["reality"]["reality-opts"]["public-key"] and by_clash["reality"]["client-fingerprint"] == "chrome"
            and by_clash["ws"]["ws-opts"]["path"] == "/medusa-tunnel",

@@ -28,6 +28,8 @@ TEXTS = {
     "grpc": "имя сервиса и authority — настройки gRPC, а не другого транспорта",
     "hopCert": "сертификат хопа цепочки выпускает панель: она обязана знать его отпечаток, "
                "чтобы закрепить его за соседней нодой",
+    "hy2Fp": "отпечаток клиента hy2-клиент называет сам (рукопожатие QUIC): панели тут "
+             "не чем подставлять чужой hello",
 }
 
 TLS_FILE_FIELDS = ("sni", "certFile", "keyFile")
@@ -52,7 +54,8 @@ def meaningful(model) -> set[str]:
     return out
 
 
-def fields_issue(security: str, network: str, provided: set[str], *, hop: bool = False) -> str | None:
+def fields_issue(security: str, network: str, provided: set[str], *, hop: bool = False,
+                 protocol: str | None = None) -> str | None:
     """Первая претензия к набору полей, либо None. `provided` — какие поля человек прислал.
 
     `hop=True` добавляет правило про сертификаты: хосту цепочки их не разрешают, и текст
@@ -60,6 +63,8 @@ def fields_issue(security: str, network: str, provided: set[str], *, hop: bool =
     """
     if "fp" in provided and security == "none":
         return TEXTS["fp"]
+    if "fp" in provided and protocol == "hy2":
+        return TEXTS["hy2Fp"]
     if hop and ("certFile" in provided or "keyFile" in provided):
         # для цепочки это не «поле чужой защиты», а поле, которого там быть не может вовсе
         return TEXTS["hopCert"]

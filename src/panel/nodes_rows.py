@@ -18,7 +18,7 @@ SERVED_USERS = ("(SELECT COUNT(*) FROM users u WHERE u.status = 'active' AND EXI
                 "AND (h.chain_id IS NULL OR h.hop_index = 0)))")
 
 NODE_COLUMNS = ("id, name, address, online, xray_version, traffic_bytes, traffic_error, "
-                "api_port, api_key, api_proxy, agent_version, seen_at, "
+                "api_port, api_key, api_proxy, agent_version, seen_at, ipv6_disabled, "
                 "config_rev, config_dirty, applied_rev, applied_at, apply_error, "
                 f"{SERVED_USERS} AS served_users")
 
@@ -41,6 +41,8 @@ def as_dict(row: sqlite3.Row) -> dict:
         # прокси, но не его пароль; целиком — отдельным запросом
         "proxy": mask_proxy(row["api_proxy"]),
         "proxySet": bool(row["api_proxy"]),
+        # IPv6 на ноде выключен: в конфиге инбаунды слушают 0.0.0.0, наружу — только IPv4
+        "ipv6Disabled": bool(row["ipv6_disabled"]),
         "keySet": bool(api_key),
         "keyMasked": mask_api_key(api_key) if api_key else None,
         "fingerprint": api_key_fingerprint(api_key) if api_key else None,

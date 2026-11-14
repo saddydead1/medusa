@@ -14,12 +14,14 @@ import sqlite3
 
 from fastapi import APIRouter, Depends
 
-from src.core.xray_config import is_ip, reality_client_sni, security_issue, unsupported_protocol, UNSUPPORTED_HINT
+from src.core.xray_config import (is_ip, reality_client_sni, security_issue, transport_issue,
+                                  unsupported_hint, unsupported_protocol)
 from src.panel import config_push, ports
 from src.panel.db import get_conn, now_ms
 from src.panel.host_keys import new_reality_keys
 from src.panel.deps import bad_request, conflict, fetch_one, node_by_name, writer
 from src.panel.field_rules import fields_issue, meaningful
+from src.panel.ipv6_rule import address_conflict
 from src.panel.schemas import HostCreate, HostPatch
 
 router = APIRouter(prefix="/api/hosts", tags=["hosts"])
@@ -72,17 +74,22 @@ def clean(value: object) -> str:
 
 
 def check_combination(protocol: str, network: str, security: str, address: str, node_address: str,
-                      server_names: str = "", dest: str = "") -> None:
+                      server_names: str = "", dest: str = "",
+                      no_ipv6: bool = False, node_name: str = "") -> None:
     """Смысл combos один на create и patch: набор «reality поверх ws» или reality на IP
     одинаково бессмысленен при создании и при правке.
 
-    Протокол, которого панель не умеет ни в конфиге, ни в ссылке (hy2), отвергается здесь
-    же: панель не заводит хост, о котором подписчик никогда не узнает.
+    Протокол, которого панель не умеет ни в конфиге, ни в ссылке, отвергается здесь же:
+    панель не заводит хост, о котором подписчик никогда не узнает. У hy2 отдельно проверяется
+    транспорт: у hysteria2 его выбирать нечего, а «hy2 поверх ws» был бы хостом, который
+    Xray просто не поднимет.
     """
     if unsupported_protocol(protocol):
-        raise bad_request(UNSUPPORTED_HINT)
+        raise bad_request(unsupported_hint(protocol))
     issue = security_issue(protocol, security)
     if issue:
+        raise bad_request(issue)
+    if issue := transport_issue(protocol, network):
         raise bad_request(issue)
     if security == "reality" and network == "ws":
         raise bad_request("reality не работает поверх ws")
@@ -94,16 +101,21 @@ def check_combination(protocol: str, network: str, security: str, address: str, 
         # маску; вот она обязана быть доменом — IP в SNI клиент подставить не умеет
         raise bad_request("reality прячется за доменом: маскированный адрес (или список "
                           "принимаемых SNI) обязан быть доменом, а не IP")
+    if no_ipv6:
+        # адрес, по которому подписчик придёт к этому хосту (свой адрес хоста, иначе адрес
+        # ноды), не может быть IPv6: Xray такой ноды слушает только IPv4
+        if issue := address_conflict(node_name, address or node_address):
+            raise bad_request(issue)
 
 
-def check_fields(body: HostCreate | HostPatch, security: str, network: str) -> None:
+def check_fields(body: HostCreate | HostPatch, security: str, network: str, protocol: str) -> None:
     """Поле чужой защиты или чужого транспорта — не «лишнее», а путаница:
     панель отвергает сразу, чтобы потом не удивляться молча игнорируемому полю.
 
     Сами правила живут в `src/panel/field_rules.py` — оттуда же их берут хопа цепочек,
     чтобы «sni у reality» не означало одно для хоста и другое для цепочки.
     """
-    issue = fields_issue(security, network, meaningful(body))
+    issue = fields_issue(security, network, meaningful(body), protocol=protocol)
     if issue:
         raise bad_request(issue)
 
@@ -121,14 +133,19 @@ def check_cert_pair(cert_file: str, key_file: str) -> None:
         raise bad_request("файл ключа должен называться .key или .pem")
 
 
-def check_port(conn: sqlite3.Connection, node_id: int, port: int, own_id: int | None = None) -> None:
-    """Порт хоста проверяется по машине ноды, а не по одной ноде.
+def check_port(conn: sqlite3.Connection, node_id: int, port: int, protocol: str,
+               own_id: int | None = None) -> None:
+    """Порт хоста проверяется по машине ноды и по классу его слушателя.
 
-    Две ноды с одним адресом — одна машина: её слушатели не должны наступать друг на друга,
-    иначе Xray падает целиком (`bind: address already in use`) и вместе с ним все хосты ноды.
-    API-порт ноды — такой же слушатель на том же адресе.
+    Две ноды с одним адресом — одна машина: её слушатели одного класса (TCP или UDP) не
+    должны наступать друг на друга: Xray 26 поднимает оба и раздаёт соединения между ними,
+    а если на этом же номере сидит API ноды — Xray не поднимается вовсе.
+
+    hy2 слушает UDP (QUIC), поэтому ему не мешают tcp-хосты на том же номере: «443/tcp для
+    VLESS, 443/udp для Hysteria2» — нормальная связка, и панель её разрешает. Два hy2-хоста
+    на одном номере — конфликт: их UDP-пакеты делятся так же.
     """
-    issue = ports.host_port_conflict(conn, node_id, port, skip_host=own_id)
+    issue = ports.host_port_conflict(conn, node_id, port, protocol=protocol, skip_host=own_id)
     if issue:
         raise conflict(issue)
 
@@ -147,10 +164,11 @@ def create_host(
     node = node_by_name(conn, body.node)
     address = clean(body.address)
     check_combination(body.protocol, body.network, body.security, address, node["address"],
-                      clean(body.serverNames), clean(body.dest))
-    check_fields(body, body.security, body.network)
+                      clean(body.serverNames), clean(body.dest),
+                      no_ipv6=bool(node["ipv6_disabled"]), node_name=node["name"])
+    check_fields(body, body.security, body.network, body.protocol)
     check_cert_pair(clean(body.certFile), clean(body.keyFile))
-    check_port(conn, node["id"], body.port)
+    check_port(conn, node["id"], body.port, body.protocol)
     private_key = public_key = ""
     if body.security == "reality":
         private_key, public_key = new_reality_keys()
@@ -192,7 +210,7 @@ def patch_host(
     node_id = row["node_id"]
     if body.node is not None:
         node_id = node_by_name(conn, body.node)["id"]
-    node = fetch_one(conn, "SELECT name, address FROM nodes WHERE id = ?", (node_id,))
+    node = fetch_one(conn, "SELECT name, address, ipv6_disabled FROM nodes WHERE id = ?", (node_id,))
 
     merged = {
         "name": body.name if body.name is not None else row["name"],
@@ -217,10 +235,11 @@ def patch_host(
     }
 
     check_combination(merged["protocol"], merged["network"], merged["security"], merged["address"],
-                      node["address"], merged["server_names"], merged["dest"])
-    check_fields(body, merged["security"], merged["network"])
+                      node["address"], merged["server_names"], merged["dest"],
+                      no_ipv6=bool(node["ipv6_disabled"]), node_name=node["name"])
+    check_fields(body, merged["security"], merged["network"], merged["protocol"])
     check_cert_pair(merged["cert_file"], merged["key_file"])
-    check_port(conn, node_id, merged["port"], own_id=host_id)
+    check_port(conn, node_id, merged["port"], merged["protocol"], own_id=host_id)
 
     private_key, public_key = row["private_key"], row["public_key"]
     if merged["security"] == "reality" and not private_key:

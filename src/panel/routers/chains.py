@@ -21,15 +21,15 @@ import sqlite3
 
 from fastapi import APIRouter, Depends
 
-from src.core.xray_config import security_issue, unsupported_protocol, UNSUPPORTED_HINT
-from src.core.xray_config import (is_ip, reality_client_sni, security_issue, unsupported_protocol,
-                                 UNSUPPORTED_HINT)
+from src.core.xray_config import (is_ip, reality_client_sni, security_issue, transport_issue,
+                                  unsupported_hint, unsupported_protocol)
 from src.panel import config_push
 from src.panel import ports
 from src.panel.chain_hops import insert_hop
 from src.panel.db import get_conn, now_ms
 from src.panel.deps import bad_request, conflict, fetch_one, writer
 from src.panel.field_rules import fields_issue, meaningful
+from src.panel.ipv6_rule import address_conflict
 from src.panel.schemas import ChainCreate
 
 router = APIRouter(prefix="/api/chains", tags=["chains"])
@@ -44,15 +44,18 @@ def check_hop(hop) -> None:
     которое показывает одно, а на ноде работает другое.
     """
     if unsupported_protocol(hop.protocol):
-        raise bad_request(UNSUPPORTED_HINT)
+        raise bad_request(unsupported_hint(hop.protocol))
     issue = security_issue(hop.protocol, hop.security)
     if issue:
+        raise bad_request(issue)
+    if issue := transport_issue(hop.protocol, hop.network):
         raise bad_request(issue)
     if hop.security == "reality" and hop.network == "ws":
         raise bad_request("reality не работает поверх ws")
     if hop.protocol == "ss" and hop.network != "tcp":
         raise bad_request("shadowsocks тут только через tcp")
-    issue = fields_issue(hop.security, hop.network, meaningful(hop), hop=True)
+    issue = fields_issue(hop.security, hop.network, meaningful(hop), hop=True,
+                         protocol=hop.protocol)
     if issue:
         raise bad_request(issue)
 
@@ -111,10 +114,13 @@ def hop_issue(conn: sqlite3.Connection, hop: dict, skip_chain: int | None) -> st
     """Чем занят порт этого хопа.
 
     Смотрим не «на ноде», а на адресе ноды: соседняя нода с тем же адресом — это та же
-    машина, и два её слушателя на одном порту уронят Xray целиком (вместе с его здоровыми
-    хостами). API-порт ноды участвует в проверке: он слушает там же.
+    машина, и два её слушателя одного класса на одном порту делят трафик между собой (а если
+    номер занят API-портом — Xray на этой машине не поднимется вовсе). API-порт ноды участвует
+    в проверке: он слушает там же. Класс слушателя берётся из протокола хопа: hy2-хоп слушает
+    UDP, и ему не мешают tcp-хосты или tcp-хопа на том же номере.
     """
-    return ports.host_port_conflict(conn, hop["node_id"], hop["port"], skip_chain=skip_chain)
+    return ports.host_port_conflict(conn, hop["node_id"], hop["port"], protocol=hop["protocol"],
+                                    skip_chain=skip_chain)
 
 
 def resolve_hops(conn: sqlite3.Connection, body: ChainCreate, skip_chain: int | None) -> tuple[list[dict], list[int]]:
@@ -122,7 +128,8 @@ def resolve_hops(conn: sqlite3.Connection, body: ChainCreate, skip_chain: int | 
     nodes = {}
     for hop in body.hops:
         check_hop(hop)
-        row = conn.execute("SELECT id, name, address FROM nodes WHERE name = ?", (hop.node,)).fetchone()
+        row = conn.execute("SELECT id, name, address, ipv6_disabled FROM nodes WHERE name = ?",
+                           (hop.node,)).fetchone()
         if row is None:
             raise bad_request(f"ноды «{hop.node}» нет")
         nodes[hop.node] = row
@@ -130,6 +137,16 @@ def resolve_hops(conn: sqlite3.Connection, body: ChainCreate, skip_chain: int | 
     for a, b in zip(body.hops, body.hops[1:], strict=False):
         if a.node == b.node:
             raise bad_request("соседние хопы должны быть на разных нодах")
+
+    # hop на ноде без IPv6 не может прятаться на IPv6-адресе: ни соседняя нода, ни подписчик
+    # входа туда не доедут — Xray такой ноды слушает только IPv4
+    for hop in body.hops:
+        node = nodes[hop.node]
+        if not node["ipv6_disabled"]:
+            continue
+        if issue := address_conflict(node["name"], ports.norm(hop.address) or node["address"],
+                                     "адрес хопа"):
+            raise bad_request(issue)
 
     resolved = [{"node_id": nodes[h.node]["id"], "node": h.node, "protocol": h.protocol,
                  "network": h.network, "security": h.security, "port": h.port,
@@ -148,16 +165,18 @@ def resolve_hops(conn: sqlite3.Connection, body: ChainCreate, skip_chain: int | 
                                   "принимаемых SNI) обязан быть доменом, а не IP")
 
     # хопы одной цепочки могут попасть на одну машину (две ноды с одним адресом), и тогда
-    # их порты обязаны различаться так же, как порты обычных хостов
-    on_machine: dict[tuple[str, int], str] = {}
+    # их порты обязаны различаться так же, как порты обычных хостов — но только в пределах
+    # одного класса слушателя: hy2-хоп (UDP) и tcp-хоп на одном номере живут нормально
+    on_machine: dict[tuple[str, int, str], str] = {}
     for hop in resolved:
         issue = hop_issue(conn, hop, skip_chain=skip_chain)
         if issue:
             raise conflict(issue)
-        key = (ports.node_address(conn, hop["node_id"]), hop["port"])
+        net = ports.listener_net(hop["protocol"])
+        key = (ports.node_address(conn, hop["node_id"]), hop["port"], net)
         if key in on_machine:
             raise conflict(f"порт {hop['port']} на {key[0]} уже занят хопом «{on_machine[key]}» "
-                           "этой же цепочки")
+                           f"этой же цепочки: оба слушают {ports.NET_LABEL[net]} на этом номере")
         on_machine[key] = hop["node"]
     return resolved, [h["node_id"] for h in resolved]
 

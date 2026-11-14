@@ -17,7 +17,11 @@ COPY src/panel ./src/panel
 COPY src/core  ./src/core
 
 VOLUME /data
-ENV MEDUSA_DB=/data/medusa.db
+# адрес и порт панели читаются из окружения (MEDUSA_PANEL_HOST / MEDUSA_PANEL_PORT),
+# а не зашиты в CMD: порт меняется одной строкой в compose или docker run -e
+ENV MEDUSA_DB=/data/medusa.db \
+    MEDUSA_PANEL_HOST=0.0.0.0 \
+    MEDUSA_PANEL_PORT=8000
 
 EXPOSE 8000
-CMD ["/app/.venv/bin/python", "-m", "src.panel.cli", "--host", "0.0.0.0", "--port", "8000", "--no-reload"]
+CMD ["/app/.venv/bin/python", "-m", "src.panel.cli", "--no-reload"]
